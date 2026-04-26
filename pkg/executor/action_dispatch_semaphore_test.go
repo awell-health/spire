@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -62,9 +63,12 @@ func (b *concurrentBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
 	return h, nil
 }
 
-func (b *concurrentBackend) List() ([]agent.Info, error)     { return nil, nil }
+func (b *concurrentBackend) List() ([]agent.Info, error)        { return nil, nil }
 func (b *concurrentBackend) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
-func (b *concurrentBackend) Kill(string) error               { return nil }
+func (b *concurrentBackend) Kill(string) error                  { return nil }
+func (b *concurrentBackend) TerminateBead(_ context.Context, _ string) error {
+	return nil
+}
 
 // TestDispatchWaveCore_RespectsMaxApprentices verifies that the semaphore in
 // dispatchWaveCore caps concurrent apprentice spawns at the configured limit,

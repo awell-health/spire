@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -561,6 +562,9 @@ func (b *sageVerdictMockBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, err
 func (b *sageVerdictMockBackend) List() ([]agent.Info, error)             { return nil, nil }
 func (b *sageVerdictMockBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (b *sageVerdictMockBackend) Kill(name string) error                  { return nil }
+func (b *sageVerdictMockBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return nil
+}
 
 type sageVerdictMockHandle struct{}
 

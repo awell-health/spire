@@ -63,6 +63,9 @@ func (f *failingSpawnBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error)
 func (f *failingSpawnBackend) List() ([]agent.Info, error)        { return nil, nil }
 func (f *failingSpawnBackend) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (f *failingSpawnBackend) Kill(string) error                  { return nil }
+func (f *failingSpawnBackend) TerminateBead(_ context.Context, _ string) error {
+	return nil
+}
 
 // fakeChildIntentSink captures emitted intents so cluster-native
 // regression tests can assert on the captured shape — TaskID, phase,

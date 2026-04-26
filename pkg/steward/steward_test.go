@@ -665,6 +665,7 @@ func (f *fakeBackend) Kill(name string) error {
 	f.killed = append(f.killed, name)
 	return nil
 }
+func (f *fakeBackend) TerminateBead(ctx context.Context, beadID string) error { return nil }
 
 func TestCheckBeadHealth_StaleIncrementsCount(t *testing.T) {
 	// Bead updated 20 minutes ago.
@@ -849,9 +850,12 @@ func (b *spawnTrackingBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error
 	b.spawns = append(b.spawns, cfg)
 	return &fakeHandle{id: cfg.Name}, nil
 }
-func (b *spawnTrackingBackend) List() ([]agent.Info, error)       { return nil, nil }
+func (b *spawnTrackingBackend) List() ([]agent.Info, error)             { return nil, nil }
 func (b *spawnTrackingBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
-func (b *spawnTrackingBackend) Kill(name string) error            { return nil }
+func (b *spawnTrackingBackend) Kill(name string) error                  { return nil }
+func (b *spawnTrackingBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return nil
+}
 
 type fakeHandle struct{ id string }
 
@@ -2392,6 +2396,9 @@ func (m *mockBackend) List() ([]agent.Info, error) {
 }
 func (m *mockBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (m *mockBackend) Kill(name string) error                  { return nil }
+func (m *mockBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return nil
+}
 
 // setupCycleTest creates a minimal tower config for testing TowerCycle.
 // It stubs out store operations and returns a cleanup function.

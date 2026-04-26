@@ -892,6 +892,17 @@ func (b *K8sBackend) Kill(name string) error {
 	)
 }
 
+// TerminateBead is the cluster-mode equivalent of process-group
+// termination: delete every pod owned by the bead/attempt label.
+// Filed as a follow-up bead (spd-1lu5); the gateway reset handler
+// short-circuits to 501 in TowerModeGateway today, so this method
+// is unreachable from the v1 desktop reset path. Returns
+// ErrTerminateBeadNotImplemented until the operator-driven
+// termination intent lands.
+func (b *K8sBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return ErrTerminateBeadNotImplemented
+}
+
 // findPod locates a pod by the spire.agent=<name> label.
 // Returns os.ErrNotExist if not found.
 func (b *K8sBackend) findPod(name string) (string, error) {

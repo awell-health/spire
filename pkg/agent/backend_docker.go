@@ -162,6 +162,15 @@ func (b *DockerBackend) Kill(name string) error {
 	return nil
 }
 
+// TerminateBead is the bead-scoped equivalent of Kill for the docker
+// backend. No production reset path currently dispatches to docker —
+// the local CLI uses the process backend, and cluster mode is filed
+// as spd-1lu5. Returns ErrTerminateBeadNotImplemented until a real
+// docker consumer requires it.
+func (b *DockerBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return ErrTerminateBeadNotImplemented
+}
+
 // findContainer locates a container by the spire.agent=<name> label.
 // Returns the container ID or an error if not found.
 func (b *DockerBackend) findContainer(name string) (string, error) {

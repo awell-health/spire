@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -323,8 +324,9 @@ func (b *mockBackend) Kill(name string) error {
 	return nil
 }
 
-
-
+func (b *mockBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return nil
+}
 
 // =============================================================================
 // Seam: ensureStagingWorktree resume and stale paths

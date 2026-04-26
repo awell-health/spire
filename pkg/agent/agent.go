@@ -10,6 +10,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"time"
@@ -63,7 +65,39 @@ type Backend interface {
 
 	// Kill force-stops an agent by name (when no handle is available).
 	Kill(name string) error
+
+	// TerminateBead stops every runtime worker the backend has spawned
+	// for the given bead and reports an error if any survive.
+	//
+	// The contract is bead-scoped on purpose: reset / unsummon must reap
+	// the parent wizard AND every nested apprentice / sage / cleric
+	// worker AND any provider subprocess (claude, codex) descended from
+	// them. Signalling only the registered parent PID lets detached
+	// children survive — that's the spi-w65pr1 bug.
+	//
+	// Backend implementations:
+	//   - ProcessBackend signals each registered entry's recorded PGID
+	//     (SIGTERM, 5s grace, SIGKILL) so the whole process group goes
+	//     down regardless of parent-child reparenting.
+	//   - K8sBackend / cluster operator: deletes every pod owned by the
+	//     bead/attempt label (filed as spd-1lu5; stub returns
+	//     ErrTerminateBeadNotImplemented for now).
+	//   - DockerBackend: not yet implemented; returns
+	//     ErrTerminateBeadNotImplemented.
+	//
+	// Returns nil when no processes are owned by the bead (idempotent).
+	// Returns a non-nil error when at least one bead-scoped worker
+	// survived termination, so callers (reset) can fail closed and
+	// surface a manual-cleanup message.
+	TerminateBead(ctx context.Context, beadID string) error
 }
+
+// ErrTerminateBeadNotImplemented is returned by Backend.TerminateBead
+// implementations that have not yet been wired (cluster mode is filed
+// as spd-1lu5; docker has no current consumer that needs it). Callers
+// that wrap multiple backends can errors.Is against this to decide
+// whether to fall back or surface a hard error.
+var ErrTerminateBeadNotImplemented = errors.New("agent: TerminateBead not implemented for this backend")
 
 // Info is the backend-agnostic view of a running or recently-run agent.
 type Info struct {

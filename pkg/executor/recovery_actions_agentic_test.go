@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -419,6 +420,9 @@ func (fakeSpawner) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
 func (fakeSpawner) List() ([]agent.Info, error)        { return nil, nil }
 func (fakeSpawner) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (fakeSpawner) Kill(string) error                  { return nil }
+func (fakeSpawner) TerminateBead(_ context.Context, _ string) error {
+	return nil
+}
 
 // testBuildRuntimeContract is a minimal BuildRuntimeContract stub that
 // mirrors the shape (*Executor).withRuntimeContract produces — Identity

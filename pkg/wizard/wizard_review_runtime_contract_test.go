@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -26,9 +27,10 @@ func (s *spyBackend) Spawn(cfg SpawnConfig) (Handle, error) {
 	return spyHandle{name: cfg.Name}, nil
 }
 
-func (s *spyBackend) List() ([]agent.Info, error)             { return nil, nil }
-func (s *spyBackend) Logs(_ string) (io.ReadCloser, error)    { return nil, os.ErrNotExist }
-func (s *spyBackend) Kill(_ string) error                     { return nil }
+func (s *spyBackend) List() ([]agent.Info, error)                       { return nil, nil }
+func (s *spyBackend) Logs(_ string) (io.ReadCloser, error)               { return nil, os.ErrNotExist }
+func (s *spyBackend) Kill(_ string) error                                { return nil }
+func (s *spyBackend) TerminateBead(_ context.Context, _ string) error    { return nil }
 func (s *spyBackend) last() SpawnConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()

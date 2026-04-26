@@ -22,6 +22,7 @@ type Registry struct {
 type Entry struct {
 	Name           string `json:"name"`
 	PID            int    `json:"pid"`
+	PGID           int    `json:"pgid,omitempty"`
 	BeadID         string `json:"bead_id"`
 	Worktree       string `json:"worktree"`
 	StartedAt      string `json:"started_at"`
@@ -270,6 +271,58 @@ func FindLiveForBead(reg Registry, beadID string) *Entry {
 		}
 	}
 	return nil
+}
+
+// EntriesForBead returns ALL registry entries (under file lock) whose
+// BeadID matches the given bead. Used by ProcessBackend.TerminateBead to
+// reap every process spawned for a bead — the parent wizard plus any
+// nested apprentice/sage/cleric workers that registered separately.
+//
+// Includes entries whose PID is no longer alive; the caller decides how
+// to treat dead entries (typically: drop the row without signalling).
+func EntriesForBead(beadID string) ([]Entry, error) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	unlock, err := RegistryLock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	reg, err := loadRegistryE()
+	if err != nil {
+		return nil, err
+	}
+	var out []Entry
+	for _, w := range reg.Wizards {
+		if w.BeadID == beadID {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+// RegistryRemoveBead deletes every entry with the given BeadID. Idempotent.
+// Used by TerminateBead to clear all bead-scoped rows after the
+// underlying processes have been signalled.
+func RegistryRemoveBead(beadID string) error {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	unlock, err := RegistryLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	reg := loadRegistry()
+	var kept []Entry
+	for _, w := range reg.Wizards {
+		if w.BeadID != beadID {
+			kept = append(kept, w)
+		}
+	}
+	reg.Wizards = kept
+	return saveRegistry(reg)
 }
 
 // WizardsForTower returns wizards matching the given tower (or all if tower is "").

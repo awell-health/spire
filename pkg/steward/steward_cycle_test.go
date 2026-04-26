@@ -33,9 +33,12 @@ func (b *cycleBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
 	b.spawns = append(b.spawns, cfg)
 	return &fakeHandle{id: cfg.Name}, nil
 }
-func (b *cycleBackend) List() ([]agent.Info, error)              { return b.agents, b.listErr }
-func (b *cycleBackend) Logs(name string) (io.ReadCloser, error)  { return nil, os.ErrNotExist }
-func (b *cycleBackend) Kill(name string) error                   { return nil }
+func (b *cycleBackend) List() ([]agent.Info, error)             { return b.agents, b.listErr }
+func (b *cycleBackend) Logs(name string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
+func (b *cycleBackend) Kill(name string) error                  { return nil }
+func (b *cycleBackend) TerminateBead(ctx context.Context, beadID string) error {
+	return nil
+}
 
 // saveCycleFuncVars saves all test-replaceable function vars and restores them on cleanup.
 func saveCycleFuncVars(t *testing.T) {

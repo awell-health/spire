@@ -59,9 +59,10 @@ type panicSpawnBackend struct{}
 func (panicSpawnBackend) Spawn(_ agent.SpawnConfig) (agent.Handle, error) {
 	panic("mode routing: this branch must not invoke agent.Backend.Spawn")
 }
-func (panicSpawnBackend) List() ([]agent.Info, error)             { return nil, nil }
-func (panicSpawnBackend) Logs(_ string) (io.ReadCloser, error)    { return nil, os.ErrNotExist }
-func (panicSpawnBackend) Kill(_ string) error                     { return nil }
+func (panicSpawnBackend) List() ([]agent.Info, error)                       { return nil, nil }
+func (panicSpawnBackend) Logs(_ string) (io.ReadCloser, error)               { return nil, os.ErrNotExist }
+func (panicSpawnBackend) Kill(_ string) error                                { return nil }
+func (panicSpawnBackend) TerminateBead(_ context.Context, _ string) error    { return nil }
 
 // panicResolver.Resolve panics if called. Local-native and
 // attached-reserved paths must NEVER consult the cluster identity

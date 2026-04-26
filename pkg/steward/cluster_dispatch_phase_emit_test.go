@@ -50,9 +50,12 @@ func (b *phaseSpyBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
 	b.spawns = append(b.spawns, cfg)
 	return &phaseFakeHandle{id: cfg.Name}, nil
 }
-func (b *phaseSpyBackend) List() ([]agent.Info, error)                   { return nil, nil }
-func (b *phaseSpyBackend) Logs(_ string) (io.ReadCloser, error)          { return nil, os.ErrNotExist }
-func (b *phaseSpyBackend) Kill(_ string) error                           { return nil }
+func (b *phaseSpyBackend) List() ([]agent.Info, error)                    { return nil, nil }
+func (b *phaseSpyBackend) Logs(_ string) (io.ReadCloser, error)           { return nil, os.ErrNotExist }
+func (b *phaseSpyBackend) Kill(_ string) error                            { return nil }
+func (b *phaseSpyBackend) TerminateBead(_ context.Context, _ string) error {
+	return nil
+}
 
 type phaseFakeHandle struct{ id string }
 
