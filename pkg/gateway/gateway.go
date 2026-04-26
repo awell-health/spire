@@ -1772,6 +1772,14 @@ type resetBeadRequest struct {
 // booting the CLI.
 var resetBeadFunc = reset.ResetBead
 
+// resetStoreEnsureFunc verifies the server-side Dolt store is available before
+// dispatching reset. Kept as a seam so handler tests can exercise reset routing
+// without depending on a local .beads directory.
+var resetStoreEnsureFunc = func(dataDir string) error {
+	_, err := store.Ensure(dataDir)
+	return err
+}
+
 // resetTowerModeFunc resolves the active tower so handleBeadReset can
 // short-circuit to 501 in TowerModeGateway. Held in a var so tests can
 // inject a deterministic mode without touching real config.
@@ -1846,7 +1854,7 @@ func (s *Server) handleBeadReset(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 
-	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
+	if err := resetStoreEnsureFunc(s.effectiveDataDir()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

@@ -844,7 +844,7 @@ func TestDedupeLineageEdges(t *testing.T) {
 				{From: "a", To: "c", Type: "parent-child"},
 				{From: "b", To: "d", Type: "discovered-from"},
 				{From: "c", To: "d", Type: "discovered-from"},
-				{From: "a", To: "b", Type: "parent-child"}, // duplicate
+				{From: "a", To: "b", Type: "parent-child"},    // duplicate
 				{From: "b", To: "d", Type: "discovered-from"}, // duplicate
 			},
 			want: []lineageEdge{
@@ -956,8 +956,12 @@ func withResetStubs(t *testing.T, mode string, modeErr error, bead *store.Bead, 
 	t.Helper()
 	prevFunc := resetBeadFunc
 	prevMode := resetTowerModeFunc
+	prevEnsure := resetStoreEnsureFunc
 
 	calls := &resetCalls{}
+	resetStoreEnsureFunc = func(string) error {
+		return nil
+	}
 	resetTowerModeFunc = func() (string, error) {
 		calls.modeReads++
 		if modeErr != nil {
@@ -976,6 +980,7 @@ func withResetStubs(t *testing.T, mode string, modeErr error, bead *store.Bead, 
 	t.Cleanup(func() {
 		resetBeadFunc = prevFunc
 		resetTowerModeFunc = prevMode
+		resetStoreEnsureFunc = prevEnsure
 	})
 	return calls
 }
