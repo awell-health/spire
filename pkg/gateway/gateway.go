@@ -1774,7 +1774,7 @@ var resetBeadFunc = reset.ResetBead
 
 // resetStoreEnsureFunc verifies the server-side Dolt store is available before
 // dispatching reset. Kept as a seam so handler tests can exercise reset routing
-// without depending on a local .beads directory.
+// without depending on a real server-side .beads directory.
 var resetStoreEnsureFunc = func(dataDir string) error {
 	_, err := store.Ensure(dataDir)
 	return err
