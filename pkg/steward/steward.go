@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/alerts"
 	"github.com/awell-health/spire/pkg/bd"
+	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
@@ -42,6 +44,7 @@ import (
 	"github.com/awell-health/spire/pkg/steward/attached"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/wizardregistry"
 	"github.com/steveyegge/beads"
 )
 
@@ -126,6 +129,48 @@ var SendMessageFunc = sendMessage
 // cluster-native branch in DetectReviewFeedback never calls this — see
 // lookupReviewOwner for the cluster-safe ownership surface.
 var reviewRegistryListFunc = agent.RegistryList
+
+// OrphanSweepFunc is a test-replaceable hook for the steward-side orphan
+// sweep. Production wires it to beadlifecycle.OrphanSweep with the
+// daemonLifecycleDeps and localRegistryAdapter from lifecycle_deps.go.
+// The sweep was moved here from DaemonTowerCycle (spi-4d2i71) so it
+// runs in the same sequential cycle as SweepHookedSteps and cannot
+// race with the hooked-resume path across processes.
+var OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	return beadlifecycle.OrphanSweep(newDaemonLifecycleDeps(), newLocalRegistryAdapter(), beadlifecycle.OrphanScope{All: true})
+}
+
+// RegistryRemoveFunc is a test-replaceable hook for removing a single
+// wizard registry entry. Used by the hooked-resume path's belt-and-
+// suspenders cleanup (spi-4d2i71): the stale entry for the wizard
+// being resumed is removed before the parent bead flips to
+// in_progress, so a sync-only daemon (`spire up --no-steward`) cannot
+// observe the dead entry and clobber the bead status mid-resume.
+var RegistryRemoveFunc = func(ctx context.Context, id string) error {
+	return newLocalRegistryAdapter().Remove(ctx, id)
+}
+
+// removeStaleWizardEntry deletes the wizard registry entry for wizName
+// before the hooked-resume path flips the parent bead to in_progress.
+// Belt-and-suspenders defense (spi-4d2i71) for sync-only daemon mode
+// (`spire up --no-steward`): if such a daemon runs an orphan sweep
+// concurrently with the steward's resume, removing the stale entry
+// here means the sweep cannot find a dead PID to mis-classify and
+// clobber the bead status. Errors other than not-found are logged and
+// otherwise ignored — the primary fix is moving OrphanSweep into the
+// same sequential TowerCycle as the resume.
+func removeStaleWizardEntry(wizName string) {
+	if wizName == "" {
+		return
+	}
+	if err := RegistryRemoveFunc(context.Background(), wizName); err != nil {
+		// ErrNotFound is expected when the entry was already cleared
+		// (or the wizard never registered); silent.
+		if !errors.Is(err, wizardregistry.ErrNotFound) {
+			log.Printf("[steward] hooked sweep: remove stale registry entry %s: %s", wizName, err)
+		}
+	}
+}
 
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
@@ -306,6 +351,20 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
 	_ = CommitPendingFunc("steward cycle sync")
+
+	// Step 1b: OrphanSweep — close orphaned attempt beads whose wizards are
+	// no longer alive. Moved here from DaemonTowerCycle (spi-4d2i71): running
+	// it inside TowerCycle puts it in the same sequential cycle as
+	// SweepHookedSteps so the two lifecycle ops cannot interleave across the
+	// daemon and steward processes. It must run BEFORE GetSchedulableWorkFunc
+	// so any beads it reopens are visible to scheduling in the same cycle,
+	// and BEFORE SweepHookedSteps so a hooked-resume cannot be clobbered by
+	// a stale registry entry mid-cycle.
+	if report, serr := OrphanSweepFunc(); serr != nil {
+		log.Printf("[steward] %sorphan sweep error: %s", prefix, serr)
+	} else if report.Cleaned > 0 {
+		log.Printf("[steward] %sorphan sweep: examined %d, dead %d, cleaned %d", prefix, report.Examined, report.Dead, report.Cleaned)
+	}
 
 	// Step 2: Assess — find schedulable work (ready + policy-filtered).
 	schedResult, err := GetSchedulableWorkFunc(beads.WorkFilter{})
@@ -1445,6 +1504,18 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 					}
 				}
 
+				// Resolve the resumed wizard name first so the stale
+				// registry row can be cleared BEFORE the parent bead
+				// flips to in_progress (spi-4d2i71). If the entry is
+				// removed before the status update, no concurrent
+				// orphan sweep can find a dead PID to declare against
+				// this bead during the resume window.
+				wizName := agentName
+				if wizName == "" {
+					wizName = "wizard-" + SanitizeK8sLabel(parent.ID)
+				}
+				removeStaleWizardEntry(wizName)
+
 				// Set parent bead back to in_progress.
 				if err := UpdateBeadFunc(parent.ID, map[string]interface{}{
 					"status": "in_progress",
@@ -1455,10 +1526,6 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				}
 
 				// Re-summon the wizard.
-				wizName := agentName
-				if wizName == "" {
-					wizName = "wizard-" + SanitizeK8sLabel(parent.ID)
-				}
 				handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 					Name:       wizName,
 					BeadID:     parent.ID,
@@ -1551,6 +1618,17 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			resummoned++
 			continue
 		}
+
+		// Resolve the resumed wizard name and clear its stale registry
+		// row BEFORE flipping the parent bead status (spi-4d2i71).
+		// Belt-and-suspenders defense for sync-only daemon mode: if a
+		// daemon-side orphan sweep ever runs concurrently here, the
+		// stale entry is already gone, so it cannot mis-classify the
+		// bead as orphaned during the resume window.
+		if agentName == "" {
+			agentName = "wizard-" + SanitizeK8sLabel(parent.ID)
+		}
+		removeStaleWizardEntry(agentName)
 
 		// 2. Check if any other step beads for this parent are still hooked.
 		remainingHooked, _ := GetHookedStepsFunc(parent.ID)

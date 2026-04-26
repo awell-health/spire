@@ -16,7 +16,6 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/awell-health/spire/pkg/agent"
-	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
@@ -298,17 +297,14 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 		log.Printf("[daemon] [%s] reaped %d dead agent(s)", tower.Name, reaped)
 	}
 
-	// OrphanSweep: close orphaned attempt beads whose wizards are no longer
-	// alive. Race-safety is delegated to the wizardregistry.Registry contract
-	// (no snapshots; fresh IsAlive per candidate). Cleanup of dead-letter
-	// messages stays with ReapDeadAgents above.
-	// spi-w60her: OrphanSweep now takes a wizardregistry.Registry parameter
-	// so the same code path runs in both local and cluster modes.
-	if report, serr := beadlifecycle.OrphanSweep(newDaemonLifecycleDeps(), newLocalRegistryAdapter(), beadlifecycle.OrphanScope{All: true}); serr != nil {
-		log.Printf("[daemon] [%s] orphan sweep error: %s", tower.Name, serr)
-	} else if report.Cleaned > 0 {
-		log.Printf("[daemon] [%s] orphan sweep: examined %d, dead %d, cleaned %d", tower.Name, report.Examined, report.Dead, report.Cleaned)
-	}
+	// OrphanSweep moved to TowerCycle in spi-4d2i71 — running it here
+	// raced with the steward's hooked-resume path across processes and
+	// could clobber bead status mid-resume (parent reopened, dead-letter
+	// label added, while a freshly-spawned wizard was about to live in
+	// the registry). The cleanup now runs sequentially inside
+	// TowerCycle alongside SweepHookedSteps. Local towers using
+	// `spire up --no-steward` (sync-only mode) will not run orphan
+	// cleanup — the documented trade for serializing the two ops.
 
 	// Remove stale updated:<timestamp> labels left by the old heartbeat mechanism.
 	CleanUpdatedLabels()
