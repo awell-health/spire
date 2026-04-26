@@ -166,7 +166,18 @@ func ResolveDataDir(cwdFn func() (string, error)) (string, error) {
 // Requires DOLT_REMOTE_PASSWORD env var for auth.
 // Non-fatal: if the database already exists or creation fails, push will
 // surface the real error.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. EnsureDoltHubDB
+// reaches DoltHub's REST API directly to create a remote database — that is
+// a direct-DoltHub write, which is exactly what the gateway-mode guard
+// forbids in cluster-as-truth deployments. The CLI push path is gated
+// upstream (config.RejectIfGateway in cmd/spire/push.go), but this guard is
+// defense-in-depth: any caller that reaches EnsureDoltHubDB on a
+// gateway-mode tower must fail closed before talking to DoltHub.
 func EnsureDoltHubDB(remoteURL string) error {
+	if err := config.EnsureNotGatewayResolved("dolt.EnsureDoltHubDB"); err != nil {
+		return err
+	}
 	suffix := strings.TrimPrefix(remoteURL, "https://doltremoteapi.dolthub.com/")
 	parts := strings.SplitN(suffix, "/", 2)
 	if len(parts) != 2 {

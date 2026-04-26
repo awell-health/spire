@@ -271,29 +271,17 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	}
 
 	// gateway-mode: skip webhook_queue table creation and queue draining for
-	// gateway-mode towers. Both ensureWebhookQueue (CREATE TABLE) and
-	// integration.ProcessWebhookQueue (UPDATE webhook_queue SET processed = 1)
-	// mutate local Dolt directly via DoltSQL; in cluster-as-truth deployments
-	// the cluster's own daemon owns the webhook_queue table inside its
-	// canonical Dolt database. ProcessWebhookQueue also has its own
-	// EnsureNotGatewayResolved guard as defense-in-depth, but skipping at the
-	// per-tower iteration boundary avoids the no-op CREATE TABLE noise and
-	// matches the runDoltSync skip shape above.
-	gatewayTower := config.IsGatewayMode(&tower)
-	if !gatewayTower {
-		ensureWebhookQueue()
-	}
+	// gateway-mode towers. See runWebhookQueueForTower for the rationale and
+	// the per-tower iteration boundary the skip protects.
+	qProcessed, qErrors := runWebhookQueueForTower(tower)
 
 	epicsSynced := integration.SyncEpicsToLinear()
 	if epicsSynced > 0 {
 		log.Printf("[daemon] [%s] synced %d epic(s) to Linear", tower.Name, epicsSynced)
 	}
 
-	if !gatewayTower {
-		qProcessed, qErrors := integration.ProcessWebhookQueue()
-		if qProcessed > 0 || qErrors > 0 {
-			log.Printf("[daemon] [%s] queue: processed %d rows (%d errors)", tower.Name, qProcessed, qErrors)
-		}
+	if qProcessed > 0 || qErrors > 0 {
+		log.Printf("[daemon] [%s] queue: processed %d rows (%d errors)", tower.Name, qProcessed, qErrors)
 	}
 
 	processed, errors := processWebhookEvents()
@@ -834,6 +822,32 @@ func ensureWebhookQueue() {
 	if err != nil {
 		log.Printf("[daemon] ensure webhook_queue: %s", err)
 	}
+}
+
+// ensureWebhookQueueFn and processWebhookQueueFn are seam variables so
+// daemon_gateway_test.go can record invocations without a live Dolt server.
+// Production keeps them pointed at the real implementations.
+var (
+	ensureWebhookQueueFn  = ensureWebhookQueue
+	processWebhookQueueFn = integration.ProcessWebhookQueue
+)
+
+// runWebhookQueueForTower runs the webhook_queue lifecycle (CREATE TABLE +
+// drain) for tower, skipping both legs when the tower is gateway-mode.
+// gateway-mode: ensureWebhookQueue (CREATE TABLE) and
+// integration.ProcessWebhookQueue (UPDATE webhook_queue SET processed = 1)
+// both mutate local Dolt via DoltSQL; in cluster-as-truth deployments the
+// cluster's own daemon owns the webhook_queue table inside its canonical
+// Dolt database. ProcessWebhookQueue also carries its own
+// EnsureNotGatewayResolved guard as defense-in-depth, but skipping at the
+// per-tower iteration boundary avoids the no-op CREATE TABLE noise and
+// matches the runDoltSync skip shape elsewhere in DaemonTowerCycle.
+func runWebhookQueueForTower(tower config.TowerConfig) (qProcessed, qErrors int) {
+	if config.IsGatewayMode(&tower) {
+		return 0, 0
+	}
+	ensureWebhookQueueFn()
+	return processWebhookQueueFn()
 }
 
 // reconcileSharedRepos diffs the shared repos table against the tower's local

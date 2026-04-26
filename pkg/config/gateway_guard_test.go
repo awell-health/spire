@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -218,7 +219,7 @@ func TestEnsureNotGateway_GatewayWrapsSentinel(t *testing.T) {
 	if !errors.Is(err, ErrGatewayDirectMutation) {
 		t.Fatalf("errors.Is(err, ErrGatewayDirectMutation) = false; got %v", err)
 	}
-	if !contains(err.Error(), "dolt.CLIPush") {
+	if !strings.Contains(err.Error(), "dolt.CLIPush") {
 		t.Errorf("Error() = %q, want op name embedded", err.Error())
 	}
 }
@@ -299,17 +300,6 @@ func TestEnsureNotGatewayResolved_NoTowerTreatsAsDirect(t *testing.T) {
 	if err := EnsureNotGatewayResolved("dolt.CLIPush"); err != nil {
 		t.Errorf("EnsureNotGatewayResolved no-tower = %v, want nil (treated as direct-mode)", err)
 	}
-}
-
-// contains is a tiny helper to avoid pulling in the strings package twice
-// at the test layer when the message-substring check is the only need.
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // TestRejectIfGateway_CwdDirectLosesToActiveGateway is the prefix-collision

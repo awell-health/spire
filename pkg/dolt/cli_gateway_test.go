@@ -3,6 +3,7 @@ package dolt
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -160,5 +161,52 @@ func TestCLIFetchMerge_DirectModeBypassesGuard(t *testing.T) {
 	}
 	if errors.Is(err, config.ErrGatewayDirectMutation) {
 		t.Errorf("CLIFetchMerge direct-mode: returned ErrGatewayDirectMutation (guard misfired)")
+	}
+}
+
+// TestSetCLIRemote_GatewayModeIsNoOp covers the only mutation helper in
+// pkg/dolt that returns void: SetCLIRemote stages the remote in
+// .dolt/config.json by exec'ing `dolt remote remove/add`. Under gateway
+// mode the guard short-circuits before either subprocess runs, so no
+// files appear in the data directory. The test passes a fresh temp dir
+// and asserts nothing is written there — if the guard ever regressed
+// and a real dolt binary were available, `remote add` would create
+// `.dolt/repo_state.json` and the assertion would catch it.
+func TestSetCLIRemote_GatewayModeIsNoOp(t *testing.T) {
+	gatewayActiveTowerOnDisk(t)
+
+	dataDir := t.TempDir()
+	SetCLIRemote(dataDir, "origin", "http://example.com/repo")
+
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatalf("read dataDir: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("SetCLIRemote gateway-mode wrote files into dataDir: %v (guard should have returned before exec)", names)
+	}
+}
+
+// TestEnsureDoltHubDB_RejectsGatewayMode pins the guard on the only
+// direct-DoltHub-API call site in pkg/dolt. EnsureDoltHubDB POSTs to
+// dolthub.com/api/v1alpha1/database to create a missing remote database;
+// that REST call is a direct mutation against DoltHub, which is exactly
+// what gateway-mode towers must not perform in cluster-as-truth
+// deployments. The CLI push path already trips RejectIfGateway upstream,
+// so this guard is defense-in-depth — any caller reaching the helper
+// directly still fails closed before any HTTP I/O.
+func TestEnsureDoltHubDB_RejectsGatewayMode(t *testing.T) {
+	gatewayActiveTowerOnDisk(t)
+
+	err := EnsureDoltHubDB("https://doltremoteapi.dolthub.com/awell/legacy")
+	if err == nil {
+		t.Fatal("EnsureDoltHubDB gateway-mode: got nil, want wrapped ErrGatewayDirectMutation")
+	}
+	if !errors.Is(err, config.ErrGatewayDirectMutation) {
+		t.Fatalf("errors.Is(err, ErrGatewayDirectMutation) = false; got %v", err)
 	}
 }
