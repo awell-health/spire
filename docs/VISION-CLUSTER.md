@@ -285,3 +285,9 @@ Transport: the cluster's dolt exposes remotesapi on an internal service. Externa
 - **No local execution** — if a laptop wants to spawn agent processes, that is local-native, not cluster-native
 - **No hybrid scheduling** — a single tower runs in exactly one deployment mode at a time
 - **No per-developer isolation** — cluster-native is shared team infrastructure; RBAC and approval gates are future work
+
+## Cutover from legacy DoltHub-backed towers
+
+Existing Awell towers that ran in the DoltHub-backed/bidirectional-sync topology must be cut over to cluster-as-truth gateway-mode through a controlled operator procedure. The single-writer invariant for cluster-as-truth is non-negotiable: **the cluster Dolt database is the only writer**; legacy local writers (laptop daemons, stewards, direct DoltHub PATs) must be quiesced and credentials revoked before any laptop attaches through the gateway. Bidirectional sync between cluster and DoltHub is not an option — DoltHub becomes archive-only or disabled.
+
+The full operator procedure — inventory legacy writers, quiesce daemons, stop cluster syncers, revoke DoltHub write credentials, clean local config, attach through the gateway, validate end-to-end, and rollback via GCS restore — lives in [docs/runbooks/cluster-as-truth-cutover.md](runbooks/cluster-as-truth-cutover.md).

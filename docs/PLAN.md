@@ -193,6 +193,8 @@ Explicit non-goals in v1 (deferred to follow-on work): multi-user /
 per-archmage auth, auto-updater + signed desktop installers,
 multi-tower attach, observability / SLO tooling, backup/restore drill.
 
+Cutover from existing DoltHub-backed towers to cluster-as-truth gateway-mode: see [docs/runbooks/cluster-as-truth-cutover.md](runbooks/cluster-as-truth-cutover.md).
+
 - [ ] spi-sn7o3 -- WizardGuild repo-cache; materializes workspaces with `Origin=guild-cache` for faster cold-pod start. Ships when spi-xplwy parity is green (it is) and cluster-image bootstrap (above) is stable enough to attach a cache PVC.
 
 ### 4. Workshop Skill
