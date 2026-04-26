@@ -107,6 +107,14 @@ func (realPullDeps) HasUnresolvedConflicts(dbName string) (int, error) {
 var defaultPullDeps pullDeps = realPullDeps{}
 
 func runPull(remoteURL string, force bool) error {
+	// Reject gateway-mode towers before data-dir resolution, remote
+	// mutation, CLIPull, ownership repair, or conflict repair. Gateway
+	// mode routes mutations through the HTTPS gateway; direct local Dolt
+	// pull is forbidden in that mode.
+	if err := config.RejectIfGateway(); err != nil {
+		return err
+	}
+
 	if err := requireDolt(); err != nil {
 		return err
 	}

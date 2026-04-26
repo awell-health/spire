@@ -1,6 +1,8 @@
 package steward
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,6 +164,88 @@ func TestSyncTowerDerivedConfigs_FixesDriftedDatabase(t *testing.T) {
 	}
 	if inst.Database != tower.Database {
 		t.Errorf("instance Database = %q, want %q (tower database)", inst.Database, tower.Database)
+	}
+}
+
+// TestRunDoltSync_SkipsGatewayMode covers the steward acceptance: a
+// gateway-mode tower MUST be skipped before SetCLIRemote, auto-commit,
+// CLIPull, or CLIPush run. We assert two observable signals:
+//
+//   - The "skipping gateway-mode tower for direct Dolt sync" log line
+//     fires, so multi-tower stewards leave a breadcrumb per skip.
+//   - No sync state file is written under ~/.config/spire/sync/<tower>.json,
+//     proving runDoltSync exited before reaching any of the WriteSyncState
+//     call sites that follow the gateway guard.
+//
+// The DolthubRemote is intentionally non-empty so this test catches a
+// regression where the gateway check is skipped and the no-remote shortcut
+// becomes the only thing protecting the sync path.
+func TestRunDoltSync_SkipsGatewayMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(tmpDir, "spire"))
+	t.Setenv("DOLT_DATA_DIR", filepath.Join(tmpDir, "dolt-data"))
+
+	var buf bytes.Buffer
+	prevOutput := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prevOutput) })
+
+	tower := config.TowerConfig{
+		Name:          "spi",
+		HubPrefix:     "spi",
+		Database:      "beads_spi",
+		Mode:          config.TowerModeGateway,
+		URL:           "http://127.0.0.1:3030",
+		TokenRef:      "spi",
+		DolthubRemote: "awell/legacy", // would normally drive a sync
+	}
+
+	runDoltSync(tower)
+
+	if got := buf.String(); !strings.Contains(got, "skipping gateway-mode tower") {
+		t.Errorf("log output missing skip line, got:\n%s", got)
+	}
+
+	// No sync state file should have been written — the guard returns
+	// before WriteSyncState is reachable.
+	syncDir := filepath.Join(tmpDir, "spire", "sync")
+	if entries, err := os.ReadDir(syncDir); err == nil && len(entries) > 0 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("sync state files written for gateway-mode tower: %v", names)
+	}
+}
+
+// TestRunDoltSync_DirectModeProceedsPastGuard mirrors the skip test with a
+// direct-mode tower that has no DolthubRemote — this still exits early via
+// the existing no-remote shortcut, but we assert the gateway-skip log
+// message is NOT emitted. Without this case, a regression that flipped
+// the IsGatewayMode predicate (returning true for everything) could be
+// silently accepted.
+func TestRunDoltSync_DirectModeProceedsPastGuard(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(tmpDir, "spire"))
+	t.Setenv("DOLT_DATA_DIR", filepath.Join(tmpDir, "dolt-data"))
+
+	var buf bytes.Buffer
+	prevOutput := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prevOutput) })
+
+	tower := config.TowerConfig{
+		Name:     "spi-local",
+		Database: "beads_spi",
+		Mode:     config.TowerModeDirect,
+	}
+
+	runDoltSync(tower)
+
+	if got := buf.String(); strings.Contains(got, "skipping gateway-mode tower") {
+		t.Errorf("direct-mode tower triggered gateway-skip log line, got:\n%s", got)
 	}
 }
 

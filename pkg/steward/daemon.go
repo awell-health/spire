@@ -459,6 +459,15 @@ func ReadSyncState(towerName string) *SyncState {
 func runDoltSync(tower config.TowerConfig) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	// Gateway-mode towers route mutations through the HTTPS gateway; the
+	// laptop daemon must not push/pull their Dolt remote directly. Skip
+	// (don't error) so a multi-tower steward keeps syncing direct-mode
+	// towers when one tower is gateway-mode.
+	if config.IsGatewayMode(&tower) {
+		log.Printf("[daemon] [%s] skipping gateway-mode tower for direct Dolt sync", tower.Name)
+		return
+	}
+
 	if tower.DolthubRemote == "" {
 		// No remote configured — not an error, just not set up for DoltHub sync.
 		return

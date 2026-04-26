@@ -76,6 +76,14 @@ Examples:
 }
 
 func runSync() error {
+	// Reject gateway-mode towers before resolveDataDir, remote mutation,
+	// CLIFetchMerge, ownership repair, or conflict repair. Three-way merge
+	// against DoltHub is a direct-Dolt operation; gateway-mode towers must
+	// route mutations through the HTTPS gateway instead.
+	if err := config.RejectIfGateway(); err != nil {
+		return err
+	}
+
 	if err := requireDolt(); err != nil {
 		return err
 	}

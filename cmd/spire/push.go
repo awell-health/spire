@@ -60,6 +60,14 @@ Examples:
 }
 
 func runPush(remoteURL string) error {
+	// Reject gateway-mode towers before any local Dolt or remote state is
+	// touched. The guard uses the canonical resolver (SPIRE_TOWER →
+	// cfg.ActiveTower → CWD → sole tower) so the same precedence chain
+	// store dispatch trusts decides which tower the operator is acting on.
+	if err := config.RejectIfGateway(); err != nil {
+		return err
+	}
+
 	if err := requireDolt(); err != nil {
 		return err
 	}
