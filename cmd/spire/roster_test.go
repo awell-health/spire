@@ -1,11 +1,86 @@
 package main
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/awell-health/spire/pkg/board"
+	"github.com/awell-health/spire/pkg/config"
 )
+
+// TestCmdRoster_DispatchByMode pins the deployment-mode switch in
+// cmdRoster: same shape as gateway handleRoster (spi-rx6bf6) so the
+// CLI and the desktop never disagree on what "who is running" means.
+func TestCmdRoster_DispatchByMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       config.DeploymentMode
+		towerErr   error
+		wantErrSub string
+	}{
+		{
+			name:       "attached-reserved returns typed not-implemented",
+			mode:       config.DeploymentModeAttachedReserved,
+			wantErrSub: "attached-reserved",
+		},
+		{
+			name:       "unknown mode returns named error",
+			mode:       "weird-mode",
+			wantErrSub: "weird-mode",
+		},
+		{
+			name:       "tower resolution failure surfaced",
+			towerErr:   errors.New("no tower configured"),
+			wantErrSub: "no tower configured",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
+
+			origTower := rosterTowerConfigFunc
+			defer func() { rosterTowerConfigFunc = origTower }()
+			rosterTowerConfigFunc = func() (*TowerConfig, error) {
+				if tc.towerErr != nil {
+					return nil, tc.towerErr
+				}
+				return &TowerConfig{Name: "test", DeploymentMode: tc.mode}, nil
+			}
+
+			err := cmdRoster([]string{"--json"})
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErrSub)
+			}
+		})
+	}
+}
+
+// TestCmdRoster_LocalNative_NoFallbackToLegacyBeads is the spi-rx6bf6
+// regression pin for the CLI: a local-native tower with an empty
+// wizards.json must NOT surface stale agent-labeled beads.
+func TestCmdRoster_LocalNative_NoFallbackToLegacyBeads(t *testing.T) {
+	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
+
+	origTower := rosterTowerConfigFunc
+	defer func() { rosterTowerConfigFunc = origTower }()
+	rosterTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "test", DeploymentMode: config.DeploymentModeLocalNative}, nil
+	}
+
+	if _, err := board.LiveRoster(nil, config.DeploymentModeLocalNative, time.Minute, board.RosterDeps{
+		LoadWizardRegistry: func() ([]board.LocalAgent, error) { return nil, nil },
+		CleanDeadWizards:   func(a []board.LocalAgent) []board.LocalAgent { return a },
+		ProcessAlive:       func(int) bool { return true },
+	}); err != nil {
+		t.Fatalf("LiveRoster returned error: %v", err)
+	}
+}
 
 func TestBuildAttemptWorkMap_DeriveWorkFromAttemptBeads(t *testing.T) {
 	inProgress := []BoardBead{

@@ -1,7 +1,9 @@
 package board
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,9 +11,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
+
+// ErrAttachedRosterNotImplemented signals that the active tower is in
+// attached-reserved mode, for which no live-roster source is wired yet.
+// Callers (gateway, CLI) translate this into a typed not-implemented
+// response rather than silently falling back to a different mode's
+// source. Mirrors the typed-not-implemented shape used by spi-jsxa3v
+// for summon/dismiss.
+var ErrAttachedRosterNotImplemented = errors.New("live roster: attached-reserved mode is not yet supported")
 
 // RosterAgent represents an agent registered in the tower.
 type RosterAgent struct {
@@ -79,16 +90,39 @@ type k8sPod struct {
 	} `json:"status"`
 }
 
-// RosterDeps holds external dependencies needed by roster.
+// RosterDeps holds external dependencies needed by the local-native
+// roster path. LoadWizardRegistry surfaces registry read errors so
+// transient JSON parse failures do not silently masquerade as an empty
+// registry — see spi-rx6bf6 for the gateway-vs-CLI divergence that
+// motivated the migration off agent.LoadRegistry's error-swallowing
+// variant.
 type RosterDeps struct {
-	LoadWizardRegistry func() []LocalAgent
+	LoadWizardRegistry func() ([]LocalAgent, error)
 	SaveWizardRegistry func([]LocalAgent)
 	CleanDeadWizards   func([]LocalAgent) []LocalAgent
 	ProcessAlive       func(pid int) bool
 }
 
-// RosterFromK8s queries k8s for wizard pods and their start times.
-func RosterFromK8s(timeout time.Duration) ([]RosterAgent, error) {
+// RosterFromClusterRegistry queries the cluster's operator-side wizard
+// surface — the wizard pods labeled by the operator and the
+// WizardGuild custom resources — and returns one RosterAgent per
+// registered wizard. This is the cluster-native equivalent of reading
+// wizards.json: the operator owns writes via reconciliation, clients
+// query liveness but do not mutate.
+//
+// Used only by the cluster-native branch of LiveRoster; never by the
+// local-native branch, which would otherwise observe pods from an
+// unrelated cluster a developer's kubectl happens to point at
+// (spi-rx6bf6).
+//
+// The ctx argument is reserved for future cancellation plumbing on the
+// underlying kubectl invocations; today it is honoured by the caller's
+// HTTP request scope but not yet threaded into exec.CommandContext —
+// the implementation continues to use the same kubectl shell-out as
+// the previous RosterFromK8s did, renamed for clarity per the
+// spi-rx6bf6 acceptance ("operator-side wizard registry surface").
+func RosterFromClusterRegistry(ctx context.Context, timeout time.Duration) ([]RosterAgent, error) {
+	_ = ctx
 	cmd := exec.Command("kubectl", "get", "pods", "-n", "spire",
 		"-l", "spire.awell.io/managed=true",
 		"-o", "json")
@@ -166,8 +200,26 @@ func RosterFromK8s(timeout time.Duration) ([]RosterAgent, error) {
 	return agents, nil
 }
 
-// RosterFromBeads builds a roster from bead state (no k8s).
-func RosterFromBeads(timeout time.Duration) []RosterAgent {
+// LegacyAgentRegistrationBeads scans the bead store for the
+// agent-labeled registration beads created at desktop/agent startup
+// (e.g. spi-jpurm, spi-nbwrdw, spi-nw5d95, spi-omuxk).
+//
+// These beads are NOT a live-roster signal: they reflect who once
+// registered, never who is running right now. Treating them as a
+// fallback once produced the gateway-vs-CLI divergence reported in
+// spi-rx6bf6, where /api/v1/roster returned three idle desktop ghosts
+// while `spire roster` correctly showed the live wizards from
+// wizards.json.
+//
+// Live-roster callers (gateway handleRoster, cmd/spire/roster) MUST
+// NOT consult this function. It is preserved for diagnostic and
+// migration tooling — and so the four legacy registration beads remain
+// readable while the cleanup decision (spi-rx6bf6 "Out of scope")
+// lands in a follow-up.
+//
+// Deprecated: not a live signal. Prefer LiveRoster for the live
+// wizard population.
+func LegacyAgentRegistrationBeads(timeout time.Duration) []RosterAgent {
 	agentBeads, err := store.ListBoardBeads(beads.IssueFilter{
 		Labels: []string{"agent"},
 		Status: store.StatusPtr(beads.StatusOpen),
@@ -302,9 +354,16 @@ func BuildAttemptWorkMap(inProgress []BoardBead, ownerWork map[string]BoardBead)
 	return attemptWork, attemptUpdatedAt
 }
 
-// RosterFromLocalWizards builds a roster from the local wizard registry (process mode).
-func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) []RosterAgent {
-	allAgents := deps.LoadWizardRegistry()
+// RosterFromLocalWizards builds a roster from the local wizard
+// registry (process mode). Read errors from LoadWizardRegistry are
+// surfaced to the caller so a transient JSON parse / FS error does
+// not silently report "no wizards" to a desktop or terminal client
+// (spi-rx6bf6).
+func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) ([]RosterAgent, error) {
+	allAgents, err := deps.LoadWizardRegistry()
+	if err != nil {
+		return nil, err
+	}
 	before := len(allAgents)
 	allAgents = deps.CleanDeadWizards(allAgents)
 	if len(allAgents) < before && deps.SaveWizardRegistry != nil {
@@ -312,7 +371,7 @@ func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) []RosterAgen
 	}
 
 	if len(allAgents) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var agents []RosterAgent
@@ -353,7 +412,44 @@ func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) []RosterAgen
 
 		agents = append(agents, agent)
 	}
-	return agents
+	return agents, nil
+}
+
+// LiveRoster dispatches to the correct roster source for the active
+// tower's deployment mode and returns the live wizard population.
+//
+// Replaces the legacy hardcoded source-priority cascade
+// (RosterFromK8s → RosterFromLocalWizards → RosterFromBeads) that
+// used kubectl reachability and registration-bead presence as
+// fallbacks. Each gateway/CLI surface (handleRoster, cmdRoster) calls
+// this helper so the two surfaces never disagree on what "who is
+// running" means (spi-rx6bf6).
+//
+// Mode contract:
+//
+//   - DeploymentModeLocalNative reads from the local wizard registry
+//     via deps; an empty registry returns (nil, nil). It does NOT
+//     fall through to LegacyAgentRegistrationBeads — stale
+//     agent-labeled beads are not a live signal.
+//   - DeploymentModeClusterNative reads from the operator-side
+//     wizard registry via RosterFromClusterRegistry; an unreachable
+//     cluster surfaces the error rather than silently falling back to
+//     the local file. The deps are not consulted in this branch.
+//   - DeploymentModeAttachedReserved returns
+//     ErrAttachedRosterNotImplemented; gateway/CLI translate this
+//     into a typed not-implemented response.
+//   - Any other mode returns an error naming the mode.
+func LiveRoster(ctx context.Context, mode config.DeploymentMode, timeout time.Duration, deps RosterDeps) ([]RosterAgent, error) {
+	switch mode {
+	case config.DeploymentModeLocalNative:
+		return RosterFromLocalWizards(timeout, deps)
+	case config.DeploymentModeClusterNative:
+		return RosterFromClusterRegistry(ctx, timeout)
+	case config.DeploymentModeAttachedReserved:
+		return nil, ErrAttachedRosterNotImplemented
+	default:
+		return nil, fmt.Errorf("live roster: unsupported deployment mode %q", mode)
+	}
 }
 
 // EnrichRosterAgents fills in missing bead metadata from the store.

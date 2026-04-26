@@ -1,12 +1,18 @@
 package gateway
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
+	"github.com/awell-health/spire/pkg/config"
 )
 
 // TestCleanDeadLocalWizards covers the filtering logic that prunes registry
@@ -142,7 +148,11 @@ func TestDefaultRosterDeps_LoadSaveRoundTripWithFakeRegistry(t *testing.T) {
 	}
 
 	// Empty registry round-trip: Load on a fresh config dir returns no entries.
-	if got := deps.LoadWizardRegistry(); len(got) != 0 {
+	got, err := deps.LoadWizardRegistry()
+	if err != nil {
+		t.Fatalf("fresh registry: LoadWizardRegistry returned error: %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("fresh registry: LoadWizardRegistry = %d entries, want 0 (%+v)", len(got), got)
 	}
 
@@ -153,7 +163,10 @@ func TestDefaultRosterDeps_LoadSaveRoundTripWithFakeRegistry(t *testing.T) {
 	}
 	deps.SaveWizardRegistry(want)
 
-	got := deps.LoadWizardRegistry()
+	got, err = deps.LoadWizardRegistry()
+	if err != nil {
+		t.Fatalf("after Save: LoadWizardRegistry returned error: %v", err)
+	}
 	if len(got) != len(want) {
 		t.Fatalf("after Save: LoadWizardRegistry = %d entries, want %d (got=%+v)", len(got), len(want), got)
 	}
@@ -194,7 +207,10 @@ func TestDefaultRosterDeps_WiresAgainstSharedRegistry(t *testing.T) {
 	}})
 
 	deps := defaultRosterDeps()
-	got := deps.LoadWizardRegistry()
+	got, err := deps.LoadWizardRegistry()
+	if err != nil {
+		t.Fatalf("LoadWizardRegistry returned error: %v", err)
+	}
 	if len(got) != 1 || got[0].Name != "shared-wizard" || got[0].BeadID != "spi-shared" {
 		t.Fatalf("gateway deps did not observe shared registry: got=%+v", got)
 	}
@@ -206,5 +222,109 @@ func TestDefaultRosterDeps_WiresAgainstSharedRegistry(t *testing.T) {
 	reg := agent.LoadRegistry()
 	if len(reg.Wizards) != 1 || reg.Wizards[0].Name != "gateway-wrote" {
 		t.Fatalf("agent registry did not observe gateway save: %+v", reg.Wizards)
+	}
+}
+
+// TestHandleRoster_DispatchByMode pins the deployment-mode switch in
+// handleRoster: each tower mode routes to a distinct response shape.
+// This is the spi-rx6bf6 acceptance encoded — the gateway must NEVER
+// fall back to LegacyAgentRegistrationBeads for any mode, and must
+// honour the active tower's declared mode rather than probing the
+// environment.
+func TestHandleRoster_DispatchByMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        config.DeploymentMode
+		towerErr    error
+		wantStatus  int
+		wantErrSub  string
+	}{
+		{
+			name:       "local-native returns 200 with empty registry",
+			mode:       config.DeploymentModeLocalNative,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "attached-reserved returns 501 with typed error",
+			mode:       config.DeploymentModeAttachedReserved,
+			wantStatus: http.StatusNotImplemented,
+			wantErrSub: "attached-reserved",
+		},
+		{
+			name:       "unknown mode returns 500 with mode named",
+			mode:       "weird-mode",
+			wantStatus: http.StatusInternalServerError,
+			wantErrSub: "weird-mode",
+		},
+		{
+			name:       "tower resolution failure returns 500",
+			towerErr:   errors.New("no tower"),
+			wantStatus: http.StatusInternalServerError,
+			wantErrSub: "no tower",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
+
+			origTower := resolveTowerForRosterFunc
+			defer func() { resolveTowerForRosterFunc = origTower }()
+			resolveTowerForRosterFunc = func() (*config.TowerConfig, error) {
+				if tc.towerErr != nil {
+					return nil, tc.towerErr
+				}
+				return &config.TowerConfig{Name: "test", DeploymentMode: tc.mode}, nil
+			}
+
+			s := &Server{dataDir: t.TempDir()}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/roster", nil)
+			rec := httptest.NewRecorder()
+			s.handleRoster(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantErrSub != "" {
+				var body map[string]string
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode body: %v (raw=%s)", err, rec.Body.String())
+				}
+				if !strings.Contains(body["error"], tc.wantErrSub) {
+					t.Errorf("error body %q does not contain %q", body["error"], tc.wantErrSub)
+				}
+			}
+		})
+	}
+}
+
+// TestHandleRoster_LocalNative_DoesNotFallBackToBeadRegistry is the
+// regression pin for the spi-rx6bf6 symptom: a local-native tower
+// with an empty wizards.json must NOT surface stale agent-labeled
+// beads as "the roster". Empty is empty.
+func TestHandleRoster_LocalNative_DoesNotFallBackToBeadRegistry(t *testing.T) {
+	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
+
+	origTower := resolveTowerForRosterFunc
+	defer func() { resolveTowerForRosterFunc = origTower }()
+	resolveTowerForRosterFunc = func() (*config.TowerConfig, error) {
+		return &config.TowerConfig{Name: "test", DeploymentMode: config.DeploymentModeLocalNative}, nil
+	}
+
+	s := &Server{dataDir: t.TempDir()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/roster", nil)
+	rec := httptest.NewRecorder()
+	s.handleRoster(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var summary board.RosterSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode body: %v (raw=%s)", err, rec.Body.String())
+	}
+	if summary.Wizards != 0 || len(summary.Agents) != 0 {
+		t.Fatalf("empty registry should produce empty roster, got %d wizards / %d agents (%+v)",
+			summary.Wizards, len(summary.Agents), summary)
 	}
 }

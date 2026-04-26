@@ -693,17 +693,28 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 
 	timeout := 15 * time.Minute
 
-	// Try k8s first, then local wizards, then beads-based.
-	var agents []board.RosterAgent
-	if a, err := board.RosterFromK8s(timeout); err == nil && len(a) > 0 {
-		agents = a
-	} else {
-		rosterDeps := defaultRosterDeps()
-		if local := board.RosterFromLocalWizards(timeout, rosterDeps); len(local) > 0 {
-			agents = local
-		} else {
-			agents = board.RosterFromBeads(timeout)
+	// Dispatch on the active tower's deployment mode rather than on
+	// kubectl reachability + registry presence. The previous cascade
+	// (k8s → local wizards → agent-labeled beads) silently surfaced
+	// stale registration ghosts — spi-jpurm / spi-nbwrdw / spi-nw5d95
+	// — when wizards.json reads returned empty, even on towers with
+	// no cluster involvement (spi-rx6bf6). Same switch shape as
+	// cmdSummon / cmdDismiss (spi-jsxa3v) and the steward orphan
+	// gate (spi-40rtru).
+	tower, err := resolveTowerForRosterFunc()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	mode := tower.EffectiveDeploymentMode()
+	agents, err := board.LiveRoster(r.Context(), mode, timeout, defaultRosterDeps())
+	if err != nil {
+		if errors.Is(err, board.ErrAttachedRosterNotImplemented) {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": err.Error()})
+			return
 		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
 
 	agents = board.EnrichRosterAgents(agents)
@@ -711,15 +722,24 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, summary)
 }
 
-// defaultRosterDeps builds the RosterDeps used by handleRoster's local-native
-// fallback. Wires the on-disk wizard registry (via pkg/agent) and the
-// process-alive probe so RosterFromLocalWizards can surface in-flight wizards.
-// Extracted from handleRoster so the closures are unit-testable against a
-// temp-dir-backed registry without booting an HTTP handler.
+// resolveTowerForRosterFunc is the indirection used by handleRoster so
+// tests can drive dispatch through a fake tower config without
+// touching the real config dir. Production callers leave this alone.
+var resolveTowerForRosterFunc = config.ResolveTowerConfig
+
+// defaultRosterDeps builds the RosterDeps used by handleRoster's
+// local-native branch. Wires the on-disk wizard registry (via
+// pkg/agent's race-safe RegistryList) and the process-alive probe so
+// RosterFromLocalWizards can surface in-flight wizards. The error-
+// surfacing variant replaces the deprecated agent.LoadRegistry path
+// so transient JSON parse / FS errors no longer silently masquerade
+// as an empty registry (spi-rx6bf6). Extracted from handleRoster so
+// the closures are unit-testable against a temp-dir-backed registry
+// without booting an HTTP handler.
 func defaultRosterDeps() board.RosterDeps {
 	return board.RosterDeps{
-		LoadWizardRegistry: func() []board.LocalAgent {
-			return agent.LoadRegistry().Wizards
+		LoadWizardRegistry: func() ([]board.LocalAgent, error) {
+			return agent.RegistryList()
 		},
 		SaveWizardRegistry: func(agents []board.LocalAgent) {
 			agent.SaveRegistry(agent.Registry{Wizards: agents})

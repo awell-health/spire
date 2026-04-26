@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/repoconfig"
@@ -26,6 +29,11 @@ var rosterCmd = &cobra.Command{
 func init() {
 	rosterCmd.Flags().Bool("json", false, "Output as JSON")
 }
+
+// rosterTowerConfigFunc is the indirection used by cmdRoster so tests
+// can drive dispatch through a fake tower config without touching the
+// real config dir. Production callers leave this alone.
+var rosterTowerConfigFunc = activeTowerConfig
 
 func cmdRoster(args []string) error {
 	if d := resolveBeadsDir(); d != "" {
@@ -61,9 +69,8 @@ func cmdRoster(args []string) error {
 	_ = stale
 
 	rosterDeps := board.RosterDeps{
-		LoadWizardRegistry: func() []board.LocalAgent {
-			reg := loadWizardRegistry()
-			return reg.Wizards
+		LoadWizardRegistry: func() ([]board.LocalAgent, error) {
+			return agent.RegistryList()
 		},
 		SaveWizardRegistry: func(agents []board.LocalAgent) {
 			saveWizardRegistry(wizardRegistry{Wizards: agents})
@@ -84,30 +91,24 @@ func cmdRoster(args []string) error {
 		},
 	}
 
-	// Try k8s first.
-	if agents, err := board.RosterFromK8s(timeout); err == nil && len(agents) > 0 {
-		agents = board.EnrichRosterAgents(agents)
-		summary := board.BuildSummary(agents, timeout)
-		if flagJSON {
-			return board.JSONOut(summary)
-		}
-		board.PrintRoster(summary)
-		return nil
+	// Dispatch on the active tower's deployment mode rather than on
+	// kubectl reachability + registry presence. Same switch shape as
+	// the gateway handleRoster (spi-rx6bf6), cmdSummon / cmdDismiss
+	// (spi-jsxa3v), and the steward orphan gate (spi-40rtru): the
+	// tower's declared topology, not whatever environment happens to
+	// respond first, decides the source.
+	tower, err := rosterTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("roster: resolve active tower: %w", err)
 	}
-
-	// Local wizards from wizard registry.
-	if localAgents := board.RosterFromLocalWizards(timeout, rosterDeps); len(localAgents) > 0 {
-		localAgents = board.EnrichRosterAgents(localAgents)
-		summary := board.BuildSummary(localAgents, timeout)
-		if flagJSON {
-			return board.JSONOut(summary)
+	mode := tower.EffectiveDeploymentMode()
+	agents, err := board.LiveRoster(context.Background(), mode, timeout, rosterDeps)
+	if err != nil {
+		if errors.Is(err, board.ErrAttachedRosterNotImplemented) {
+			return fmt.Errorf("roster: %w", err)
 		}
-		board.PrintRoster(summary)
-		return nil
+		return fmt.Errorf("roster: %w", err)
 	}
-
-	// Fallback: beads-based roster.
-	agents := board.RosterFromBeads(timeout)
 	agents = board.EnrichRosterAgents(agents)
 	summary := board.BuildSummary(agents, timeout)
 	if flagJSON {
