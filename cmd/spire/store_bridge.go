@@ -27,6 +27,9 @@ type createOpts = store.CreateOpts
 // storeGetChildrenFunc is a test-replaceable function for storeGetChildren.
 var storeGetChildrenFunc = storeGetChildren
 
+// storeListBeadsFunc is a test-replaceable function for storeListBeads.
+var storeListBeadsFunc = storeListBeads
+
 // storeGetBeadFunc is a test-replaceable function for storeGetBead.
 var storeGetBeadFunc = storeGetBead
 
@@ -50,6 +53,9 @@ var storeGetAttemptInstanceFunc = storeGetAttemptInstance
 
 // storeCloseBeadFunc is a test-replaceable function for storeCloseBead.
 var storeCloseBeadFunc = storeCloseBead
+
+// storeRemoveLabelFunc is a test-replaceable function for storeRemoveLabel.
+var storeRemoveLabelFunc = storeRemoveLabel
 
 // storeDeleteBeadFunc is a test-replaceable function for storeDeleteBead.
 var storeDeleteBeadFunc = storeDeleteBead
@@ -301,6 +307,9 @@ func storeActivateStepBead(stepID string) error {
 }
 
 func storeCloseStepBead(stepID string) error {
+	if bead, err := storeGetBeadFunc(stepID); err == nil && bead.Status == string(beads.StatusClosed) {
+		return nil
+	}
 	return store.CloseStepBead(stepID)
 }
 
@@ -468,4 +477,3 @@ func storeRemoveTowerFormula(name string) error {
 	}
 	return store.RemoveTowerFormula(db, name)
 }
-

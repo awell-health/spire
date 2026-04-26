@@ -202,7 +202,7 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		GetComments:           storeGetComments,
 		AddComment:            storeAddComment,
 		CreateBead:            storeCreateBead,
-		CloseBead:             storeCloseBead,
+		CloseBead:             storeCloseBeadLifecycle,
 		UpdateBead:            storeUpdateBead,
 		AddLabel:              storeAddLabel,
 		RemoveLabel:           storeRemoveLabel,

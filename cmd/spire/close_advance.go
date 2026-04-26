@@ -18,7 +18,6 @@ var closeCmd = &cobra.Command{
 	},
 }
 
-
 // cmdClose implements `spire close <bead-id>`.
 // Force-closes a bead: removes phase labels, closes open molecule children, closes the bead.
 func cmdClose(args []string) error {
@@ -31,37 +30,62 @@ func cmdClose(args []string) error {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	bead, err := storeGetBead(id)
+	bead, err := storeGetBeadFunc(id)
 	if err != nil {
 		return fmt.Errorf("bead %s not found: %w", id, err)
 	}
 
-	if bead.Status == "closed" {
-		fmt.Printf("%s is already closed\n", id)
-		return nil
+	alreadyClosed := bead.Status == string(beads.StatusClosed)
+	if err := closeBeadLifecycle(id, bead); err != nil {
+		return err
 	}
 
-	// Close open molecule children (workflow steps).
-	closeMoleculeChildren(id)
+	if alreadyClosed {
+		fmt.Printf("%s is already closed\n", id)
+	} else {
+		fmt.Printf("closed %s\n", id)
+	}
+	return nil
+}
+
+func storeCloseBeadLifecycle(id string) error {
+	bead, err := storeGetBeadFunc(id)
+	if err != nil {
+		return err
+	}
+	return closeBeadLifecycle(id, bead)
+}
+
+// closeBeadLifecycle performs the Spire-level close cycle for one bead. It is
+// intentionally used for direct workflow-step children too; callers should not
+// bypass this with a raw bd close/store close when cleaning Spire-owned work.
+func closeBeadLifecycle(id string, bead Bead) error {
+	// Traverse workflow children before closing the parent. This is best-effort
+	// to preserve the historical force-close behavior, and intentionally visits
+	// already-closed containers so stale descendants can still be repaired.
+	closeWorkflowChildren(id)
 
 	// Remove phase: and interrupted: labels from the bead.
 	for _, l := range bead.Labels {
 		if strings.HasPrefix(l, "phase:") || strings.HasPrefix(l, "interrupted:") {
-			if err := storeRemoveLabel(id, l); err != nil {
+			if err := storeRemoveLabelFunc(id, l); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: remove label %s from %s: %s\n", l, id, err)
 			}
 		}
 	}
 
+	if bead.Status == "closed" {
+		closeCausedByAlerts(id)
+		return nil
+	}
+
 	// Close the bead.
-	if err := storeCloseBead(id); err != nil {
+	if err := storeCloseBeadFunc(id); err != nil {
 		return fmt.Errorf("close %s: %w", id, err)
 	}
 
 	// Cascade-close: close any open alert beads linked via caused-by dep.
 	closeCausedByAlerts(id)
-
-	fmt.Printf("closed %s\n", id)
 	return nil
 }
 
@@ -100,11 +124,35 @@ func closeCausedByAlerts(beadID string) {
 	}
 }
 
+// closeWorkflowChildren closes both direct workflow-step children created by
+// the executor and legacy workflow molecule children.
+func closeWorkflowChildren(beadID string) {
+	closeDirectWorkflowStepChildren(beadID)
+	closeMoleculeChildren(beadID)
+}
 
-// closeMoleculeChildren finds the workflow molecule for a bead (if any) and
-// closes all open step children, then closes the molecule itself.
+// closeDirectWorkflowStepChildren closes direct step children using the same
+// lifecycle close path as top-level `spire close`.
+func closeDirectWorkflowStepChildren(beadID string) {
+	children, err := storeGetChildrenFunc(beadID)
+	if err != nil {
+		return
+	}
+
+	for _, child := range children {
+		if !isStepBead(child) {
+			continue
+		}
+		if err := closeBeadLifecycle(child.ID, child); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: close workflow step %s: %s\n", child.ID, err)
+		}
+	}
+}
+
+// closeMoleculeChildren finds the legacy workflow molecule for a bead (if any)
+// and closes it through the same lifecycle path.
 func closeMoleculeChildren(beadID string) {
-	mols, err := storeListBeads(beads.IssueFilter{
+	mols, err := storeListBeadsFunc(beads.IssueFilter{
 		IDPrefix: "spi-",
 		Labels:   []string{"workflow:" + beadID},
 	})
@@ -113,19 +161,7 @@ func closeMoleculeChildren(beadID string) {
 	}
 
 	for _, mol := range mols {
-		// Close each open child step.
-		children, err := storeGetChildren(mol.ID)
-		if err == nil {
-			for _, child := range children {
-				if child.Status != "closed" {
-					if err := storeCloseBead(child.ID); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: close molecule step %s: %s\n", child.ID, err)
-					}
-				}
-			}
-		}
-		// Close the molecule itself.
-		if err := storeCloseBead(mol.ID); err != nil {
+		if err := closeBeadLifecycle(mol.ID, mol); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: close molecule %s: %s\n", mol.ID, err)
 		}
 	}
