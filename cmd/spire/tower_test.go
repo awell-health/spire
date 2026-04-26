@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/config"
 	towerpkg "github.com/awell-health/spire/pkg/tower"
 )
 
@@ -838,6 +839,92 @@ func TestCmdTowerRemove_InvalidDatabaseName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid database name") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// Regression test for spi-yplcm3: gateway-mode towers have an empty
+// Database field, but cleanup must still complete (remove tower config,
+// instance entries, active-tower pointer) instead of bailing out at the
+// isValidDatabaseName guard.
+func TestCmdTowerRemove_GatewayTowerEmptyDatabase(t *testing.T) {
+	gw := &TowerConfig{
+		Name:      "gw",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "gwh",
+		Database:  "",
+		Mode:      config.TowerModeGateway,
+		URL:       "https://spire.example.com",
+		TokenRef:  "gw",
+		CreatedAt: "2026-04-26T10:00:00Z",
+	}
+	other := &TowerConfig{
+		Name:      "other",
+		ProjectID: "11111111-2222-4333-8444-555555555555",
+		HubPrefix: "oth",
+		Database:  "beads_oth",
+		CreatedAt: "2026-04-26T11:00:00Z",
+	}
+	setupTowerRemoveEnv(t, []*TowerConfig{gw, other}, &SpireConfig{
+		ActiveTower: "gw",
+		Instances: map[string]*Instance{
+			"web":   {Path: "/tmp/web", Prefix: "web", Database: "", Tower: "gw"},
+			"other": {Path: "/tmp/other", Prefix: "oth", Database: "beads_oth", Tower: "other"},
+		},
+	})
+
+	if err := cmdTowerRemove("gw", true); err != nil {
+		t.Fatalf("remove gateway tower: %v", err)
+	}
+
+	// Tower config file should be gone.
+	if _, loadErr := loadTowerConfig("gw"); loadErr == nil {
+		t.Error("gateway tower config should have been deleted")
+	}
+
+	// Instance entry tied to gw should be gone; the unrelated one stays.
+	cfg, loadErr := loadConfig()
+	if loadErr != nil {
+		t.Fatalf("load config: %v", loadErr)
+	}
+	if _, ok := cfg.Instances["web"]; ok {
+		t.Error("instance 'web' (tower=gw) should have been removed")
+	}
+	if _, ok := cfg.Instances["other"]; !ok {
+		t.Error("instance 'other' (tower=other) should still exist")
+	}
+
+	// Active-tower pointer should be cleared.
+	if cfg.ActiveTower != "" {
+		t.Errorf("active tower should be empty, got %q", cfg.ActiveTower)
+	}
+}
+
+// Regression test for spi-yplcm3: a tower with an empty Database field
+// (regardless of Mode) should also skip the drop step rather than tripping
+// the validator. This covers the second signal the fix recognizes.
+func TestCmdTowerRemove_EmptyDatabaseSkipsDrop(t *testing.T) {
+	tower := &TowerConfig{
+		Name:      "no-db",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "ndb",
+		Database:  "",
+		CreatedAt: "2026-04-26T10:00:00Z",
+	}
+	other := &TowerConfig{
+		Name:      "other",
+		ProjectID: "11111111-2222-4333-8444-555555555555",
+		HubPrefix: "oth",
+		Database:  "beads_oth",
+		CreatedAt: "2026-04-26T11:00:00Z",
+	}
+	setupTowerRemoveEnv(t, []*TowerConfig{tower, other}, nil)
+
+	if err := cmdTowerRemove("no-db", true); err != nil {
+		t.Fatalf("remove tower with empty database: %v", err)
+	}
+
+	if _, loadErr := loadTowerConfig("no-db"); loadErr == nil {
+		t.Error("tower config should have been deleted")
 	}
 }
 

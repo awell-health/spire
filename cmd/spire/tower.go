@@ -1433,22 +1433,29 @@ func cmdTowerRemove(name string, force bool) error {
 		summary = append(summary, fmt.Sprintf("Killed %d running wizard(s)", wizardsKilled))
 	}
 
-	// 5. Drop the dolt database.
+	// 5. Drop the dolt database (skip for gateway towers / empty database).
 	dbDropped := false
-	if !isValidDatabaseName(tower.Database) {
+	dbSkipped := false
+	switch {
+	case tower.Mode == config.TowerModeGateway, tower.Database == "":
+		// Nothing to drop — gateway towers reference a remote database.
+		dbSkipped = true
+		summary = append(summary, "No local database to drop (gateway tower)")
+	case !isValidDatabaseName(tower.Database):
 		return fmt.Errorf("refusing to drop database: invalid database name %q in tower config", tower.Database)
-	}
-	if doltIsReachable() {
-		if _, dropErr := rawDoltQuery(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", tower.Database)); dropErr != nil {
-			fmt.Printf("  warning: could not drop database %s: %s\n", tower.Database, dropErr)
+	default:
+		if doltIsReachable() {
+			if _, dropErr := rawDoltQuery(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", tower.Database)); dropErr != nil {
+				fmt.Printf("  warning: could not drop database %s: %s\n", tower.Database, dropErr)
+			} else {
+				dbDropped = true
+				summary = append(summary, fmt.Sprintf("Dropped database %s", tower.Database))
+			}
 		} else {
-			dbDropped = true
-			summary = append(summary, fmt.Sprintf("Dropped database %s", tower.Database))
+			fmt.Printf("  warning: dolt server not reachable — database %s may need manual cleanup\n", tower.Database)
+			fmt.Printf("  hint: start dolt with 'spire up' and re-run, or remove %s/%s/ manually\n",
+				doltDataDir(), tower.Database)
 		}
-	} else {
-		fmt.Printf("  warning: dolt server not reachable — database %s may need manual cleanup\n", tower.Database)
-		fmt.Printf("  hint: start dolt with 'spire up' and re-run, or remove %s/%s/ manually\n",
-			doltDataDir(), tower.Database)
 	}
 
 	// 6. Remove instance entries and .beads/ directories.
@@ -1509,7 +1516,7 @@ func cmdTowerRemove(name string, force bool) error {
 	for _, s := range summary {
 		fmt.Printf("  - %s\n", s)
 	}
-	if !dbDropped {
+	if !dbDropped && !dbSkipped {
 		fmt.Println("\n  Note: database was not dropped (dolt server was not reachable).")
 	}
 
