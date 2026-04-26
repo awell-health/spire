@@ -161,16 +161,28 @@ func (s *Server) corsMiddleware(next http.HandlerFunc) http.Handler {
 	})
 }
 
-// bearerAuth validates the Authorization: Bearer <token> header.
+// bearerAuth validates the Authorization: Bearer <token> header and then
+// resolves the calling archmage identity from X-Archmage-Name /
+// X-Archmage-Email headers (or the cluster tower's static archmage as a
+// fallback). The resolved ArchmageIdentity is stashed on the request
+// context so downstream handlers can read it via IdentityFromContext.
+//
 // If SPIRE_API_TOKEN is empty, skips validation (dev mode).
+//
+// Header trust boundary: identity headers are trusted only because the
+// bearer authenticated the desktop. Identity is parsed AFTER the bearer
+// check so an unauthenticated request never has its claimed identity
+// recorded.
 func (s *Server) bearerAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.apiToken == "" {
-			// Dev mode: no token required.
+			// Dev mode: no token required. Identity headers are still
+			// honoured so end-to-end tests against a tokenless gateway
+			// can exercise the same audit paths.
 			s.devModeLogOnce.Do(func() {
 				s.log.Println("[gateway] dev mode: skipping auth on /api/v1/* requests")
 			})
-			next(w, r)
+			next(w, attachIdentity(r))
 			return
 		}
 		authHeader := r.Header.Get("Authorization")
@@ -183,7 +195,34 @@ func (s *Server) bearerAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
-		next(w, r)
+		next(w, attachIdentity(r))
+	}
+}
+
+// attachIdentity resolves the request's archmage identity (header or
+// cluster-tower fallback) and returns r with the result stashed on the
+// context. Pulled out of bearerAuth so the dev-mode and authenticated
+// branches share the same resolution logic.
+func attachIdentity(r *http.Request) *http.Request {
+	id := resolveRequestIdentity(r, towerArchmageFallback)
+	if id.Source == "" {
+		return r
+	}
+	return r.WithContext(WithIdentity(r.Context(), id))
+}
+
+// towerArchmageFallback returns the cluster tower's static archmage as an
+// ArchmageIdentity so resolveRequestIdentity can fall back to it when the
+// caller did not supply X-Archmage-* headers. Wrapped as a package var so
+// tests can inject a deterministic fallback without touching real config.
+var towerArchmageFallback = func() ArchmageIdentity {
+	tower, err := config.ResolveTowerConfig()
+	if err != nil || tower == nil {
+		return ArchmageIdentity{}
+	}
+	return ArchmageIdentity{
+		Name:  tower.Archmage.Name,
+		Email: tower.Archmage.Email,
 	}
 }
 
@@ -313,20 +352,59 @@ func (s *Server) createBead(w http.ResponseWriter, r *http.Request) {
 		issType = beads.TypeTask
 	}
 
+	// Stamp the calling archmage onto the bead's labels so `bd show` and the
+	// roster can attribute the bead back to whoever filed it. Labels keep
+	// the audit trail auditable through plain bead reads — no schema change
+	// to issues / agent_runs is needed for v1 of this attribution.
+	labels := body.Labels
+	var author string
+	if ident, ok := IdentityFromContext(r.Context()); ok && ident.Name != "" {
+		labels = appendArchmageLabels(labels, ident)
+		author = ident.AuthorString()
+	}
+
 	id, err := store.CreateBead(store.CreateOpts{
 		Title:       body.Title,
 		Description: body.Description,
 		Priority:    body.Priority,
 		Type:        issType,
-		Labels:      body.Labels,
+		Labels:      labels,
 		Parent:      body.Parent,
 		Prefix:      body.Prefix,
+		Author:      author,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// appendArchmageLabels stamps the calling archmage onto the bead's labels
+// so subsequent reads can attribute creation/origin back to the right
+// person. We only add labels not already present so callers that pre-stamp
+// (e.g. tests) don't end up with duplicates.
+func appendArchmageLabels(labels []string, id ArchmageIdentity) []string {
+	out := labels
+	want := []string{"archmage:" + id.Name}
+	if id.Email != "" {
+		want = append(want, "archmage-email:"+id.Email)
+	}
+	for _, w := range want {
+		if !containsLabel(out, w) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func containsLabel(labels []string, want string) bool {
+	for _, l := range labels {
+		if l == want {
+			return true
+		}
+	}
+	return false
 }
 
 // handleBeadByID routes GET and PATCH for /api/v1/beads/{id} and
@@ -592,7 +670,19 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "to and message are required"})
 		return
 	}
-	if body.From == "" {
+	// Resolve From with header-wins semantics: when the calling archmage
+	// supplied X-Archmage-Name, it overrides any conflicting body.From so
+	// an over-eager client can't impersonate a different sender. When the
+	// body picks a non-archmage value (e.g. "daemon") and no header is
+	// present, we keep the body value — matches the existing CLI/daemon
+	// behaviour. The "gateway" literal stays as the last-resort fallback.
+	ident, hasIdent := IdentityFromContext(r.Context())
+	if hasIdent && ident.Name != "" {
+		if body.From != "" && body.From != ident.Name {
+			s.log.Printf("[gateway] message from-field collision: body=%q header=%q — header wins", body.From, ident.Name)
+		}
+		body.From = ident.Name
+	} else if body.From == "" {
 		body.From = "gateway"
 	}
 
@@ -606,6 +696,11 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		labels = append(labels, "ref:"+body.Ref)
 	}
 
+	var author string
+	if hasIdent && ident.Name != "" && ident.Email != "" {
+		author = ident.AuthorString()
+	}
+
 	id, err := store.CreateBead(store.CreateOpts{
 		Title:    body.Message,
 		Priority: body.Priority,
@@ -613,6 +708,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		Prefix:   "spi",
 		Labels:   labels,
 		Parent:   body.Thread,
+		Author:   author,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -747,8 +843,26 @@ func defaultRosterDeps() board.RosterDeps {
 		CleanDeadWizards: func(agents []board.LocalAgent) []board.LocalAgent {
 			return cleanDeadLocalWizards(agents, process.ProcessAlive)
 		},
-		ProcessAlive: dolt.ProcessAlive,
+		ProcessAlive:    dolt.ProcessAlive,
+		ResolveArchmage: archmageFromTower,
 	}
+}
+
+// archmageFromTower returns the archmage name that owns the wizard's
+// tower. Used by defaultRosterDeps so /api/v1/roster can surface
+// per-archmage origin for local-native wizards. Each desktop runs its own
+// wizards under its own archmage, so the local TowerConfig.Archmage.Name
+// is the right attribution; cluster-mode rows get their archmage from pod
+// labels in RosterFromClusterRegistry instead.
+//
+// Errors and empty fields fail closed to "" (no attribution) so a missing
+// or stub tower config never poisons the audit trail.
+func archmageFromTower(_ board.LocalAgent) string {
+	tower, err := config.ResolveTowerConfig()
+	if err != nil || tower == nil {
+		return ""
+	}
+	return tower.Archmage.Name
 }
 
 // cleanDeadLocalWizards returns the subset of agents whose PID is alive
@@ -834,7 +948,15 @@ func (s *Server) postBeadComment(w http.ResponseWriter, r *http.Request, id stri
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	commentID, err := commentsAddFunc(id, body.Text)
+	// Use the calling archmage as the comment author when the request
+	// supplied an identity. Empty author falls through to the existing
+	// "spire" Actor() default in commentsAddFunc — preserves direct-mode
+	// behaviour for any non-gateway callers that share this seam.
+	var author string
+	if ident, ok := IdentityFromContext(r.Context()); ok {
+		author = ident.AuthorString()
+	}
+	commentID, err := commentsAddAsFunc(id, author, body.Text)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
@@ -1470,6 +1592,12 @@ var (
 		return err
 	}
 	commentsAddFunc = store.AddCommentReturning
+	// commentsAddAsFunc is the per-author indirection used by
+	// postBeadComment. An empty author flows through store.Actor() ("spire")
+	// inside AddCommentAsReturning so this seam preserves direct-mode
+	// behaviour for any caller that shares it. Tests stub this var to
+	// observe (id, author, text) without booting a real beads store.
+	commentsAddAsFunc = store.AddCommentAsReturning
 )
 
 // handleBeadSummon answers POST /api/v1/beads/{id}/summon — spawns a wizard

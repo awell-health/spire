@@ -613,6 +613,7 @@ func withCommentsPostStubs(t *testing.T, returnID string, addErr error) *[]comme
 	t.Helper()
 	prevEnsure := commentsStoreEnsureFunc
 	prevAdd := commentsAddFunc
+	prevAddAs := commentsAddAsFunc
 
 	var calls []commentsPostCall
 	commentsStoreEnsureFunc = func(string) error { return nil }
@@ -623,9 +624,21 @@ func withCommentsPostStubs(t *testing.T, returnID string, addErr error) *[]comme
 		}
 		return returnID, nil
 	}
+	// Mirror the recorded behaviour through commentsAddAsFunc so tests
+	// that pre-date the per-author seam keep observing calls in the same
+	// shape. Tests that need to assert the resolved author switch to
+	// commentsAddAsFunc directly (see identity_test.go).
+	commentsAddAsFunc = func(id, _, text string) (string, error) {
+		calls = append(calls, commentsPostCall{id: id, text: text})
+		if addErr != nil {
+			return "", addErr
+		}
+		return returnID, nil
+	}
 	t.Cleanup(func() {
 		commentsStoreEnsureFunc = prevEnsure
 		commentsAddFunc = prevAdd
+		commentsAddAsFunc = prevAddAs
 	})
 	return &calls
 }

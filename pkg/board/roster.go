@@ -25,6 +25,11 @@ import (
 var ErrAttachedRosterNotImplemented = errors.New("live roster: attached-reserved mode is not yet supported")
 
 // RosterAgent represents an agent registered in the tower.
+//
+// Archmage records which archmage spawned/owns this row so the gateway can
+// surface per-archmage origin when multiple desktops attach through the
+// same cluster tower. Empty when the source-of-truth (local registry entry
+// or operator pod label) carries no attribution.
 type RosterAgent struct {
 	Name         string        `json:"name"`
 	Role         string        `json:"role"`
@@ -38,6 +43,7 @@ type RosterAgent struct {
 	Timeout time.Duration `json:"timeout"`
 	Remaining    time.Duration `json:"remaining"`
 	RegisteredAt string        `json:"registered_at"`
+	Archmage     string        `json:"archmage,omitempty"`
 }
 
 // RosterSummary is the JSON output for roster.
@@ -101,6 +107,15 @@ type RosterDeps struct {
 	SaveWizardRegistry func([]LocalAgent)
 	CleanDeadWizards   func([]LocalAgent) []LocalAgent
 	ProcessAlive       func(pid int) bool
+
+	// ResolveArchmage returns the archmage attribution for a single
+	// registry entry — typically the tower's archmage name. Nil leaves
+	// RosterAgent.Archmage empty so the gateway falls back to the cluster
+	// tower's static archmage in the JSON response. Provided as a dep
+	// (rather than read directly from config inside RosterFromLocalWizards)
+	// so unit tests can inject deterministic attribution without touching
+	// the real tower config.
+	ResolveArchmage func(LocalAgent) string
 }
 
 // RosterFromClusterRegistry queries the cluster's operator-side wizard
@@ -154,13 +169,19 @@ func RosterFromClusterRegistry(ctx context.Context, timeout time.Duration) ([]Ro
 		if role == "" {
 			role = "wizard"
 		}
+		// Cluster pods that the operator stamps with the requesting
+		// archmage's name flow per-archmage origin into the roster row.
+		// Older pods without this label leave Archmage empty — that maps
+		// to "tower default" on the gateway side.
+		archmage := pod.Metadata.Labels["spire.awell.io/archmage"]
 
 		agent := RosterAgent{
-			Name:    agentName,
-			Role:    role,
-			Status:  "working",
-			BeadID:  beadID,
-			Timeout: timeout,
+			Name:     agentName,
+			Role:     role,
+			Status:   "working",
+			BeadID:   beadID,
+			Timeout:  timeout,
+			Archmage: archmage,
 		}
 
 		if pod.Status.StartTime != "" {
@@ -393,6 +414,9 @@ func RosterFromLocalWizards(timeout time.Duration, deps RosterDeps) ([]RosterAge
 			Role:    role,
 			BeadID:  w.BeadID,
 			Timeout: agentTimeout,
+		}
+		if deps.ResolveArchmage != nil {
+			agent.Archmage = deps.ResolveArchmage(w)
 		}
 
 		isAlive := w.PID > 0 && deps.ProcessAlive(w.PID)

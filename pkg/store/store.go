@@ -323,6 +323,12 @@ type CreateOpts struct {
 	// Metadata is encoded to JSON and persisted on the bead's metadata column.
 	// A nil/empty map leaves the column unset.
 	Metadata map[string]string
+
+	// Author is the actor used for the underlying bd CreateIssue call. Empty
+	// falls back to Actor() ("spire"). Set this when a gateway request
+	// carries a per-call archmage identity so the dolt commit author
+	// reflects the calling desktop, not the cluster's "spire" default.
+	Author string
 }
 
 // BeadsDirResolver is a function that resolves the .beads directory path.

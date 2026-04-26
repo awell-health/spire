@@ -23,11 +23,23 @@ import (
 )
 
 // Client talks to a Spire gateway over HTTPS with a static bearer token.
-// Construct via NewClient; the zero value is not usable.
+// Construct via NewClient (or NewClientWithIdentity to attach per-call
+// archmage attribution); the zero value is not usable.
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURL  string
+	token    string
+	identity Identity
+	http     *http.Client
+}
+
+// Identity carries the local archmage's name + email so the gateway can
+// attribute mutations (bead creation, comments, messages, agent_runs) back
+// to the calling desktop. Both fields are required for the gateway to
+// accept the headers — partial identity is dropped server-side as worse
+// than no identity for audit attribution.
+type Identity struct {
+	Name  string
+	Email string
 }
 
 // TowerInfo is the subset of the gateway's /api/v1/tower response the
@@ -69,14 +81,35 @@ func (e *HTTPError) Error() string {
 // The returned *http.Client has a 30s overall timeout and uses the
 // system default TLS roots; pass the returned value unchanged unless
 // you need custom transport config.
+//
+// The returned Client emits no identity headers. Use NewClientWithIdentity
+// when the caller knows the local archmage and wants per-call attribution
+// recorded server-side; the bare NewClient form is reserved for paths that
+// run before a tower is attached (e.g. attach-cluster's tower-info probe).
 func NewClient(url, token string) *Client {
+	return NewClientWithIdentity(url, token, Identity{})
+}
+
+// NewClientWithIdentity is NewClient plus an Identity that the client
+// stamps onto every request as X-Archmage-Name / X-Archmage-Email
+// headers. Empty Name OR Email suppresses both headers so the gateway's
+// fallback path (cluster tower's static archmage) still applies.
+func NewClientWithIdentity(url, token string, id Identity) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(url, "/"),
-		token:   token,
+		baseURL:  strings.TrimRight(url, "/"),
+		token:    token,
+		identity: id,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// Identity returns the identity baked into this client at construction.
+// Read-only; callers that need a different identity should construct a
+// fresh client.
+func (c *Client) Identity() Identity {
+	return c.identity
 }
 
 // GetTower calls GET /api/v1/tower and returns the remote tower's
@@ -88,6 +121,19 @@ func (c *Client) GetTower(ctx context.Context) (TowerInfo, error) {
 		return TowerInfo{}, err
 	}
 	return out, nil
+}
+
+// setIdentityHeaders stamps X-Archmage-Name / X-Archmage-Email onto req
+// when both fields of the client's Identity are non-empty. Partial
+// identity is dropped (no headers emitted) so the gateway falls back to
+// the cluster tower's archmage rather than recording a half-attributed
+// row. Called from doJSON after the bearer/Accept headers are set.
+func (c *Client) setIdentityHeaders(req *http.Request) {
+	if c.identity.Name == "" || c.identity.Email == "" {
+		return
+	}
+	req.Header.Set("X-Archmage-Name", c.identity.Name)
+	req.Header.Set("X-Archmage-Email", c.identity.Email)
 }
 
 // doJSON is the shared request engine: encodes body as JSON (nil means
@@ -119,6 +165,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	c.setIdentityHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
