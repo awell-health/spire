@@ -21,19 +21,26 @@ Standard controller-runtime zap logging flags are also available (`--zap-log-lev
 
 ### BeadWatcher
 
-**Purpose**: Sync beads from DoltHub into SpireWorkload CRs.
+**Purpose**: Reconcile schedulable beads from the in-cluster Dolt
+server into SpireWorkload CRs. (Transitional legacy scheduler — off by
+default in cluster-as-truth installs; the canonical cluster-native
+path is `pkg/steward` emitting `WorkloadIntent` values that the
+operator's `IntentWorkloadReconciler` reconciles into apprentice pods.)
 
 **Cycle** (every `--interval`):
 
-1. `bd dolt pull` — sync latest beads state from DoltHub
-2. `bd ready --json` — find beads with all dependencies satisfied
-3. For each ready bead not already tracked as a SpireWorkload:
+1. Read schedulable beads directly from the shared in-cluster Dolt
+   server (the canonical bead-graph host in cluster-as-truth installs).
+   No `bd dolt pull` from DoltHub on the loop — bidirectional cluster
+   ↔ DoltHub sync was removed because both sides writing produced
+   non-fast-forward push rejections and merge conflicts that silently
+   diverged the two stores. DoltHub receives one-way archive pushes
+   only.
+2. For each ready bead not already tracked as a SpireWorkload:
    - Extract prefix from bead ID (e.g., `spi-a3f8` → `spi-`)
    - Create SpireWorkload CR with `status.phase = Pending`
-4. `bd list --status=closed --json` — find closed beads
-5. For each closed bead that has a tracked SpireWorkload:
+3. For each closed bead that has a tracked SpireWorkload:
    - Set `status.phase = Done`, `status.completedAt = now`
-6. `bd dolt push` — push any state changes
 
 **Key behavior**: The watcher is idempotent — if a SpireWorkload already exists for a bead, it skips creation. Closed beads are detected and marked Done even if the worker didn't close them (e.g., human closed a bead manually).
 
@@ -278,7 +285,9 @@ The first init container, `tower-attach`, runs
 - `--data-dir=/data/<db>` — dolt data directory under the shared `/data` volume
 - `--database=<db>` — dolt database name
 - `--prefix=<prefix>` — bead prefix for this tower
-- `--dolthub-remote=<remote>` — DoltHub remote for sync
+- `--dolthub-remote=<remote>` — DoltHub remote captured for the
+  first-install seed clone only; not used as an active writable mirror
+  in cluster-as-truth installs
 
 This replaces both the old operator-side `beads-seed` ConfigMap and the
 `agent-entrypoint.sh` bootstrap flow. On exit, `/data` is primed with

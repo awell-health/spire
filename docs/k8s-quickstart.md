@@ -2,12 +2,21 @@
 
 Get the full autonomous agent pipeline running on minikube in under 10 minutes.
 
+This quickstart sets up a **cluster-native** tower. Within
+cluster-native, individual clients attach in **gateway mode** — this is
+`TowerConfig.Mode` / client routing, not a fourth `DeploymentMode`. For
+cluster-native production towers the cluster Dolt + gateway own writes;
+local clients route mutations over the gateway; DoltHub is
+seed-only/archive-only on first install. Local-native and
+attached-reserved are out of scope here — see
+[cluster-install.md](cluster-install.md) for full GKE detail.
+
 ## Prerequisites
 
 - [minikube](https://minikube.sigs.k8s.io/docs/start/) installed and running
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) configured
 - [Docker](https://docs.docker.com/get-docker/) installed
-- DoltHub account with a beads remote (e.g., `awell/spire`)
+- DoltHub account with a beads remote (e.g., `awell/spire`) — used as the **first-install seed** only; not a bidirectional mirror
 - Anthropic API key
 
 ## One-command demo
@@ -102,12 +111,30 @@ kubectl apply -f k8s/examples/agent-managed.yaml
 
 Edit `spec.repo` and `spec.image` in the managed agent YAML.
 
-### 6. File work and watch
+### 6. Attach to the cluster gateway and file work
+
+In cluster-attach (gateway) mode, all bead mutations route through the
+gateway over HTTP. Do not run direct `dolt push`/`pull` against the
+cluster store — these will be rejected. Use `spire tower attach-cluster`
+to attach, then operate normally; the client transparently tunnels
+writes to the gateway.
 
 ```bash
-# File a bead locally
+# Get the gateway URL + bearer token (chart-rendered Secret)
+TOWER_TOKEN=$(kubectl -n spire get secret spire-gateway-auth \
+  -o jsonpath='{.data.SPIRE_API_TOKEN}' | base64 -d)
+
+# In a separate terminal, port-forward to the gateway
+kubectl port-forward svc/spire-gateway -n spire 3030:3030
+
+# Attach (mutations now route over HTTP to the cluster Dolt)
+spire tower attach-cluster \
+  --tower spire-tower \
+  --url http://127.0.0.1:3030 \
+  --token "$TOWER_TOKEN"
+
+# File a bead — routes to the cluster Dolt via the gateway
 spire file "Fix the auth token refresh" -t task -p 1
-bd dolt push
 
 # Watch the mayor pick it up
 kubectl logs -n spire deploy/spire-mayor -f
@@ -186,8 +213,14 @@ kubectl delete deploy spire-mayor -n spire
 
 ## Troubleshooting
 
-**Mayor can't sync from DoltHub:**
-Check credentials: `kubectl get secret spire-credentials -n spire -o yaml`. Verify `DOLT_REMOTE_USER` and `DOLT_REMOTE_PASSWORD` are set. Check mayor logs for "bd dolt pull failed".
+**Mayor can't clone DoltHub seed on first install:**
+DoltHub auth is only exercised at first-install seed time in
+cluster-as-truth installs (the bidirectional syncer is disabled and the
+runtime cluster Sync is a no-op); ongoing operation does not require
+DoltHub credentials. Check credentials:
+`kubectl get secret spire-credentials -n spire -o yaml`. Verify
+`DOLT_REMOTE_USER` and `DOLT_REMOTE_PASSWORD` are set. Check
+dolt-init container logs for clone failure messages.
 
 **Workloads stuck in Pending:**
 No available agent matches. Check that agent `spec.prefixes` includes the bead's prefix (e.g., `spi-`), and that `agent.status.currentWork` length is below `spec.maxConcurrent`.

@@ -9,12 +9,37 @@ Architecture: see [docs/k8s-architecture.md](../docs/k8s-architecture.md). This 
 
 ## Direction (read first)
 
-- The cluster is the source of truth for the bead graph. Laptops/desktops attach via the gateway and **never push to DoltHub directly**.
-- DoltHub seeds the cluster on first install (`dolt clone https://doltremoteapi.dolthub.com/<org>/<tower>`) and may receive periodic one-way archival pushes. **It is not a writable mirror.**
-- GCS is the canonical disaster-recovery substrate via the chart's `backup.*` block.
-- Multi-archmage support exists at the gateway. Each desktop attaches with its own bearer token.
+Spire has three deployment modes: **local-native** (single-machine,
+local filesystem), **cluster-native** (multi-user cluster,
+gateway-fronted Dolt), and **attached-reserved** (reserved; not
+implemented). Within cluster-native, individual clients attach in
+**gateway mode** — this is `TowerConfig.Mode` / client routing, not a
+fourth `DeploymentMode`.
 
-There are open v1.0 gaps that affect the desktop UX — see [§9 Known issues](#9-known-issues--workarounds). Land those before announcing the deployment GA.
+This runbook installs a cluster-native (cluster-as-truth) tower:
+
+- For cluster-native production towers, the cluster-hosted Dolt
+  database accessed through the gateway is the canonical bead-graph
+  host. Cluster Dolt + gateway own writes; local clients route
+  mutations over the gateway.
+- DoltHub serves as seed-only on first install
+  (`dolt clone https://doltremoteapi.dolthub.com/<org>/<tower>`) and as
+  a one-way archive; it is not an active writable mirror. Bidirectional
+  cluster ↔ DoltHub sync was removed because both sides writing
+  produced non-fast-forward push rejections and merge conflicts that
+  silently diverged the two stores (witnessed 2026-04-26).
+- In cluster-attach (gateway) mode, all bead mutations route through
+  the gateway over HTTP. Do not run direct `dolt push`/`pull` against
+  the cluster store — these will be rejected. Use
+  `spire tower attach-cluster` to attach, then operate normally; the
+  client transparently tunnels writes to the gateway.
+- GCS backup is the canonical disaster-recovery substrate via the
+  chart's `backup.*` block. Backup is default-on and fail-fast;
+  restore-from-GCS is the documented recovery procedure (see [§11](#11-disaster-recovery)).
+- Multi-archmage support exists at the gateway. Each desktop attaches
+  with its own bearer token.
+
+The v1.0 cluster-as-truth landing is summarised in [§9 Known issues](#9-known-issues--workarounds).
 
 ---
 
@@ -466,7 +491,10 @@ This is the per-archmage handshake. Each desktop runs it once.
 
 ### 6.2 Attach
 
-> **Heads up — until spi-zz2ve9 lands**, attach-cluster will silently create a parallel tower if your laptop already has a tower with the same prefix. **Remove the existing tower first**, then attach. See [§9](#9-known-issues--workarounds).
+`spire tower attach-cluster` refuses to attach a cluster tower whose
+prefix collides with an existing local tower (per **spi-6f6ky8**). If
+you have a same-prefix local tower from an earlier session, remove it
+first.
 
 ```bash
 spire tower remove <existing-tower-name>     # ONLY if a same-prefix local tower exists
@@ -485,7 +513,10 @@ Expected output: `Tower attached via gateway: <name>`, prefix, archmage, URL, lo
 spire register spire-desktop-<archmage-handle>
 ```
 
-Until per-call archmage threading lands (spi-1h1ucq), every mutation from this desktop is attributed to the cluster tower's static archmage. Set that on the cluster side once via:
+Each desktop's mutations are attributed to its archmage identity by the
+gateway (per **spi-n6fk2h**). The cluster tower's `archmage` field is
+the fallback used when a request arrives without per-call identity; set
+it on the cluster side once via:
 
 ```bash
 kubectl exec -n spire deploy/spire-steward -c steward -- \
@@ -498,12 +529,13 @@ kubectl exec -n spire deploy/spire-gateway -c gateway -- \
 
 ### 6.4 Verify the routing
 
-The CWD-resolution bug (spi-n6fk2h) currently means `spire register` and `spire file` route through whatever tower CWD maps to, not the gateway. Until that's fixed:
+After attach, `spire register`, `spire file`, and other mutations route
+through the gateway from any CWD. Confirm the bead landed in cluster
+dolt (not a stray local DB):
 
 ```bash
-cd /tmp                                 # avoid CWD-resolution to a same-prefix local tower
 spire register spire-desktop-<handle>
-# Confirm the bead landed in cluster dolt (not in the laptop's local DB)
+spire focus <bead-id>      # should reach the cluster via gateway HTTP
 ```
 
 ---
@@ -515,7 +547,6 @@ Validate the full pipeline by filing a trivial bead, watching the cluster pick i
 ### 7.1 File a smoke bead
 
 ```bash
-cd /tmp
 spire file "Cluster smoke test $(date +%Y%m%d-%H%M)" -t task -p 4 --prefix <prefix>
 # → spi-xxxxxx
 ```
@@ -596,18 +627,23 @@ spire tower remove <gateway-tower-name>   # also deletes the keychain entry
 
 ## 9. Known issues & workarounds
 
-All filed under epic [spi-i7k1ag — DoltHub becomes archive-only](https://). Severity column is the impact on this runbook today.
+All filed under epic **spi-i7k1ag** — Cluster-as-truth gateway: DoltHub
+archive-only. The v1.0 landing items below are tracked as direct
+children of that epic; the table records the cluster-as-truth landing
+roadmap. Status reflects the bead graph at runbook publication time —
+re-check `bd show <id>` if you suspect the table is stale.
 
-| Bead | Pri | Impact | Workaround |
+| Bead | Pri | Scope | Status |
 |---|---|---|---|
-| **spi-zz2ve9** | P1 | `attach-cluster` silently duplicates same-prefix towers | Remove existing local tower before attach (§6.2) |
-| **spi-n6fk2h** | P1 | Gateway-mode write routing loses to CWD-resolved tower | Run mutations from a non-tower dir (`cd /tmp`) until landed |
-| **spi-1h1ucq** | P1 | `/api/v1/*` mutations don't carry per-call archmage identity | Set a default archmage on the cluster tower (§6.3) |
-| **spi-6f6ky8** | P1 | Nothing prevents a laptop in gateway-mode from running `spire push` | Operational discipline — don't run `spire push` against a gateway-mode tower |
-| **spi-hr3tcv** | P2 | Auto-push call sites in pkg/dolt, pkg/store, pkg/syncer not gated by mode | Same as above — discipline + spi-6f6ky8 |
-| **spi-43q7hp** | P2 | `spire tower list` shows `kind=dolthub remote=local` for gateway-mode towers | Cosmetic only; identify gateway-mode towers by the `Mode=gateway` line in `~/.spire/towers/<name>.json` |
+| **spi-6f6ky8** | P1 | `spire tower attach-cluster` refuses prefix collision (no auto-conversion) | Landed |
+| **spi-6az9s7** | P1 | Default `backup.enabled=true` for cluster-as-truth deployments | Landed |
+| **spi-n6fk2h** | P1 | Thread archmage identity through gateway `/api/v1/*` mutations | Landed |
+| **spi-gg2y2j** | P1 | Gateway: POST `/api/v1/beads/{id}/reset` (canonical-backend reset endpoint) | Landed |
+| **spi-i7k1ag.1** | P1 | Align cluster docs with cluster-as-truth gateway topology (this runbook) | In progress |
 
-When a bead closes, update the corresponding row above and remove the workaround text.
+If a row above shows `Landed` but you observe the symptom on a fresh
+install, treat it as a regression and re-open or file a follow-up under
+**spi-i7k1ag** rather than re-introducing the original workaround text.
 
 ---
 

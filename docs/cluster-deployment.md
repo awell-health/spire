@@ -6,11 +6,25 @@ This guide covers deploying Spire to Kubernetes for team and production use.
 
 ---
 
+## Deployment modes
+
+Spire has three deployment modes: **local-native** (single-machine, local
+filesystem), **cluster-native** (multi-user cluster, gateway-fronted Dolt),
+and **attached-reserved** (reserved; not implemented). Within
+cluster-native, individual clients attach in **gateway mode** — this is
+`TowerConfig.Mode` / client routing, not a fourth `DeploymentMode`.
+
+This guide describes cluster-native (cluster-as-truth) deployments.
+Local-native towers may still use local filesystem, remotesapi, or
+DoltHub as sync transport; that path is unchanged by cluster-as-truth.
+
+---
+
 ## Architecture overview
 
 ```
-Developer laptop / Desktop          DoltHub             Kubernetes cluster
---------------------------          -------             ------------------
+Archmage laptop / Desktop          DoltHub             Kubernetes cluster
+-------------------------          -------             ------------------
 spire tower create  ─────>  remote (first-install seed) ──> dolt-init (clone)
 spire tower attach-cluster  ────────────────────────────>  gateway pod (HTTP)
 spire file / mutations      ─────── HTTPS POST ─────────>  /api/v1/* (gateway)
@@ -29,11 +43,24 @@ spire file / mutations      ─────── HTTPS POST ──────�
                                                             └── agent container
                                                                 (spire execute)
 
-                                  GCS bucket  <─────── dolt-backup CronJob
-                                  (archive/DR)         (`dolt backup sync`)
+cluster Dolt  ─── one-way archive push ───>  DoltHub (archive only)
+cluster Dolt  ─── dolt backup sync ───────>  GCS bucket (archive/DR)
 ```
 
-The cluster Dolt database is the write authority for cluster-as-truth deployments. Desktops/laptops attach via the gateway and route mutations through `/api/v1/*` over HTTP. DoltHub is used as a **first-install seed only** — the dolt-init container clones from it on first boot — and is no longer a bidirectional mirror. GCS backup is the canonical archive/DR substrate (see [Backup bucket setup](#backup-bucket-setup)).
+For cluster-native production towers, the cluster-hosted Dolt database
+accessed through the gateway is the canonical bead-graph host. DoltHub
+serves as seed-only on first install and as a one-way archive; it is
+not an active writable mirror. Desktop/laptop clients attach via the
+gateway and route mutations through `/api/v1/*` over HTTP. GCS backup
+is the canonical archive/DR substrate (see [Backup bucket
+setup](#backup-bucket-setup) and [Archive and disaster
+recovery](#archive-and-disaster-recovery)).
+
+Bidirectional cluster ↔ DoltHub sync was removed because both sides
+writing produced non-fast-forward push rejections and merge conflicts
+that silently diverged the two stores (witnessed 2026-04-26).
+Cluster-as-truth makes the cluster the single writer; DoltHub receives
+one-way archive pushes only.
 
 ---
 
@@ -55,7 +82,7 @@ The operator does not yet derive them automatically from the tower's
 
 - Helm 3.x: `brew install helm`
 - A Kubernetes cluster (minikube, EKS, GKE, etc.)
-- A DoltHub remote (create with `spire tower create`) — used as the **first-install seed** in cluster-as-truth deployments. After cutover the cluster Dolt is the write authority; DoltHub is not a bidirectional mirror.
+- A DoltHub remote (create with `spire tower create`) — used as the **first-install seed** in cluster-as-truth deployments. The dolt-init container clones from it on first boot; the cluster Dolt is the write authority thereafter and DoltHub is not a bidirectional mirror.
 - A **GCS backup bucket** for disaster recovery — see [Backup bucket setup](#backup-bucket-setup) below. `backup.enabled=true` is the chart default; install will fail fast without a bucket.
 - A **GCP service-account JSON** with `roles/storage.objectAdmin` on the backup bucket (and on the bundle bucket if `bundleStore.backend=gcs`), OR a Workload-Identity binding plus an external Secret pinned via `gcp.secretName`. See [GCP auth](#gcp-auth) below.
 
@@ -226,7 +253,10 @@ images:
     tag: latest
 
 dolthub:
-  # DoltHub tower (HTTPS clone/push via JWK).
+  # DoltHub tower — first-install seed only in cluster-as-truth installs.
+  # The dolt-init container clones from it on first boot; thereafter the
+  # cluster Dolt is the write authority and DoltHub is not a bidirectional
+  # mirror.
   remoteUrl: your-org/your-tower
   credsKeyId: <base32-key-id>       # from `dolt creds ls`
   credsKeyValue: ""                 # pass via --set-file, never inline in git
@@ -305,9 +335,11 @@ kubectl rollout status deployment/spire-operator -n spire
 ### Step 4: Verify the pipeline
 
 Attach the laptop/Desktop to the cluster gateway, then file a bead.
-In cluster-as-truth installs, mutations route through the gateway HTTP
-API — `spire push` is no longer the path that publishes work to the
-cluster.
+In cluster-attach (gateway) mode, all bead mutations route through the
+gateway over HTTP. Do not run direct `dolt push`/`pull` against the
+cluster store — these will be rejected. Use `spire tower attach-cluster`
+to attach, then operate normally; the client transparently tunnels
+writes to the gateway.
 
 ```bash
 # On your laptop, after `spire tower attach-cluster --tower <name> --url <gateway-url> --token <bearer>`
@@ -439,7 +471,7 @@ All configurable values are documented in `helm/spire/values.yaml`. Key values:
 | `namespace` | `spire` | Kubernetes namespace |
 | `images.steward.repository` | `ghcr.io/awell-health/spire-steward` | Steward image |
 | `images.agent.repository` | `ghcr.io/awell-health/spire-agent` | Agent image |
-| `dolthub.remoteUrl` | `""` | DoltHub tower path (`org/tower`). Required for UC 1 / 3a. |
+| `dolthub.remoteUrl` | `""` | DoltHub tower path (`org/tower`). First-install seed only in cluster-as-truth installs; the dolt-init container clones from it on first boot. Not a bidirectional mirror. |
 | `dolthub.credsKeyId` | `""` | Dolt key ID — basename of the JWK file; shown by `dolt creds ls`. Required. |
 | `dolthub.credsKeyValue` | `""` | Raw JWK JSON contents. Pass via `--set-file`; never inline. Required. |
 | `dolthub.userName` | `""` | Dolt CLI `user.name`. MUST match the DoltHub account that owns the JWK. |
@@ -614,15 +646,21 @@ spire metrics --model # cost breakdown
 ## Archive and disaster recovery
 
 Cluster-as-truth deployments treat the cluster Dolt database as the
-single write authority. Bidirectional cluster<->DoltHub sync is
-**disabled by default** in the chart (`syncer.enabled=false`) because
-running it concurrently with cluster writes recreates the
-non-fast-forward / merge-conflict divergence class fixed in epic
-`spi-i7k1ag`. The runtime Sync method itself is a no-op now, so even an
-opt-in `syncer.enabled=true` install will not perform DOLT_PULL/DOLT_PUSH
+single write authority. GCS backup is the canonical disaster-recovery
+path for cluster-as-truth deployments. Backup is default-on and
+fail-fast; restore-from-GCS is the documented recovery procedure (see
+[`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md)).
+
+Bidirectional cluster ↔ DoltHub sync is **disabled by default** in the
+chart (`syncer.enabled=false`) because running it concurrently with
+cluster writes recreates the non-fast-forward / merge-conflict
+divergence class fixed in epic `spi-i7k1ag` (witnessed 2026-04-26).
+The runtime Sync method itself is a no-op now, so even an opt-in
+`syncer.enabled=true` install will not perform DOLT_PULL/DOLT_PUSH
 against DoltHub on its loop — the template is preserved only so a
 deliberate one-shot first-install seed scenario can still be expressed
-in values.
+in values. DoltHub receives one-way archive pushes only; it is not
+read back as truth.
 
 The canonical archive/DR substrate is GCS backup, configured via the
 chart's `backup.*` block:

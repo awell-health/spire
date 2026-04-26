@@ -6,6 +6,22 @@ Fresh GCP project to a working Spire tower with Spire Desktop attached, end-to-e
 
 **Time estimate:** 60-90 minutes for first run.
 
+## Cluster-as-truth (read first)
+
+This runbook installs a **cluster-native** tower. The cluster-hosted
+Dolt database accessed through the gateway is the canonical bead-graph
+host. DoltHub serves as seed-only on first install and as a one-way
+archive; it is not an active writable mirror. Desktop/laptop clients
+attach via the gateway and route mutations through `/api/v1/*` over
+HTTP. GCS backup is the required disaster-recovery path.
+
+Spire has three deployment modes: **local-native** (single-machine,
+local filesystem), **cluster-native** (multi-user cluster,
+gateway-fronted Dolt), and **attached-reserved** (reserved; not
+implemented). Within cluster-native, individual clients attach in
+**gateway mode** — this is `TowerConfig.Mode` / client routing, not a
+fourth `DeploymentMode`.
+
 ## Table of contents
 
 1. [Prerequisites](#1-prerequisites)
@@ -76,11 +92,20 @@ gcloud services enable \
   --project=${PROJECT_ID}
 ```
 
-### DoltHub tower repo
+### DoltHub tower repo (first-install seed)
 
-The cluster attaches to a tower hosted on DoltHub. Create a free DoltHub account at https://www.dolthub.com and create an empty data repository — see https://www.dolthub.com/data-repositories for the listing. Use the repo path `acmeco/spire-tower` (replace `acmeco` with your DoltHub org or username) when you configure the chart later.
+The cluster's first install seeds its bead graph from a tower hosted on
+DoltHub. After the first-install seed clone, the cluster Dolt is the
+write authority and DoltHub is no longer a bidirectional mirror — it
+either receives one-way archive pushes or is left untouched. Create a
+free DoltHub account at https://www.dolthub.com and create an empty
+data repository — see https://www.dolthub.com/data-repositories for the
+listing. Use the repo path `acmeco/spire-tower` (replace `acmeco` with
+your DoltHub org or username) when you configure the chart later.
 
-You will also need a DoltHub credential keypair on the laptop you push from. Generate one if you do not already have it:
+You will also need a DoltHub credential keypair on the laptop you
+generate it from. The cluster's dolt-init container uses these to clone
+on first boot. Generate one if you do not already have it:
 
 ```bash
 dolt creds new
@@ -1181,9 +1206,14 @@ Look for migration log lines on startup; readiness flips after they complete.
 Two pieces of state need to survive an upgrade:
 
 - **BundleStore in GCS** (`${PROJECT_ID}-spire-bundles`) — durable by design. GCS handles the redundancy; nothing to back up at the cluster layer.
-- **Dolt state** — lives on the tower's persistent volume (PVC mounted into the dolt pod). It survives pod restarts and rolling upgrades, but it is *not* backed up off-cluster by this chart in v1.
+- **Dolt state** — lives on the tower's persistent volume (PVC mounted into the dolt pod). It survives pod restarts and rolling upgrades, and is backed up off-cluster to GCS by the chart's `spire-dolt-backup` CronJob (chart default `backup.enabled=true`).
 
-Periodic snapshots and disaster-recovery for dolt are a non-goal for v1 of this runbook; see the follow-on epic for backup/restore tooling. For now, treat the cluster's PVC as the single source of truth and rely on the cluster's own storage class durability guarantees.
+GCS backup is the canonical disaster-recovery path for cluster-as-truth
+deployments. Backup is default-on and fail-fast; restore-from-GCS is
+the documented recovery procedure. The full restore drill lives at
+[`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md). Treat the
+cluster's PVC as the single writer for the bead graph (DoltHub is
+seed-only/archive-only and is not read back as truth).
 
 ## 12. Troubleshooting
 
@@ -1876,6 +1906,10 @@ helm uninstall spire -n spire
 helm install spire helm/spire -n spire -f values.gke.yaml ...
 ```
 
-If you want to clean state too, delete the PVCs after the uninstall — but
-note that this wipes the on-cluster dolt database; only the DoltHub remote
-preserves history past that point.
+If you want to clean state too, delete the PVCs after the uninstall —
+but note that this wipes the on-cluster dolt database, which is the
+single writer in cluster-as-truth deployments. The GCS backup
+(`spire-dolt-backup` CronJob, see §7 "Backup landed in GCS" and
+[`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md)) is the
+canonical recovery path; DoltHub is archive-only and not the
+authoritative restore source.

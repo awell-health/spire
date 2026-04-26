@@ -2,25 +2,49 @@
 
 This document describes the Kubernetes infrastructure that powers Spire's autonomous coding agents. It covers the operator, CRDs, pod lifecycle, and how all the pieces connect.
 
+## Deployment modes
+
+Spire has three deployment modes: **local-native** (single-machine, local
+filesystem), **cluster-native** (multi-user cluster, gateway-fronted Dolt),
+and **attached-reserved** (reserved; not implemented). Within
+cluster-native, individual clients attach in **gateway mode** — this is
+`TowerConfig.Mode` / client routing, not a fourth `DeploymentMode`.
+
+This document describes cluster-native. Local-native and
+attached-reserved are out of scope here; see [VISION-LOCAL.md](VISION-LOCAL.md)
+and [attached-mode.md](attached-mode.md).
+
 ## Overview
+
+For cluster-native production towers, the cluster-hosted Dolt database
+accessed through the gateway is the canonical bead-graph host. DoltHub
+serves as seed-only on first install and as a one-way archive; it is
+not an active writable mirror. Desktop/laptop clients attach via the
+gateway and route mutations through `/api/v1/*` over HTTP.
 
 Spire's k8s layer turns beads (work items) into running agent pods that clone repos, write code, run tests, and push branches — without human intervention.
 
 ```
-Human files bead          Operator sees it          Pod runs wizard
+Archmage files bead       Operator sees it          Pod runs wizard
       |                        |                        |
       v                        v                        v
-  bd create          BeadWatcher creates         `spire execute <bead>`:
-  "Fix auth bug"     SpireWorkload CR            claim, plan, dispatch
-  -p 1 -t task              |                    apprentices, review,
-                             v                    merge, close, exit
-                     WorkloadAssigner                    |
-                     matches to agent                    v
-                             |                    Pod exits, operator
-                             v                    reaps it via pod phase,
-                     AgentMonitor creates         agent freed
+  spire file        SpireWorkload (or          `spire execute <bead>`:
+  "Fix auth bug"     IntentReconciler)          claim, plan, dispatch
+  -p 1 -t task      via gateway HTTP            apprentices, review,
+        |                    |                  merge, close, exit
+        v                    v                          |
+   gateway pod        WorkloadAssigner                  v
+   (writes to         matches to agent           Pod exits, operator
+   cluster Dolt)             |                   reaps it via pod phase,
+                             v                   agent freed
+                     AgentMonitor creates
                      per-workload pod
 ```
+
+The data flow is: archmage → gateway-mode client → HTTP → gateway →
+cluster Dolt (writes). DoltHub is fed one-way from the cluster as
+archive, never read back as truth. GCS backup is the canonical
+disaster-recovery substrate.
 
 ## Components
 
@@ -58,8 +82,8 @@ Three CRDs, all namespaced under `spire.awell.io/v1alpha1`:
 
 | Field | Description |
 |-------|-------------|
-| `spec.dolthub.remote` | DoltHub remote URL for beads sync |
-| `spec.dolthub.credentialsSecret` | k8s Secret name for Dolt creds |
+| `spec.dolthub.remote` | DoltHub remote URL — first-install seed only in cluster-as-truth installs (no bidirectional sync) |
+| `spec.dolthub.credentialsSecret` | k8s Secret name for Dolt creds (HTTPS clone for first-install seed) |
 | `spec.tokens` | Map of token names to Secret refs for Anthropic API keys |
 | `spec.defaultToken` | Which token to use when agent doesn't specify one |
 | `spec.polling.interval` | How often controllers poll (default: `2m`) |
@@ -70,12 +94,18 @@ Three CRDs, all namespaced under `spire.awell.io/v1alpha1`:
 
 Three poll-loop controllers run inside the operator process:
 
-**BeadWatcher** (`operator/controllers/bead_watcher.go`)
-- Runs `bd dolt pull` to sync from DoltHub
+**BeadWatcher** (`operator/controllers/bead_watcher.go`) — transitional
+legacy scheduler, off by default in cluster-as-truth installs
+- Reads beads directly from the in-cluster Dolt server (the canonical
+  bead-graph host); no DoltHub pull/push on its loop. Bidirectional
+  cluster ↔ DoltHub sync was removed because both sides writing produced
+  non-fast-forward push rejections and merge conflicts that silently
+  diverged the two stores (witnessed 2026-04-26). Cluster-as-truth makes
+  the cluster the single writer; DoltHub receives one-way archive
+  pushes only.
 - Runs `bd ready --json` to find beads with no open blockers
 - Creates a SpireWorkload CR for each new ready bead
 - Marks workloads as `Done` when their bead is closed
-- Runs `bd dolt push` to push state changes
 
 **WorkloadAssigner** (`operator/controllers/workload_assigner.go`)
 - Lists pending SpireWorkloads and available WizardGuilds
@@ -112,6 +142,7 @@ Pod: {agent-name}
  │  │  spire tower attach-cluster                          │ │
  │  │    --data-dir=/data/<db> --database=<db>             │ │
  │  │    --prefix=<prefix> --dolthub-remote=<remote>       │ │
+ │  │  (--dolthub-remote = first-install seed only)        │ │
  │  │  volumeMounts: /data                                 │ │
  │  └────────────────────┬─────────────────────────────────┘ │
  │                       │                                    │
@@ -158,7 +189,9 @@ The first init container, `tower-attach`, runs
 `spire tower attach-cluster` with `--data-dir`, `--database`, `--prefix`,
 and `--dolthub-remote` flags. It primes the `/data` volume with the
 beads workspace (dolt data dir) and spire config so the main container
-can open dolt immediately.
+can open dolt immediately. The `--dolthub-remote` flag captures the
+first-install seed source only; in cluster-as-truth installs DoltHub
+is not used as an active writable mirror.
 
 This replaces both the older `beads-seed` ConfigMap bootstrap and the
 `agent-entrypoint.sh` workspace-setup flow.
@@ -292,7 +325,11 @@ If no `spire.yaml` exists, `pkg/repoconfig` auto-detects the runtime:
 
 ## Images
 
-**`Dockerfile.mayor`** — the mayor/operator image. Contains `spire`, `bd`, `dolt`, `git`. Runs `k8s/entrypoint.sh` which initializes beads state, syncs from DoltHub, and starts `spire mayor`.
+**`Dockerfile.mayor`** — the mayor/operator image. Contains `spire`,
+`bd`, `dolt`, `git`. Runs `k8s/entrypoint.sh` which initializes beads
+state (cluster-as-truth installs use the in-cluster Dolt directly;
+DoltHub is consulted only as a first-install seed) and starts
+`spire mayor`.
 
 **`Dockerfile.agent`** — the wizard-pod image. Contains everything in
 the mayor image plus `claude` CLI, `gh`, `node`, `go`, `python`. The
