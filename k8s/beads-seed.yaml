@@ -20,6 +20,6 @@ data:
     }
   config.yaml: |
     dolt.host: "spire-dolt.spire.svc"
-    dolt.port: 3306
+    dolt.port: 3307
   routes.jsonl: |
     {"prefix":"spi-","path":"."}

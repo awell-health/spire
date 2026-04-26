@@ -121,7 +121,6 @@ data:
       name: root
       password: ""
     privilege_file: ""
-    allow_cleartext_passwords: true
     listener:
       host: "0.0.0.0"
       port: 3307
@@ -166,7 +165,7 @@ data:
         fi
 
         cd /var/lib/dolt
-        dolt clone https://doltremoteapi.dolthub.com/awell/spire spi 2>&1 \
+        dolt clone https://doltremoteapi.dolthub.com/awell/awell spi 2>&1 \
             || echo "[dolt-init] WARNING: clone failed — starting with empty database"
 
         echo "[dolt-init] done"
