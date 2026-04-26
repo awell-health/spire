@@ -334,40 +334,22 @@ func DeleteTowerConfig(name string) error {
 	return nil
 }
 
-// ActiveTowerConfig finds the tower for the current context.
-// If SPIRE_TOWER is set in the environment, it loads that tower directly —
-// this ensures subprocess chains (wizard → apprentice) inherit explicit tower
-// context instead of re-resolving from CWD.
-// Otherwise, falls back to CWD-based resolution via Instance.Database matching.
+// ActiveTowerConfig finds the tower for the current context. This is a thin
+// wrapper around ResolveTowerConfig — the single canonical resolver — so
+// CLI-side callers and store-side dispatch see exactly the same precedence:
+//
+//  1. SPIRE_TOWER env var
+//  2. cfg.ActiveTower (set by `spire tower use`)
+//  3. CWD → registered instance → instance's tower
+//  4. Sole tower on disk
+//
+// Before spi-43q7hp this helper had its own CWD-first resolution that
+// silently outranked an explicitly selected gateway tower whenever the
+// shell happened to sit inside a same-prefix direct local repo. It now
+// shares the resolver used by store dispatch so no CLI/store path can
+// fall back to direct local Dolt when the operator selected a gateway.
 func ActiveTowerConfig() (*TowerConfig, error) {
-	// Fast path: explicit tower from environment (set by parent spawner).
-	if name := os.Getenv("SPIRE_TOWER"); name != "" {
-		return LoadTowerConfig(name)
-	}
-
-	cwd, err := RealCwd()
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := Load()
-	if err != nil {
-		return nil, err
-	}
-	inst := FindInstanceByPath(cfg, cwd)
-	if inst == nil {
-		return nil, fmt.Errorf("no spire instance registered for %s", cwd)
-	}
-
-	towers, err := ListTowerConfigs()
-	if err != nil {
-		return nil, err
-	}
-	for i := range towers {
-		if towers[i].Database == inst.Database || towers[i].Database == "beads_"+inst.Database {
-			return &towers[i], nil
-		}
-	}
-	return nil, fmt.Errorf("no tower config found for database %q", inst.Database)
+	return ResolveTowerConfig()
 }
 
 // TowerConfigForDatabase finds the tower owning a given database name.

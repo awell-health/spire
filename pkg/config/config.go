@@ -221,10 +221,15 @@ func RemoveFromPaths(inst *Instance, path string) {
 //
 // Resolution order:
 //  1. SPIRE_TOWER env var (explicit tower name from --tower flag or env)
-//  2. CWD → registered instance → instance's tower
-//  3. Active tower (cfg.ActiveTower)
+//  2. Active tower (cfg.ActiveTower) — set by `spire tower use`
+//  3. CWD → registered instance → instance's tower
 //  4. Sole tower on disk (exactly one tower config file)
 //  5. Error: no tower found or ambiguous (multiple towers, none active)
+//
+// cfg.ActiveTower outranks CWD so that an operator who selected a gateway
+// tower with `spire tower use <gateway>` cannot have writes silently
+// rerouted to a same-prefix direct local tower because the shell happens
+// to be inside its registered repo path. See spi-43q7hp.
 func ResolveTowerConfig() (*TowerConfig, error) {
 	// 1. SPIRE_TOWER env override (from --tower flag or explicit env).
 	if towerName := os.Getenv("SPIRE_TOWER"); towerName != "" {
@@ -248,12 +253,26 @@ func ResolveTowerConfig() (*TowerConfig, error) {
 // config to pass it in, so test-injected values (e.g. ActiveTower) are respected.
 //
 // Resolution order (after SPIRE_TOWER, handled by ResolveTowerConfig):
-//  2. CWD → registered instance → instance's tower
-//  3. Active tower (cfg.ActiveTower)
+//  2. Active tower (cfg.ActiveTower) — set by `spire tower use`
+//  3. CWD → registered instance → instance's tower
 //  4. Sole tower on disk (exactly one tower config file)
 //  5. Error: no tower found or ambiguous (multiple towers, none active)
 func ResolveTowerConfigWith(cfg *SpireConfig) (*TowerConfig, error) {
-	// 2. CWD → registered instance → instance's tower.
+	// 2. Active tower from global config — set explicitly by
+	//    `spire tower use <name>`. This must outrank CWD so a gateway
+	//    tower stays selected even when the shell is inside a same-prefix
+	//    direct local repo path. A stale ActiveTower pointing at a
+	//    deleted tower must not stop resolution — fall through to CWD /
+	//    sole-tower instead of erroring.
+	if cfg.ActiveTower != "" {
+		tower, tErr := LoadTowerConfig(cfg.ActiveTower)
+		if tErr == nil {
+			return tower, nil
+		}
+		log.Printf("[tower] active_tower=%q in config but tower config failed to load: %v", cfg.ActiveTower, tErr)
+	}
+
+	// 3. CWD → registered instance → instance's tower.
 	if cwd, cwdErr := RealCwd(); cwdErr == nil {
 		if inst := FindInstanceByPath(cfg, cwd); inst != nil && inst.Tower != "" {
 			tower, tErr := LoadTowerConfig(inst.Tower)
@@ -263,13 +282,6 @@ func ResolveTowerConfigWith(cfg *SpireConfig) (*TowerConfig, error) {
 			} else {
 				return tower, nil
 			}
-		}
-	}
-
-	// 3. Active tower from global config.
-	if cfg.ActiveTower != "" {
-		if tower, tErr := LoadTowerConfig(cfg.ActiveTower); tErr == nil {
-			return tower, nil
 		}
 	}
 
