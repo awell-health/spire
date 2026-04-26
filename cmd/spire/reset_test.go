@@ -2269,3 +2269,316 @@ func TestResetTo_ForceNoLongerFailsValidation(t *testing.T) {
 		t.Errorf("plan.status = %q, want completed (upstream)", got)
 	}
 }
+
+// --- spi-vdg28a: --to --force normalizes abandoned active predecessors ---
+
+// withFakeLiveWizardLookup swaps findLiveWizardForBeadFunc for the duration of
+// the test. Pass nil to simulate "no live wizard owns the bead".
+func withFakeLiveWizardLookup(t *testing.T, wiz *localWizard) {
+	t.Helper()
+	prev := findLiveWizardForBeadFunc
+	findLiveWizardForBeadFunc = func(beadID string) *localWizard {
+		return wiz
+	}
+	t.Cleanup(func() { findLiveWizardForBeadFunc = prev })
+}
+
+// TestResetTo_ForceNormalizesAbandonedActivePredecessor is the spi-vdg28a
+// regression: implement=active with no live wizard, target=review, --force.
+// Reset must normalize implement → completed, clear active_step, and leave
+// review as the next runnable step.
+func TestResetTo_ForceNormalizesAbandonedActivePredecessor(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+	withFakeLiveWizardLookup(t, nil)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-normalizes-active-pred",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-force-normalizes-active-pred"
+
+	// Create a step bead for implement so we can verify the audit comment lands.
+	implementStepID := createTestBead(t, createOpts{
+		Title:    "step:implement",
+		Priority: 3,
+		Type:     parseIssueType("task"),
+		Labels:   []string{"step:implement", "workflow-step"},
+		Parent:   beadID,
+	})
+	if err := storeUpdateBead(implementStepID, map[string]interface{}{"status": "in_progress"}); err != nil {
+		t.Fatalf("update step bead: %v", err)
+	}
+
+	writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "active", StartedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "pending"},
+			"merge":     {Status: "pending"},
+			"discard":   {Status: "pending"},
+			"close":     {Status: "pending"},
+		},
+		"implement",
+		map[string]string{"implement": implementStepID},
+	)
+
+	if err := softResetV3(beadID, "review", wizardName, true, nil); err != nil {
+		t.Fatalf("softResetV3 --to review --force: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// implement was an active predecessor with no live wizard → normalized
+	// to completed (with empty outputs and a CompletedAt stamp).
+	if got := loaded.Steps["implement"].Status; got != "completed" {
+		t.Errorf("implement.status = %q, want completed (force-normalized)", got)
+	}
+	if got := loaded.Steps["implement"].CompletedAt; got == "" {
+		t.Error("implement.CompletedAt = empty, want a timestamp from normalization")
+	}
+
+	// active_step must be cleared — leaving it pointed at the abandoned
+	// predecessor would cause resummon to resume from implement, defeating
+	// the point of --to review --force.
+	if got := loaded.ActiveStep; got != "" {
+		t.Errorf("ActiveStep = %q, want empty (normalized step)", got)
+	}
+
+	// review is in the rewind set, so it stays pending and is the next
+	// runnable step.
+	if got := loaded.Steps["review"].Status; got != "pending" {
+		t.Errorf("review.status = %q, want pending", got)
+	}
+
+	// plan stays completed (upstream, untouched).
+	if got := loaded.Steps["plan"].Status; got != "completed" {
+		t.Errorf("plan.status = %q, want completed (upstream)", got)
+	}
+
+	// Audit trail: the step bead should carry a force-normalized comment so
+	// the bead history reflects the synthetic transition.
+	comments, err := storeGetComments(implementStepID)
+	if err != nil {
+		t.Fatalf("read implement step bead comments: %v", err)
+	}
+	foundAudit := false
+	for _, c := range comments {
+		if strings.Contains(c.Text, "force-normalized from active") &&
+			strings.Contains(c.Text, "review") {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Errorf("expected force-normalized audit comment on step bead %s, got: %+v", implementStepID, comments)
+	}
+
+	// Step bead must be closed to match the new graph state. An in_progress
+	// step bead alongside a completed graph state would deadlock the next
+	// summon (the executor's transition path treats in_progress step beads
+	// as still owned by a wizard).
+	stepBead, err := storeGetBead(implementStepID)
+	if err != nil {
+		t.Fatalf("read implement step bead: %v", err)
+	}
+	if stepBead.Status != "closed" {
+		t.Errorf("step bead status = %q, want closed (matches force-normalized graph state)", stepBead.Status)
+	}
+}
+
+// TestResetTo_ForceFailsClosedWhenLiveWizardOwnsBead verifies the orphan-
+// recovery liveness gate: when a wizard with a live PID still owns the bead,
+// `--force` must refuse to normalize an active predecessor and the graph
+// state must remain byte-identical (no partial mutation).
+func TestResetTo_ForceFailsClosedWhenLiveWizardOwnsBead(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-live-wizard-guard",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-force-live-wizard-guard"
+
+	withFakeLiveWizardLookup(t, &localWizard{
+		Name:   wizardName,
+		PID:    12345,
+		BeadID: beadID,
+	})
+
+	writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "active", StartedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "pending"},
+			"merge":     {Status: "pending"},
+			"discard":   {Status: "pending"},
+			"close":     {Status: "pending"},
+		},
+		"implement",
+		nil,
+	)
+
+	gsPath := filepath.Join(tmp, "runtime", wizardName, "graph_state.json")
+	before, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state before: %v", err)
+	}
+
+	err = softResetV3(beadID, "review", wizardName, true, nil)
+	if err == nil {
+		t.Fatal("expected error when live wizard owns active predecessor, got nil")
+	}
+	if !strings.Contains(err.Error(), "live wizard") {
+		t.Errorf("expected error to mention 'live wizard', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "implement") {
+		t.Errorf("expected error to name the active step, got: %v", err)
+	}
+
+	after, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Error("graph_state.json was mutated despite live-wizard guard — operation must be all-or-nothing")
+	}
+}
+
+// TestResetTo_ForceLeavesNonPredecessorActiveStepsAlone verifies the
+// predecessor-only scoping: an active step that is NOT a predecessor of the
+// target (parallel branch, post-target step) must be left alone. Only
+// predecessors get the active → completed normalization.
+func TestResetTo_ForceLeavesNonPredecessorActiveStepsAlone(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+	withFakeLiveWizardLookup(t, nil)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-non-predecessor-active",
+		Priority: 1,
+		Type:     parseIssueType("epic"),
+	})
+	wizardName := "wizard-test-resetto-force-non-predecessor-active"
+
+	// Target = review. implement-failed is a sibling branch (both depend on
+	// implement). If implement-failed were active, it is NOT a predecessor of
+	// review, so the new normalization must skip it.
+	writeV3GraphStateForEpic(t, tmp, wizardName, epicID,
+		map[string]executor.StepState{
+			"design-check":     {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"plan":             {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:02:00Z"},
+			"materialize":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:03:00Z"},
+			"implement":        {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:04:00Z", Outputs: map[string]string{"outcome": "build-failed"}},
+			"implement-failed": {Status: "active", StartedAt: "2026-01-01T00:05:00Z"},
+			"review":           {Status: "pending"},
+			"merge":            {Status: "pending"},
+			"discard":          {Status: "pending"},
+			"close":            {Status: "pending"},
+		},
+		"implement-failed",
+		nil,
+	)
+
+	if err := softResetV3(epicID, "review", wizardName, true, nil); err != nil {
+		t.Fatalf("softResetV3 --to review --force: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// implement-failed is a non-predecessor active sibling. Predecessor-only
+	// scoping leaves it alone — the only place it's touched is by the
+	// pending-only force-advance, which doesn't match an active step.
+	if got := loaded.Steps["implement-failed"].Status; got != "active" {
+		t.Errorf("implement-failed.status = %q, want active (non-predecessor, untouched)", got)
+	}
+}
+
+// TestResetTo_NoForce_DoesNotNormalizeActivePredecessor verifies the
+// normalization is gated on --force. A plain (non-force) --to call against a
+// graph with an active predecessor must NOT touch that predecessor's status,
+// since --force is the operator's explicit opt-in to the normalization path.
+func TestResetTo_NoForce_DoesNotNormalizeActivePredecessor(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+	withFakeLiveWizardLookup(t, nil)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-noforce-active-pred-untouched",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-noforce-active-pred-untouched"
+
+	// review has been reached (active) so the no-force precondition passes,
+	// but implement is also active (a stale carry from a parallel run).
+	// Without --force, implement must stay active.
+	writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "active", StartedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "active", StartedAt: "2026-01-01T00:03:00Z"},
+		},
+		"review",
+		nil,
+	)
+
+	if err := softResetV3(beadID, "review", wizardName, false, nil); err != nil {
+		t.Fatalf("softResetV3 --to review (no --force): %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+
+	// implement stays active — no --force, no normalization.
+	if got := loaded.Steps["implement"].Status; got != "active" {
+		t.Errorf("implement.status = %q, want active (--force not set)", got)
+	}
+}
+
+// TestComputeStepPredecessors_TaskGraph verifies the predecessor BFS walks
+// Needs back-edges correctly — predecessors are everything reachable from
+// target via Needs, target itself excluded.
+func TestComputeStepPredecessors_TaskGraph(t *testing.T) {
+	graph := &formula.FormulaStepGraph{
+		Steps: map[string]formula.StepConfig{
+			"plan":      {},
+			"implement": {Needs: []string{"plan"}},
+			"review":    {Needs: []string{"implement"}},
+			"merge":     {Needs: []string{"review"}},
+		},
+	}
+
+	preds := computeStepPredecessors(graph, "review")
+	want := map[string]bool{"plan": true, "implement": true}
+	if !reflect.DeepEqual(preds, want) {
+		t.Errorf("predecessors of review = %v, want %v", preds, want)
+	}
+
+	if got := computeStepPredecessors(graph, "plan"); len(got) != 0 {
+		t.Errorf("predecessors of plan = %v, want empty (root has no predecessors)", got)
+	}
+}

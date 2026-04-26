@@ -152,6 +152,28 @@ var cmdResetFunc = cmdReset
 // step bead. Production wiring delegates to store.ActivateStepBead.
 var storeActivateStepBeadFunc = storeActivateStepBead
 
+// findLiveWizardForBeadFunc reports whether a wizard with a live OS process
+// owns the given bead. Returns the registry entry when alive, nil otherwise.
+//
+// "Live" means: a registry entry exists for the bead AND its PID is non-zero
+// AND the PID resolves to a running process. A registry entry alone is not
+// sufficient — stale entries (process gone, registry not yet swept) read as
+// not-live so reset's normalization path can reclaim abandoned active steps.
+//
+// Tests swap this var to inject live/dead wizards without touching the
+// on-disk registry or spawning real processes.
+var findLiveWizardForBeadFunc = func(beadID string) *localWizard {
+	reg := loadWizardRegistry()
+	wiz := findLiveWizardForBead(reg, beadID)
+	if wiz == nil {
+		return nil
+	}
+	if wiz.PID > 0 && processAlive(wiz.PID) {
+		return wiz
+	}
+	return nil
+}
+
 var resetCmd = &cobra.Command{
 	Use:   "reset <bead-id> [flags]",
 	Short: "Reset a bead's wizard state",
@@ -813,7 +835,41 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 		}
 	}
 
-	// --- 4b. Expand rewind set to include stale-completed downstream-of-override steps ---
+	// --- 4b. Pre-flight: identify active predecessor steps and gate on wizard liveness ---
+	// `--force` normalizes pre-target steps so the graph can route forward
+	// from the target on resume. Without this pass, an `active` predecessor
+	// (e.g. an abandoned implement step) would be skipped by the pending-only
+	// force-advance below, leaving the graph self-contradictory: the target
+	// is runnable but `active_step` still points at the abandoned predecessor,
+	// so resummon resumes from the predecessor instead of the target.
+	//
+	// Liveness gate: if a wizard with a live OS process still owns this bead,
+	// fail closed BEFORE any mutation — `--force` is the operator escape hatch
+	// for orphaned work, not a hammer for stomping on a running wizard. The
+	// CLI reset path kills the wizard process before reaching softResetV3, so
+	// in production this guard mostly catches direct callers (gateway, tests)
+	// where the kill step was bypassed.
+	var activePredecessors []string
+	if forceAdvance {
+		predecessors := computeStepPredecessors(graph, targetStep)
+		for stepName := range predecessors {
+			if baseRewind[stepName] {
+				continue
+			}
+			if ss, ok := gs.Steps[stepName]; ok && ss.Status == "active" {
+				activePredecessors = append(activePredecessors, stepName)
+			}
+		}
+		if len(activePredecessors) > 0 {
+			if wiz := findLiveWizardForBeadFunc(beadID); wiz != nil {
+				sort.Strings(activePredecessors)
+				return fmt.Errorf("cannot --force past active step(s) %s: live wizard %s (pid %d) still owns %s; release it or kill the wizard first",
+					strings.Join(activePredecessors, ", "), wiz.Name, wiz.PID, beadID)
+			}
+		}
+	}
+
+	// --- 4c. Expand rewind set to include stale-completed downstream-of-override steps ---
 	stepsToReset := expandRewindSetForOverrides(baseRewind, graph, gs, overrides)
 
 	fmt.Printf("  %sresetting steps: %s%s\n", dim, strings.Join(mapKeys(stepsToReset), ", "), reset)
@@ -848,6 +904,13 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 	// resolved and dispatches from target. Without this, a stuck graph where
 	// the target was never reached would still stall on a pending predecessor
 	// or sibling branch.
+	//
+	// Active predecessors of the target (collected in step 4b) are also
+	// normalized to completed with audit metadata. This is the orphan-recovery
+	// path: implementation crashed mid-flight, no live wizard remains, and the
+	// operator wants reset to clear the abandoned predecessor so resummon
+	// resumes at the target. The liveness gate in 4b ensures we only reach
+	// this path when no wizard is actively working the bead.
 	if forceAdvance {
 		advanced := 0
 		for stepName, ss := range gs.Steps {
@@ -864,6 +927,50 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 		}
 		if advanced > 0 {
 			fmt.Printf("  %s↟ force-advanced %d pending step(s) to completed (outputs={})%s\n", yellow, advanced, reset)
+		}
+
+		normalized := 0
+		nowStamp := time.Now().UTC().Format(time.RFC3339)
+		for _, stepName := range activePredecessors {
+			ss := gs.Steps[stepName]
+			ss.Status = "completed"
+			if ss.Outputs == nil {
+				ss.Outputs = map[string]string{}
+			}
+			if ss.CompletedAt == "" {
+				ss.CompletedAt = nowStamp
+			}
+			gs.Steps[stepName] = ss
+			normalized++
+
+			// Audit trail: comment on the step bead, then close it to match
+			// the new graph state. A step bead left in_progress after the
+			// graph says completed would deadlock the next summon (the
+			// transition path treats already-active step beads as still
+			// owned). The audit comment fires before close so the close
+			// hook itself never strips it.
+			if stepBeadID := gs.StepBeadIDs[stepName]; stepBeadID != "" {
+				_ = storeAddComment(stepBeadID,
+					fmt.Sprintf("force-normalized from active during reset --to %s (no live wizard)", targetStep))
+				if err := storeCloseStepBead(stepBeadID); err != nil {
+					fmt.Printf("  %s(note: could not close step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
+				}
+			}
+		}
+		if normalized > 0 {
+			fmt.Printf("  %s↟ force-normalized %d abandoned active predecessor(s) to completed%s\n", yellow, normalized, reset)
+		}
+
+		// Clear active_step if it pointed at one of the normalized
+		// predecessors. Without this, the graph stays internally pointed at
+		// an abandoned step and resummon resumes from there instead of the
+		// target.
+		for _, stepName := range activePredecessors {
+			if gs.ActiveStep == stepName {
+				gs.ActiveStep = ""
+				fmt.Printf("  %s✗ cleared active_step (pointed at normalized predecessor %s)%s\n", dim, stepName, reset)
+				break
+			}
 		}
 	}
 
@@ -1037,6 +1144,33 @@ func removeNestedGraphStateRecursive(wizardName string) {
 			return nil
 		})
 	}
+}
+
+// computeStepPredecessors builds the set of steps that are transitive
+// predecessors of targetStep (backward reachability via the Needs edges).
+// The target step itself is NOT included.
+//
+// Used by softResetV3's --force normalization to scope the abandoned-active
+// step rule to predecessors only — non-predecessor active steps (parallel
+// branches that happen to be running, post-target activity) are left alone.
+func computeStepPredecessors(graph *formula.FormulaStepGraph, targetStep string) map[string]bool {
+	result := map[string]bool{}
+	queue := []string{targetStep}
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		step, ok := graph.Steps[curr]
+		if !ok {
+			continue
+		}
+		for _, need := range step.Needs {
+			if !result[need] {
+				result[need] = true
+				queue = append(queue, need)
+			}
+		}
+	}
+	return result
 }
 
 // computeStepsToReset builds the set of steps that need resetting: the target
