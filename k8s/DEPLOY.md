@@ -73,7 +73,7 @@ gcloud storage buckets add-iam-policy-binding gs://$BACKUP_BUCKET \
 
 Then wire `backup.gcs.bucket` into your local values overlay (see §2). `helm install` fails fast at template time if the bucket or auth path is missing — the failure points back here.
 
-**Backup-enabled is not the same as DR-ready.** The restore drill (bead `spi-i7k1ag.3`) must be exercised before announcing production cutover. Until that bead lands, treat backup as "archival is happening" not "we know we can recover."
+**Backup-enabled is not the same as DR-ready.** Production cutover is gated on exercising the restore drill — see [§11 Disaster recovery](#11-disaster-recovery) and [`docs/runbooks/gcs-restore.md`](../docs/runbooks/gcs-restore.md) for the runnable procedure. Treat the chart's backup default as "archival is happening" not "we know we can recover."
 
 To opt out (disposable/dev cluster only), set `--set backup.enabled=false`. This is the only documented reason to disable backup; production installs MUST keep it on.
 
@@ -638,7 +638,41 @@ Docker layer caching means only the Go compile runs on code changes (~15 s).
 
 ---
 
-## 11. References
+## 11. Disaster recovery
+
+GCS is the canonical disaster-recovery substrate for cluster-as-truth
+deployments. The chart defaults `backup.enabled=true` (see [§1.1](#11-backup-bucket-cluster-as-truth-dr))
+and the daily `spire-dolt-backup` CronJob writes a full Dolt backup to
+`gs://<backup.gcs.bucket>/<backup.gcs.prefix>` via `dolt backup sync`.
+
+Restore is a separate runbook because the drill is what proves DR works
+— a default-on backup that has never been restored is unproven, not
+unwritten. The full procedure (test-namespace setup, blank PVC, GCS
+clone, bead-graph integrity validation, gateway smoke tests, RPO/RTO
+recording, post-restore guard checks) lives at:
+
+- [`docs/runbooks/gcs-restore.md`](../docs/runbooks/gcs-restore.md) —
+  copy-pasteable operator runbook, eight numbered sections.
+- [`scripts/restore-gcs-drill.sh`](../scripts/restore-gcs-drill.sh) —
+  bash helper wrapping the namespace + PVC + restore-Pod steps.
+  Supports `--dry-run`.
+
+> **Warning — do NOT re-enable bidirectional DoltHub sync after a
+> restore.** Cluster-as-truth requires a single writer. Turning the
+> bidirectional cluster syncer back on (`syncer.enabled=true` with the
+> pre-cluster-as-truth `DOLT_PULL`/`DOLT_PUSH` loop) re-creates the
+> divergence-and-merge-conflict class of bug observed on 2026-04-26
+> and the whole epic [`spi-i7k1ag`] was filed to remove. The restore
+> runbook section §7 lists the exact post-restore guard checks an
+> operator must verify before promoting the restored cluster.
+
+Run the drill at least quarterly and after any backup configuration
+change. The drill produces no production impact when executed against
+a test namespace.
+
+---
+
+## 12. References
 
 - Chart values reference: [helm/spire/values.yaml](../helm/spire/values.yaml) — every parameter is documented inline as `## @param`
 - GKE overlay: [helm/spire/values.gke.yaml](../helm/spire/values.gke.yaml)

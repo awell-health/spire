@@ -1106,6 +1106,16 @@ spec:
 
 ## Merge Ownership (Sync Conflicts)
 
+> Cluster-as-truth deployments (`deployment_mode: cluster-native`) make
+> the cluster Dolt database the single write authority and reduce
+> DoltHub to an archive-only seed. GCS is the canonical
+> disaster-recovery substrate via the chart's `backup.*` block; the
+> restore drill lives at [`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md).
+> The merge-ownership rules below still describe local-native and
+> attached-reserved towers that sync bidirectionally over DoltHub —
+> those topologies retain the conflict-resolution semantics in the
+> table.
+
 Field-level ownership prevents conflicts during DoltHub sync. Each field
 has a single authority; the other side's changes are discarded on conflict.
 Append-only tables (comments, messages) never conflict because rows are
