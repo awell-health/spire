@@ -6,13 +6,22 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/config"
 )
 
 // CLIFetchMerge performs a three-way merge by running dolt fetch followed
 // by dolt merge. Unlike dolt pull (fast-forward only), this can reconcile
 // diverged histories by creating a merge commit. Returns the merge output.
 // The context controls the deadline for both fetch and merge subcommands.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Same rationale as
+// CLIPush/CLIPull — even a fetch+merge mutates the laptop's local Dolt
+// graph in a way that conflicts with the cluster-owned canonical state.
 func CLIFetchMerge(ctx context.Context, dataDir string) (string, error) {
+	if err := config.EnsureNotGatewayResolved("dolt.CLIFetchMerge"); err != nil {
+		return "", err
+	}
 	bin := Bin()
 	if bin == "" {
 		return "", fmt.Errorf("dolt not found — run spire up to install")

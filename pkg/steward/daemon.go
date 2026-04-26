@@ -270,16 +270,30 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 		log.Printf("[daemon] [%s] reconcileSharedRepos: %v", tower.Name, err)
 	}
 
-	ensureWebhookQueue()
+	// gateway-mode: skip webhook_queue table creation and queue draining for
+	// gateway-mode towers. Both ensureWebhookQueue (CREATE TABLE) and
+	// integration.ProcessWebhookQueue (UPDATE webhook_queue SET processed = 1)
+	// mutate local Dolt directly via DoltSQL; in cluster-as-truth deployments
+	// the cluster's own daemon owns the webhook_queue table inside its
+	// canonical Dolt database. ProcessWebhookQueue also has its own
+	// EnsureNotGatewayResolved guard as defense-in-depth, but skipping at the
+	// per-tower iteration boundary avoids the no-op CREATE TABLE noise and
+	// matches the runDoltSync skip shape above.
+	gatewayTower := config.IsGatewayMode(&tower)
+	if !gatewayTower {
+		ensureWebhookQueue()
+	}
 
 	epicsSynced := integration.SyncEpicsToLinear()
 	if epicsSynced > 0 {
 		log.Printf("[daemon] [%s] synced %d epic(s) to Linear", tower.Name, epicsSynced)
 	}
 
-	qProcessed, qErrors := integration.ProcessWebhookQueue()
-	if qProcessed > 0 || qErrors > 0 {
-		log.Printf("[daemon] [%s] queue: processed %d rows (%d errors)", tower.Name, qProcessed, qErrors)
+	if !gatewayTower {
+		qProcessed, qErrors := integration.ProcessWebhookQueue()
+		if qProcessed > 0 || qErrors > 0 {
+			log.Printf("[daemon] [%s] queue: processed %d rows (%d errors)", tower.Name, qProcessed, qErrors)
+		}
 	}
 
 	processed, errors := processWebhookEvents()

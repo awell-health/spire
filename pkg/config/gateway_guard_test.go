@@ -173,6 +173,145 @@ func TestRejectIfGateway_SpireTowerEnvOverride(t *testing.T) {
 	}
 }
 
+// TestEnsureNotGateway_NilCfg pins the explicit-cfg variant's nil contract:
+// callers that haven't loaded a tower yet (library helpers running before
+// config is wired) get nil so they don't accidentally fail on a missing
+// resolver. This matches the IsGatewayMode(nil) contract.
+func TestEnsureNotGateway_NilCfg(t *testing.T) {
+	if err := EnsureNotGateway(nil, "any.op"); err != nil {
+		t.Errorf("EnsureNotGateway(nil) = %v, want nil", err)
+	}
+}
+
+// TestEnsureNotGateway_DirectMode confirms the passthrough for direct-mode
+// towers — the helper is a no-op so existing direct-mode flows can't
+// regress.
+func TestEnsureNotGateway_DirectMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "explicit direct", mode: TowerModeDirect},
+		{name: "empty mode (legacy default)", mode: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &TowerConfig{Name: "spi", Mode: tc.mode}
+			if err := EnsureNotGateway(cfg, "dolt.CLIPush"); err != nil {
+				t.Errorf("EnsureNotGateway(%s) = %v, want nil", tc.mode, err)
+			}
+		})
+	}
+}
+
+// TestEnsureNotGateway_GatewayWrapsSentinel covers the sentinel contract:
+// gateway-mode rejection must wrap ErrGatewayDirectMutation so callers and
+// tests can errors.Is against the sentinel uniformly across the audited
+// helpers (CLI, dolt CLI helpers, bd wrappers, integration writers).
+func TestEnsureNotGateway_GatewayWrapsSentinel(t *testing.T) {
+	cfg := &TowerConfig{Name: "spi", Mode: TowerModeGateway, URL: "http://127.0.0.1:3030"}
+
+	err := EnsureNotGateway(cfg, "dolt.CLIPush")
+	if err == nil {
+		t.Fatal("EnsureNotGateway(gateway) = nil, want wrapped ErrGatewayDirectMutation")
+	}
+	if !errors.Is(err, ErrGatewayDirectMutation) {
+		t.Fatalf("errors.Is(err, ErrGatewayDirectMutation) = false; got %v", err)
+	}
+	if !contains(err.Error(), "dolt.CLIPush") {
+		t.Errorf("Error() = %q, want op name embedded", err.Error())
+	}
+}
+
+// TestGatewayModeError_IsSentinel pins the cross-shape sentinel match:
+// CLI top-level guards return *GatewayModeError; library helpers return
+// the wrapped sentinel form. Both must satisfy
+// errors.Is(err, ErrGatewayDirectMutation) so a single test idiom covers
+// every guarded path.
+func TestGatewayModeError_IsSentinel(t *testing.T) {
+	err := &GatewayModeError{TowerName: "spi", GatewayURL: "http://127.0.0.1:3030"}
+	if !errors.Is(err, ErrGatewayDirectMutation) {
+		t.Errorf("errors.Is(*GatewayModeError, ErrGatewayDirectMutation) = false, want true")
+	}
+}
+
+// TestEnsureNotGatewayResolved_GatewayActive exercises the resolver-driven
+// variant: a gateway tower selected via cfg.ActiveTower must trip the
+// helper exactly the same way EnsureNotGateway(cfg, op) would. Library
+// helpers reach this entry point when they have no TowerConfig in scope.
+func TestEnsureNotGatewayResolved_GatewayActive(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(tmpDir, "spire"))
+	t.Setenv("SPIRE_TOWER", "")
+
+	gw := makeGatewayTower(t, "spi", "spi", "http://127.0.0.1:3030")
+	if err := Save(&SpireConfig{
+		ActiveTower: gw.Name,
+		Instances:   map[string]*Instance{},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	t.Chdir(tmpDir)
+
+	err := EnsureNotGatewayResolved("dolt.CLIPush")
+	if err == nil {
+		t.Fatal("EnsureNotGatewayResolved: got nil, want wrapped ErrGatewayDirectMutation")
+	}
+	if !errors.Is(err, ErrGatewayDirectMutation) {
+		t.Errorf("errors.Is(err, ErrGatewayDirectMutation) = false; got %v", err)
+	}
+}
+
+// TestEnsureNotGatewayResolved_DirectActive confirms direct-mode passthrough.
+func TestEnsureNotGatewayResolved_DirectActive(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(tmpDir, "spire"))
+	t.Setenv("SPIRE_TOWER", "")
+
+	direct := makeDirectTower(t, "spi-local", "spi")
+	if err := Save(&SpireConfig{
+		ActiveTower: direct.Name,
+		Instances:   map[string]*Instance{},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	t.Chdir(tmpDir)
+
+	if err := EnsureNotGatewayResolved("dolt.CLIPush"); err != nil {
+		t.Errorf("EnsureNotGatewayResolved direct mode = %v, want nil", err)
+	}
+}
+
+// TestEnsureNotGatewayResolved_NoTowerTreatsAsDirect: library helpers reach
+// this entry point in early-boot or test contexts where the resolver
+// produces "no tower configured". Returning nil keeps such callers
+// unblocked — the top-level CLI guard (RejectIfGateway) is the right
+// place to surface resolver errors to the operator.
+func TestEnsureNotGatewayResolved_NoTowerTreatsAsDirect(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("SPIRE_CONFIG_DIR", filepath.Join(tmpDir, "spire"))
+	t.Setenv("SPIRE_TOWER", "")
+	t.Chdir(tmpDir)
+
+	if err := EnsureNotGatewayResolved("dolt.CLIPush"); err != nil {
+		t.Errorf("EnsureNotGatewayResolved no-tower = %v, want nil (treated as direct-mode)", err)
+	}
+}
+
+// contains is a tiny helper to avoid pulling in the strings package twice
+// at the test layer when the message-substring check is the only need.
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRejectIfGateway_CwdDirectLosesToActiveGateway is the prefix-collision
 // scenario the parent epic was designed around: CWD-mapped instance points
 // at a same-prefix direct local tower, but `spire tower use <gateway>` is

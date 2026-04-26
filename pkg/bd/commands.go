@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/config"
 )
 
 // --- Option structs ---
@@ -284,13 +286,29 @@ func (c *Client) MolCook(formula string, vars map[string]string) (string, error)
 }
 
 // DoltCommit commits changes in the dolt database.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Dolt commits live
+// inside the cluster for cluster-as-truth deployments; a laptop fronting
+// a gateway-mode tower must not stamp local commits onto a database the
+// cluster owns. Read-only wrappers (DoltSQL queries, DoltRemoteList) are
+// intentionally not gated.
 func (c *Client) DoltCommit(message string) error {
+	if err := config.EnsureNotGatewayResolved("bd.DoltCommit"); err != nil {
+		return err
+	}
 	_, err := c.exec("dolt", "commit", message)
 	return err
 }
 
 // DoltPush pushes to a dolt remote. Empty remote/branch uses defaults.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Pushing the
+// laptop's local Dolt to the canonical remote bypasses the gateway and
+// recreates the divergence class cluster-as-truth eliminates.
 func (c *Client) DoltPush(remote, branch string) error {
+	if err := config.EnsureNotGatewayResolved("bd.DoltPush"); err != nil {
+		return err
+	}
 	args := []string{"dolt", "push"}
 	if remote != "" {
 		args = append(args, remote)
@@ -303,7 +321,15 @@ func (c *Client) DoltPush(remote, branch string) error {
 }
 
 // DoltPull pulls from a dolt remote. Empty remote/branch uses defaults.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Pulling mutates
+// the laptop's local Dolt branch state; in cluster-as-truth the laptop
+// has no local Dolt to mutate, and even when it does the cluster's
+// authoritative graph should be reached through the gateway.
 func (c *Client) DoltPull(remote, branch string) error {
+	if err := config.EnsureNotGatewayResolved("bd.DoltPull"); err != nil {
+		return err
+	}
 	args := []string{"dolt", "pull"}
 	if remote != "" {
 		args = append(args, remote)
@@ -316,13 +342,28 @@ func (c *Client) DoltPull(remote, branch string) error {
 }
 
 // DoltRemoteAdd adds a dolt remote.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Configuring a
+// remote on a gateway-mode tower stages credentials/state for a direct
+// push that the gateway-aware guards reject; refuse here to avoid
+// leaving misleading remote state on disk.
 func (c *Client) DoltRemoteAdd(name, url string) error {
+	if err := config.EnsureNotGatewayResolved("bd.DoltRemoteAdd"); err != nil {
+		return err
+	}
 	_, err := c.exec("dolt", "remote", "add", name, url)
 	return err
 }
 
 // DoltRemoteRemove removes a dolt remote.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Same rationale as
+// DoltRemoteAdd — remote management on a gateway-mode tower is a no-op at
+// best and a source of confusing state at worst.
 func (c *Client) DoltRemoteRemove(name string) error {
+	if err := config.EnsureNotGatewayResolved("bd.DoltRemoteRemove"); err != nil {
+		return err
+	}
 	_, err := c.exec("dolt", "remote", "remove", name)
 	return err
 }

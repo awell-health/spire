@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -231,7 +232,17 @@ type WebhookQueueRow struct {
 // ProcessWebhookQueue reads unprocessed rows from webhook_queue,
 // creates webhook event beads from them, processes them, and marks them done.
 // Returns (processed count, error count).
+//
+// gateway-mode: no-op. The webhook_queue table lives in the cluster's Dolt
+// database for cluster-as-truth deployments; the cluster-side daemon
+// processes it. This call's UPDATE webhook_queue SET processed = 1 would
+// otherwise mutate the laptop's local Dolt directly (DoltSQL is a callback
+// that resolves to local Dolt SQL), bypassing the gateway. Returning
+// (0, 0) leaves cluster-side processing as the sole writer.
 func ProcessWebhookQueue() (int, int) {
+	if err := config.EnsureNotGatewayResolved("integration.ProcessWebhookQueue"); err != nil {
+		return 0, 0
+	}
 	// Query unprocessed queue rows
 	out, err := DoltSQL(
 		"SELECT id, event_type, linear_id, payload FROM webhook_queue WHERE processed = 0",

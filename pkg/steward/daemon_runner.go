@@ -211,6 +211,15 @@ var clusterSyncDeprecationOnce sync.Once
 // method and its signature are preserved so the daemon loop's strategy
 // dispatch keeps working — we want fail-safe (return nil), not
 // fail-compile.
+//
+// gateway-mode: not gated here by design. clusterStrategy is selected
+// only when the daemon is invoked with --database (cmd/spire/daemon.go);
+// that flag is set inside the cluster's syncer Deployment, never by a
+// gateway-mode laptop client (laptops use NewLocalDaemon, which dispatches
+// localStrategy → DaemonCycle → runDoltSync, where the gateway skip lives).
+// Adding a gateway guard here would be wrong: cluster-side sync needs to
+// keep working when the body is re-enabled, and the body is already a
+// no-op for the deprecation period regardless of mode.
 func (c *clusterStrategy) Sync(_ context.Context, _ string) error {
 	clusterSyncDeprecationOnce.Do(func() {
 		log.Printf("[daemon] cluster syncer bidirectional DoltHub sync is disabled; cluster Dolt is the write authority, GCS backup is the archive/DR path")

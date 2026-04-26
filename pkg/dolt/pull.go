@@ -6,13 +6,22 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/config"
 )
 
 // CLIPull runs `dolt pull origin main` directly from the database data
 // directory, inheriting the caller's environment so DOLT_REMOTE_USER /
 // DOLT_REMOTE_PASSWORD are available. The context controls the command
 // deadline — use context.WithTimeout to prevent indefinite hangs.
+//
+// gateway-mode: rejected with ErrGatewayDirectMutation. Defense-in-depth
+// against the laptop daemon or a stray CLI path reaching CLIPull on a tower
+// where the cluster owns the canonical Dolt state.
 func CLIPull(ctx context.Context, dataDir string, force bool) error {
+	if err := config.EnsureNotGatewayResolved("dolt.CLIPull"); err != nil {
+		return err
+	}
 	bin := Bin()
 	if bin == "" {
 		return fmt.Errorf("dolt not found — run spire up to install")
