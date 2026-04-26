@@ -63,7 +63,11 @@ func TestCmdRoster_DispatchByMode(t *testing.T) {
 
 // TestCmdRoster_LocalNative_NoFallbackToLegacyBeads is the spi-rx6bf6
 // regression pin for the CLI: a local-native tower with an empty
-// wizards.json must NOT surface stale agent-labeled beads.
+// wizards.json must NOT surface stale agent-labeled beads. Exercises
+// cmdRoster end-to-end (not board.LiveRoster directly — that's covered
+// by TestLiveRoster_LocalNative_NoFallbackToLegacyBeads in pkg/board)
+// so the assertion is "the CLI dispatch routes through LiveRoster's
+// local-native branch and returns cleanly on an empty registry."
 func TestCmdRoster_LocalNative_NoFallbackToLegacyBeads(t *testing.T) {
 	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
 
@@ -73,12 +77,8 @@ func TestCmdRoster_LocalNative_NoFallbackToLegacyBeads(t *testing.T) {
 		return &TowerConfig{Name: "test", DeploymentMode: config.DeploymentModeLocalNative}, nil
 	}
 
-	if _, err := board.LiveRoster(nil, config.DeploymentModeLocalNative, time.Minute, board.RosterDeps{
-		LoadWizardRegistry: func() ([]board.LocalAgent, error) { return nil, nil },
-		CleanDeadWizards:   func(a []board.LocalAgent) []board.LocalAgent { return a },
-		ProcessAlive:       func(int) bool { return true },
-	}); err != nil {
-		t.Fatalf("LiveRoster returned error: %v", err)
+	if err := cmdRoster([]string{"--json"}); err != nil {
+		t.Fatalf("cmdRoster returned error on empty local-native registry: %v", err)
 	}
 }
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -104,9 +103,6 @@ func cmdRoster(args []string) error {
 	mode := tower.EffectiveDeploymentMode()
 	agents, err := board.LiveRoster(context.Background(), mode, timeout, rosterDeps)
 	if err != nil {
-		if errors.Is(err, board.ErrAttachedRosterNotImplemented) {
-			return fmt.Errorf("roster: %w", err)
-		}
 		return fmt.Errorf("roster: %w", err)
 	}
 	agents = board.EnrichRosterAgents(agents)
