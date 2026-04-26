@@ -1156,6 +1156,19 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 			}
 		}
 
+		// Strip dead-letter:orphan from the parent bead on success terminal
+		// close. A wizard that survived a transient OrphanSweep verdict
+		// (registry blip / stale PID / fresh heartbeat false-orphan; see
+		// spi-p2ou7v) must not leave the bead labeled dead-letter:orphan
+		// alongside its successful close — that produced the contradictory
+		// final state on spd-3lhw. Non-fatal: this is observability cleanup,
+		// not a correctness gate.
+		if e.deps.RemoveLabel != nil {
+			if err := e.deps.RemoveLabel(e.beadID, "dead-letter:orphan"); err != nil {
+				e.log("warning: strip dead-letter:orphan from %s: %s", e.beadID, err)
+			}
+		}
+
 		// Close the main bead.
 		if err := e.deps.CloseBead(e.beadID); err != nil {
 			return ActionResult{Error: fmt.Errorf("close bead: %w", err)}

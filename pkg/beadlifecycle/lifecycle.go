@@ -117,6 +117,55 @@ type Deps interface {
 	AddLabel(id, label string) error
 	// ListBeads returns all beads matching the filter (used for Scan B).
 	ListBeads(filter beads.IssueFilter) ([]store.Bead, error)
+	// GetAttemptHeartbeat reads the active attempt's last_seen_at execution
+	// heartbeat written by the executor. Returns (lastSeen, true, nil) when
+	// the heartbeat metadata is present, (zero, false, nil) when absent
+	// (e.g., a brand-new attempt that has not yet emitted a heartbeat),
+	// and (zero, false, err) on read failure. OrphanSweep consults this
+	// before closing an attempt to avoid orphaning a wizard whose heartbeat
+	// is fresh even when local registry probes report dead/missing
+	// (spi-p2ou7v).
+	GetAttemptHeartbeat(attemptID string) (time.Time, bool, error)
+}
+
+// heartbeatFreshness is the window within which an attempt's last_seen_at
+// metadata makes the wizard "definitively alive" for OrphanSweep purposes.
+// If the heartbeat is more recent than this, OrphanSweep skips the close
+// even when the registry says the wizard is dead/missing — registry blips,
+// stale PIDs, and PID-probe false negatives must not orphan a live wizard.
+//
+// Set to mirror the steward's typical ShutdownThreshold (15m, see
+// cmd/spire/steward.go default) so OrphanSweep and the steward agree on
+// which heartbeats count as "still alive": a heartbeat the steward would
+// not yet kill on must not be orphaned here either (spi-9ixgqy +
+// spi-p2ou7v).
+const heartbeatFreshness = 15 * time.Minute
+
+// nowTimeFunc returns the current UTC time. Replaceable in tests so the
+// heartbeat-freshness gate can be exercised deterministically.
+var nowTimeFunc = func() time.Time { return time.Now().UTC() }
+
+// attemptHeartbeatFresh reports whether an attempt's heartbeat is fresh
+// enough that OrphanSweep should skip closing it as orphan. Returns
+// (skip, lastSeen, present): when skip=true the caller MUST NOT orphan
+// the attempt; when skip=false the existing orphan policy applies.
+//
+// !present (no heartbeat metadata) and read errors fall through to the
+// existing conservative behavior — never widen orphan-skip on missing
+// data, since a brand-new attempt may not have heartbeated yet on the
+// first sweep tick.
+func attemptHeartbeatFresh(deps Deps, attemptID string) (skip bool, lastSeen time.Time, present bool) {
+	lastSeen, present, err := deps.GetAttemptHeartbeat(attemptID)
+	if err != nil {
+		return false, time.Time{}, false
+	}
+	if !present {
+		return false, time.Time{}, false
+	}
+	if nowTimeFunc().Sub(lastSeen) < heartbeatFreshness {
+		return true, lastSeen, true
+	}
+	return false, lastSeen, true
 }
 
 // nowFunc returns the current UTC time as an RFC3339 string.
@@ -343,6 +392,18 @@ func EndWork(deps Deps, reg wizardregistry.Registry, beadID string, opts BeginOp
 		if err := deps.UpdateBead(beadID, map[string]interface{}{"status": "closed"}); err != nil {
 			return fmt.Errorf("EndWork: close %s: %w", beadID, err)
 		}
+		// Successful terminal close: strip any stale dead-letter:orphan
+		// label written by an earlier (false) OrphanSweep verdict. Without
+		// this, a wizard that survived a transient orphan would close
+		// successfully but leave the parent labeled dead-letter:orphan,
+		// producing the contradictory final state seen on spd-3lhw
+		// (spi-p2ou7v).
+		if result.Status == "success" {
+			if err := deps.RemoveLabel(beadID, "dead-letter:orphan"); err != nil {
+				// Non-fatal.
+				_ = err
+			}
+		}
 	}
 
 	// Step 4: Strip labels from the task bead.
@@ -421,21 +482,39 @@ func OrphanSweep(deps Deps, reg wizardregistry.Registry, scope OrphanScope) (Swe
 		report.Examined++
 
 		alive, err := reg.IsAlive(ctx, entry.ID)
+		registryVerdict := "dead"
 		if err != nil && !errors.Is(err, wizardregistry.ErrNotFound) {
 			// Transient failure — fail open. Mis-classifying a registry-read
 			// blip as "dead" is exactly the spi-5bzu9r failure mode.
 			log.Printf("OrphanSweep: scan A: IsAlive(%s) failed, skipping: %v", entry.ID, err)
 			continue
 		}
+		if errors.Is(err, wizardregistry.ErrNotFound) {
+			registryVerdict = "missing"
+		}
 		if alive {
 			continue
+		}
+
+		// Heartbeat-freshness gate (spi-p2ou7v): the registry says
+		// dead/missing, but if the active attempt is still heartbeating
+		// the execution owner is alive and orphaning would falsely
+		// reopen the parent bead. The attempt heartbeat is the
+		// execution-owner truth surface; the local registry is only
+		// the local process lookup.
+		active, aerr := findActiveAttempt(deps, entry.BeadID)
+		if aerr == nil && active != nil {
+			if skip, lastSeen, _ := attemptHeartbeatFresh(deps, active.ID); skip {
+				log.Printf("OrphanSweep: scan A: skip-fresh-heartbeat agent=%s attempt=%s last_seen_at=%s registry_verdict=%s",
+					entry.ID, active.ID, lastSeen.Format(time.RFC3339), registryVerdict)
+				continue
+			}
 		}
 
 		// Declared dead.
 		report.Dead++
 
 		// Close active attempt bead.
-		active, aerr := findActiveAttempt(deps, entry.BeadID)
 		if aerr == nil && active != nil {
 			if cerr := deps.CloseAttemptBead(active.ID, "interrupted:orphan"); cerr != nil {
 				report.Errors = append(report.Errors, fmt.Errorf("scan A: close attempt %s: %w", active.ID, cerr))
@@ -496,12 +575,25 @@ func OrphanSweep(deps Deps, reg wizardregistry.Registry, scope OrphanScope) (Swe
 			// (phantom). Other errors → fail open (never close on a transient
 			// read failure).
 			alive, err := reg.IsAlive(ctx, agentName)
+			registryVerdict := "dead"
 			if errors.Is(err, wizardregistry.ErrNotFound) {
-				// Phantom attempt: close it + reopen parent.
+				// Phantom attempt: close it + reopen parent (subject to
+				// heartbeat-freshness gate below).
+				registryVerdict = "missing"
 			} else if err != nil {
 				log.Printf("OrphanSweep: scan B: IsAlive(%s) failed, skipping: %v", agentName, err)
 				continue
 			} else if alive {
+				continue
+			}
+
+			// Heartbeat-freshness gate (spi-p2ou7v): registry says
+			// dead/missing but a fresh attempt heartbeat means the
+			// execution owner is alive. Skip rather than orphan a live
+			// wizard.
+			if skip, lastSeen, _ := attemptHeartbeatFresh(deps, b.ID); skip {
+				log.Printf("OrphanSweep: scan B: skip-fresh-heartbeat agent=%s attempt=%s last_seen_at=%s registry_verdict=%s",
+					agentName, b.ID, lastSeen.Format(time.RFC3339), registryVerdict)
 				continue
 			}
 

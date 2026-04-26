@@ -5,6 +5,8 @@ package main
 // that satisfies beadlifecycle.Deps using the existing store bridge wrappers.
 
 import (
+	"time"
+
 	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
@@ -66,6 +68,26 @@ func (lifecycleDeps) AddLabel(id, label string) error {
 
 func (lifecycleDeps) ListBeads(filter beads.IssueFilter) ([]store.Bead, error) {
 	return storeListBeads(filter)
+}
+
+// GetAttemptHeartbeat reads the active attempt's last_seen_at heartbeat
+// from instance metadata. The stamp is written by the executor's
+// heartbeat tick (~30s); OrphanSweep uses it as the execution-owner
+// liveness clock so a fresh-heartbeat wizard is not orphaned by a
+// registry blip or stale PID (spi-p2ou7v).
+func (lifecycleDeps) GetAttemptHeartbeat(attemptID string) (time.Time, bool, error) {
+	meta, err := store.GetAttemptInstance(attemptID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if meta == nil || meta.LastSeenAt == "" {
+		return time.Time{}, false, nil
+	}
+	t, perr := time.Parse(time.RFC3339, meta.LastSeenAt)
+	if perr != nil {
+		return time.Time{}, false, perr
+	}
+	return t, true, nil
 }
 
 // newLifecycleDeps returns a lifecycleDeps wired to the store bridge.

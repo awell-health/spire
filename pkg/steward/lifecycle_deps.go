@@ -82,6 +82,26 @@ func (daemonLifecycleDeps) ListBeads(filter beads.IssueFilter) ([]store.Bead, er
 	return store.ListBeads(filter)
 }
 
+// GetAttemptHeartbeat reads the active attempt's last_seen_at heartbeat
+// from instance metadata. The executor writes this stamp every ~30s via
+// store.UpdateAttemptHeartbeat; OrphanSweep uses it as the execution-owner
+// liveness clock so a fresh-heartbeat wizard is not orphaned by a
+// registry blip or stale PID (spi-p2ou7v).
+func (daemonLifecycleDeps) GetAttemptHeartbeat(attemptID string) (time.Time, bool, error) {
+	meta, err := store.GetAttemptInstance(attemptID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if meta == nil || meta.LastSeenAt == "" {
+		return time.Time{}, false, nil
+	}
+	t, perr := time.Parse(time.RFC3339, meta.LastSeenAt)
+	if perr != nil {
+		return time.Time{}, false, perr
+	}
+	return t, true, nil
+}
+
 // daemonRecoveryOps implements recovery.BeadOps for the daemon context.
 type daemonRecoveryOps struct{}
 

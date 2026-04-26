@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/wizardregistry"
@@ -24,6 +25,10 @@ type stubDeps struct {
 	addedLabels    map[string][]string
 	cascadeClosed  []string
 	allBeads       []store.Bead
+
+	// heartbeats holds attempt-bead heartbeats for the OrphanSweep gate.
+	// Absence in the map → present=false (no metadata yet).
+	heartbeats map[string]time.Time
 
 	// Track call counts.
 	createAttemptCalls int
@@ -130,6 +135,24 @@ func (s *stubDeps) AddLabel(id, label string) error {
 
 func (s *stubDeps) ListBeads(filter beads.IssueFilter) ([]store.Bead, error) {
 	return s.allBeads, nil
+}
+
+func (s *stubDeps) GetAttemptHeartbeat(attemptID string) (time.Time, bool, error) {
+	if s.heartbeats == nil {
+		return time.Time{}, false, nil
+	}
+	t, ok := s.heartbeats[attemptID]
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	return t, true, nil
+}
+
+func (s *stubDeps) setHeartbeat(attemptID string, t time.Time) {
+	if s.heartbeats == nil {
+		s.heartbeats = make(map[string]time.Time)
+	}
+	s.heartbeats[attemptID] = t
 }
 
 func (s *stubDeps) addBead(b store.Bead) {
@@ -784,6 +807,206 @@ func TestOrphanSweep_NilRegistry_ReturnsError(t *testing.T) {
 	deps := newStubDeps()
 	if _, err := OrphanSweep(deps, nil, OrphanScope{All: true}); err == nil {
 		t.Fatal("expected error when reg is nil")
+	}
+}
+
+// --- Heartbeat-freshness gate (spi-p2ou7v) ---
+
+// TestOrphanSweep_ScanA_FreshHeartbeat_SkipsOrphan: Scan A finds a
+// registry-dead entry but the active attempt has a fresh last_seen_at —
+// OrphanSweep MUST NOT close the attempt or reopen the parent.
+func TestOrphanSweep_ScanA_FreshHeartbeat_SkipsOrphan(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-fresh-a", Status: "in_progress"})
+	deps.addAttempt("spi-fresh-a", store.Bead{
+		ID:     "att-fresh-a",
+		Status: "in_progress",
+		Parent: "spi-fresh-a",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-fresh-a"},
+	})
+	// Heartbeat 30 seconds ago — well within heartbeatFreshness.
+	deps.setHeartbeat("att-fresh-a", time.Now().UTC().Add(-30*time.Second))
+
+	reg, ctl := newRegistry()
+	upsertDead(t, ctl, wizardregistry.Wizard{
+		ID:     "wizard-fresh-a",
+		Mode:   wizardregistry.ModeLocal,
+		PID:    99999,
+		BeadID: "spi-fresh-a",
+	})
+
+	report, err := OrphanSweep(deps, reg, OrphanScope{All: true})
+	if err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
+	}
+	if _, closed := deps.closedAttempts["att-fresh-a"]; closed {
+		t.Error("fresh-heartbeat attempt was closed by Scan A — heartbeat gate broken")
+	}
+	if contains(deps.addedLabels["spi-fresh-a"], "dead-letter:orphan") {
+		t.Error("fresh-heartbeat parent was labeled dead-letter:orphan — gate broken")
+	}
+	if b := deps.beads["spi-fresh-a"]; b.Status != "in_progress" {
+		t.Errorf("fresh-heartbeat parent moved from in_progress to %q — gate broken", b.Status)
+	}
+	// The dead entry must still be examined but not cleaned.
+	if report.Cleaned != 0 {
+		t.Errorf("expected 0 cleaned (heartbeat skip), got %d", report.Cleaned)
+	}
+}
+
+// TestOrphanSweep_ScanA_StaleHeartbeat_Orphans: Scan A finds a
+// registry-dead entry whose active attempt has a stale last_seen_at —
+// existing orphan path runs (attempt closed interrupted:orphan, parent
+// reopened, dead-letter:orphan label set).
+func TestOrphanSweep_ScanA_StaleHeartbeat_Orphans(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-stale-a", Status: "in_progress"})
+	deps.addAttempt("spi-stale-a", store.Bead{
+		ID:     "att-stale-a",
+		Status: "in_progress",
+		Parent: "spi-stale-a",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-stale-a"},
+	})
+	// Heartbeat 1 hour ago — well past heartbeatFreshness.
+	deps.setHeartbeat("att-stale-a", time.Now().UTC().Add(-1*time.Hour))
+
+	reg, ctl := newRegistry()
+	upsertDead(t, ctl, wizardregistry.Wizard{
+		ID:     "wizard-stale-a",
+		Mode:   wizardregistry.ModeLocal,
+		PID:    99999,
+		BeadID: "spi-stale-a",
+	})
+
+	if _, err := OrphanSweep(deps, reg, OrphanScope{All: true}); err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
+	}
+	if got := deps.closedAttempts["att-stale-a"]; got != "interrupted:orphan" {
+		t.Errorf("expected stale-heartbeat attempt closed with 'interrupted:orphan', got %q", got)
+	}
+	if !contains(deps.addedLabels["spi-stale-a"], "dead-letter:orphan") {
+		t.Error("expected dead-letter:orphan label on stale-heartbeat parent")
+	}
+	if b := deps.beads["spi-stale-a"]; b.Status != "open" {
+		t.Errorf("expected stale-heartbeat parent reopened, got %q", b.Status)
+	}
+}
+
+// TestOrphanSweep_ScanB_FreshHeartbeat_SkipsOrphan: Scan B's phantom-
+// attempt branch (registry has no entry at all) MUST NOT orphan an
+// attempt with a fresh heartbeat — the execution owner is alive even
+// though the registry is missing.
+func TestOrphanSweep_ScanB_FreshHeartbeat_SkipsOrphan(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-fresh-b", Status: "in_progress"})
+	deps.addAttempt("spi-fresh-b", store.Bead{
+		ID:     "att-fresh-b",
+		Status: "in_progress",
+		Parent: "spi-fresh-b",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-fresh-b"},
+	})
+	deps.setHeartbeat("att-fresh-b", time.Now().UTC().Add(-15*time.Second))
+
+	reg, _ := newRegistry() // empty: wizard-fresh-b never registered
+
+	if _, err := OrphanSweep(deps, reg, OrphanScope{All: true}); err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
+	}
+	if _, closed := deps.closedAttempts["att-fresh-b"]; closed {
+		t.Error("Scan B closed fresh-heartbeat attempt — phantom-attempt path bypassed gate")
+	}
+	if b := deps.beads["spi-fresh-b"]; b.Status != "in_progress" {
+		t.Errorf("Scan B reopened fresh-heartbeat parent, got %q", b.Status)
+	}
+}
+
+// TestEndWork_Success_StripsDeadLetterOrphan: an attempt that previously
+// had dead-letter:orphan written to its parent (false orphan), then
+// closes successfully via EndWork, must have the stale label stripped
+// — no contradictory final state.
+func TestEndWork_Success_StripsDeadLetterOrphan(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-recover", Status: "in_progress", Labels: []string{"dead-letter:orphan"}})
+	deps.addAttempt("spi-recover", store.Bead{
+		ID:     "att-recover",
+		Status: "in_progress",
+		Parent: "spi-recover",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-recover"},
+	})
+
+	reg, _ := newRegistry()
+	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-recover"}
+	if err := EndWork(deps, reg, "spi-recover", opts, EndResult{Status: "success"}); err != nil {
+		t.Fatalf("EndWork: %v", err)
+	}
+	if b := deps.beads["spi-recover"]; b.Status != "closed" {
+		t.Errorf("expected bead closed, got %q", b.Status)
+	}
+	if !contains(deps.removedLabels["spi-recover"], "dead-letter:orphan") {
+		t.Error("expected dead-letter:orphan to be stripped on successful close")
+	}
+}
+
+// TestEndWork_Interrupted_PreservesDeadLetterOrphan: a non-success
+// terminal (interrupted/reset/discarded) MUST NOT strip the
+// dead-letter:orphan label — only true success closes do.
+func TestEndWork_Interrupted_PreservesDeadLetterOrphan(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-interrupt", Status: "in_progress", Labels: []string{"dead-letter:orphan"}})
+	deps.addAttempt("spi-interrupt", store.Bead{
+		ID:     "att-interrupt",
+		Status: "in_progress",
+		Parent: "spi-interrupt",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-interrupt"},
+	})
+
+	reg, _ := newRegistry()
+	opts := BeginOpts{Mode: ModeLocal, AgentName: "wizard-interrupt"}
+	if err := EndWork(deps, reg, "spi-interrupt", opts, EndResult{Status: "interrupted", ReopenTask: true}); err != nil {
+		t.Fatalf("EndWork: %v", err)
+	}
+	if contains(deps.removedLabels["spi-interrupt"], "dead-letter:orphan") {
+		t.Error("dead-letter:orphan stripped on interrupted close — strip should be success-only")
+	}
+}
+
+// TestOrphanSweep_NoHeartbeatPresent_OrphansAsBefore: an attempt that
+// has never written heartbeat metadata (a brand-new attempt that just
+// began on a tick) must still be eligible for orphaning — the gate
+// requires present heartbeat data, not its absence.
+func TestOrphanSweep_NoHeartbeatPresent_OrphansAsBefore(t *testing.T) {
+	deps := newStubDeps()
+	deps.addBead(store.Bead{ID: "spi-no-hb", Status: "in_progress"})
+	deps.addAttempt("spi-no-hb", store.Bead{
+		ID:     "att-no-hb",
+		Status: "in_progress",
+		Parent: "spi-no-hb",
+		Type:   "attempt",
+		Labels: []string{"attempt", "agent:wizard-no-hb"},
+	})
+	// No heartbeat set on att-no-hb.
+
+	reg, ctl := newRegistry()
+	upsertDead(t, ctl, wizardregistry.Wizard{
+		ID:     "wizard-no-hb",
+		Mode:   wizardregistry.ModeLocal,
+		PID:    99999,
+		BeadID: "spi-no-hb",
+	})
+
+	if _, err := OrphanSweep(deps, reg, OrphanScope{All: true}); err != nil {
+		t.Fatalf("OrphanSweep: %v", err)
+	}
+	if got := deps.closedAttempts["att-no-hb"]; got != "interrupted:orphan" {
+		t.Errorf("expected no-heartbeat attempt closed with 'interrupted:orphan' (preserved policy), got %q", got)
+	}
+	if !contains(deps.addedLabels["spi-no-hb"], "dead-letter:orphan") {
+		t.Error("expected dead-letter:orphan label on no-heartbeat parent")
 	}
 }
 

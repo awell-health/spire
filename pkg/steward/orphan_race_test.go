@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/awell-health/spire/pkg/beadlifecycle"
 	"github.com/awell-health/spire/pkg/executor"
@@ -501,6 +502,10 @@ func (d raceTestDeps) ListBeads(filter beads.IssueFilter) ([]store.Bead, error) 
 	d.stateMu.Lock()
 	defer d.stateMu.Unlock()
 	return []store.Bead{*d.parent, *d.attempt}, nil
+}
+
+func (d raceTestDeps) GetAttemptHeartbeat(attemptID string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
 }
 
 // TestTowerCycle_OrphanSweepFuncIsTestReplaceable confirms the seam
