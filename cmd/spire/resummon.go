@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
@@ -37,12 +38,15 @@ func cmdResummon(args []string) error {
 	if err != nil {
 		return fmt.Errorf("get bead %s: %w", beadID, err)
 	}
+	reg := loadWizardRegistry()
+	_, hasLiveOwner := resummonLocalOwnerState(reg, beadID)
+	hasGraphState := resummonHasGraphState(beadID)
 
-	// Accept hooked status (new model) or needs-human/interrupted labels (legacy beads).
-	isHooked := bead.Status == "hooked"
-	hasLegacyLabel := containsLabel(bead, "needs-human") || hasLabelPrefix(bead, "interrupted:")
-	if !isHooked && !hasLegacyLabel {
-		return fmt.Errorf("%s is not hooked or interrupted — nothing to resummon", beadID)
+	if err := validateResummonTarget(bead, resummonEvidence{
+		HasGraphState: hasGraphState,
+		HasLiveOwner:  hasLiveOwner,
+	}); err != nil {
+		return err
 	}
 
 	// 2. Kill the old wizard process and remove its registry entry (clears timer).
@@ -54,46 +58,19 @@ func cmdResummon(args []string) error {
 	// cmdSummon → BeginWork runs. Scan B in OrphanSweep finds in_progress attempt
 	// beads with no live registry entry and closes them automatically. This produces
 	// equivalent state to EndWork without introducing an EndWork dependency here.
-	reg := loadWizardRegistry()
-
-	for i := range reg.Wizards {
-		if reg.Wizards[i].BeadID == beadID {
-			w := reg.Wizards[i]
-
-			// Kill process if still alive.
-			if w.PID > 0 && processAlive(w.PID) {
-				if proc, err := os.FindProcess(w.PID); err == nil {
-					proc.Signal(syscall.SIGTERM)
-					deadline := time.Now().Add(3 * time.Second)
-					for time.Now().Before(deadline) {
-						time.Sleep(200 * time.Millisecond)
-						if !processAlive(w.PID) {
-							break
-						}
-					}
-					if processAlive(w.PID) {
-						proc.Signal(syscall.SIGKILL)
-					}
-				}
-				fmt.Printf("  %skilled old wizard (pid %d)%s\n", dim, w.PID, reset)
-			}
-
-			// Remove from registry.
-			reg.Wizards = append(reg.Wizards[:i], reg.Wizards[i+1:]...)
-			saveWizardRegistry(reg)
-			break
-		}
-	}
+	removeResummonRegistryEntries(reg, beadID)
 
 	// 3. Preserve graph state — the new wizard should resume where the old one left off.
 	// Previously this deleted graph state, forcing a full restart. That wastes all
 	// completed work (plan, dispatch, implement) when only a later step failed.
 
 	// 4. Strip needs-human label.
-	if err := storeRemoveLabel(beadID, "needs-human"); err != nil {
-		return fmt.Errorf("remove needs-human label from %s: %w", beadID, err)
+	if containsLabel(bead, "needs-human") {
+		if err := storeRemoveLabel(beadID, "needs-human"); err != nil {
+			return fmt.Errorf("remove needs-human label from %s: %w", beadID, err)
+		}
+		fmt.Printf("  %s✓ stripped needs-human from %s%s\n", green, beadID, reset)
 	}
-	fmt.Printf("  %s✓ stripped needs-human from %s%s\n", green, beadID, reset)
 
 	// 4b. Strip any interrupted:* labels so stale failure state doesn't linger.
 	for _, l := range bead.Labels {
@@ -135,6 +112,89 @@ func cmdResummon(args []string) error {
 	// 7. Re-summon: spire summon 1 --targets <bead-id>
 	fmt.Printf("  re-summoning wizard for %s...\n", beadID)
 	return cmdSummon([]string{"1", "--targets", beadID})
+}
+
+type resummonEvidence struct {
+	HasGraphState bool
+	HasLiveOwner  bool
+}
+
+func validateResummonTarget(bead Bead, evidence resummonEvidence) error {
+	switch bead.Status {
+	case "closed", "done":
+		return fmt.Errorf("%s is closed — nothing to resummon", bead.ID)
+	}
+
+	isHooked := bead.Status == "hooked"
+	hasLegacyLabel := containsLabel(bead, "needs-human") || hasLabelPrefix(bead, "interrupted:")
+	if isHooked || hasLegacyLabel {
+		return nil
+	}
+
+	if evidence.HasLiveOwner {
+		return fmt.Errorf("%s has a live wizard owner — dismiss or wait before resummoning", bead.ID)
+	}
+
+	if evidence.HasGraphState {
+		return nil
+	}
+
+	switch bead.Status {
+	case "in_progress", "dispatched":
+		return nil
+	}
+
+	return fmt.Errorf("%s is not hooked/interrupted and has no resumable executor state — use summon/ready instead", bead.ID)
+}
+
+func resummonLocalOwnerState(reg wizardRegistry, beadID string) (hasEntry bool, hasLiveOwner bool) {
+	for _, w := range reg.Wizards {
+		if w.BeadID != beadID {
+			continue
+		}
+		hasEntry = true
+		if w.PID > 0 && processAlive(w.PID) {
+			hasLiveOwner = true
+		}
+	}
+	return hasEntry, hasLiveOwner
+}
+
+func resummonHasGraphState(beadID string) bool {
+	gs, err := executor.LoadGraphState("wizard-"+beadID, configDir)
+	return err == nil && gs != nil
+}
+
+func removeResummonRegistryEntries(reg wizardRegistry, beadID string) {
+	removed := false
+	remaining := make([]localWizard, 0, len(reg.Wizards))
+	for _, w := range reg.Wizards {
+		if w.BeadID != beadID {
+			remaining = append(remaining, w)
+			continue
+		}
+		removed = true
+		if w.PID > 0 && processAlive(w.PID) {
+			if proc, err := os.FindProcess(w.PID); err == nil {
+				proc.Signal(syscall.SIGTERM)
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					time.Sleep(200 * time.Millisecond)
+					if !processAlive(w.PID) {
+						break
+					}
+				}
+				if processAlive(w.PID) {
+					proc.Signal(syscall.SIGKILL)
+				}
+			}
+			fmt.Printf("  %skilled old wizard %s (pid %d)%s\n", dim, w.Name, w.PID, reset)
+		}
+	}
+	if removed {
+		reg.Wizards = remaining
+		saveWizardRegistry(reg)
+	}
 }
 
 // hasLabelPrefix returns true if any label on the bead starts with the given prefix.

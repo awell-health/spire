@@ -5,19 +5,17 @@ import (
 	"testing"
 )
 
-// resummonGuardAccepts mirrors the guard condition in cmdResummon (lines 41-46).
+// resummonGuardAccepts mirrors the guard condition in cmdResummon.
 // Extracted here so we can unit-test the decision logic without requiring a live store.
-func resummonGuardAccepts(b Bead) bool {
-	isHooked := b.Status == "hooked"
-	hasLegacyLabel := containsLabel(b, "needs-human") || hasLabelPrefix(b, "interrupted:")
-	return isHooked || hasLegacyLabel
+func resummonGuardAccepts(b Bead, evidence resummonEvidence) bool {
+	return validateResummonTarget(b, evidence) == nil
 }
 
 // TestResummonGuard_HookedBead verifies that a bead with status=hooked is
 // accepted by the resummon guard even without needs-human or interrupted:* labels.
 func TestResummonGuard_HookedBead(t *testing.T) {
 	b := Bead{ID: "spi-hooked", Status: "hooked", Labels: []string{"phase:implement"}}
-	if !resummonGuardAccepts(b) {
+	if !resummonGuardAccepts(b, resummonEvidence{}) {
 		t.Error("expected hooked bead to be accepted by resummon guard")
 	}
 }
@@ -26,16 +24,64 @@ func TestResummonGuard_HookedBead(t *testing.T) {
 // label is accepted by the resummon guard.
 func TestResummonGuard_InterruptedLabel(t *testing.T) {
 	b := Bead{ID: "spi-int", Status: "in_progress", Labels: []string{"interrupted:merge-failure", "needs-human"}}
-	if !resummonGuardAccepts(b) {
+	if !resummonGuardAccepts(b, resummonEvidence{HasLiveOwner: true}) {
 		t.Error("expected bead with interrupted:merge-failure to be accepted by resummon guard")
 	}
 }
 
+// TestResummonGuard_InProgressNoLiveOwner verifies that execution liveness,
+// not workflow status alone, controls whether an active-looking bead can be
+// resumed. This is the stale-owner case that resummon exists to repair.
+func TestResummonGuard_InProgressNoLiveOwner(t *testing.T) {
+	b := Bead{ID: "spi-orphaned", Status: "in_progress"}
+	if !resummonGuardAccepts(b, resummonEvidence{HasLiveOwner: false}) {
+		t.Error("expected in_progress bead with no live owner to be accepted")
+	}
+}
+
+// TestResummonGuard_DispatchedNoLiveOwner verifies that a dispatched bead with
+// no live local owner is also resumable; the old guard rejected this because it
+// was neither hooked nor legacy-interrupted.
+func TestResummonGuard_DispatchedNoLiveOwner(t *testing.T) {
+	b := Bead{ID: "spi-dispatched", Status: "dispatched"}
+	if !resummonGuardAccepts(b, resummonEvidence{HasLiveOwner: false}) {
+		t.Error("expected dispatched bead with no live owner to be accepted")
+	}
+}
+
+// TestResummonGuard_OpenWithGraphState verifies that an open bead with saved
+// executor state can be resumed even without legacy stuck labels.
+func TestResummonGuard_OpenWithGraphState(t *testing.T) {
+	b := Bead{ID: "spi-open-state", Status: "open"}
+	if !resummonGuardAccepts(b, resummonEvidence{HasGraphState: true}) {
+		t.Error("expected open bead with graph state to be accepted")
+	}
+}
+
+// TestResummonGuard_LiveOwnerRejected verifies that a plain active bead with a
+// live owner is not treated as orphaned. Existing hooked/legacy-interrupted
+// paths are allowed above because resummon intentionally replaces those.
+func TestResummonGuard_LiveOwnerRejected(t *testing.T) {
+	b := Bead{ID: "spi-live", Status: "in_progress"}
+	if resummonGuardAccepts(b, resummonEvidence{HasLiveOwner: true}) {
+		t.Error("expected in_progress bead with live owner to be rejected")
+	}
+}
+
+// TestResummonGuard_ClosedRejected verifies terminal beads are never
+// resummonable, regardless of graph state or owner evidence.
+func TestResummonGuard_ClosedRejected(t *testing.T) {
+	b := Bead{ID: "spi-closed", Status: "closed", Labels: []string{"needs-human"}}
+	if resummonGuardAccepts(b, resummonEvidence{HasGraphState: true}) {
+		t.Error("expected closed bead to be rejected")
+	}
+}
+
 // TestResummonGuard_OpenNonInterrupted verifies that a normal open bead with
-// no hooked status and no interrupted:* labels is rejected.
+// no hooked status, no interrupted:* labels, and no graph state is rejected.
 func TestResummonGuard_OpenNonInterrupted(t *testing.T) {
 	b := Bead{ID: "spi-normal", Status: "open", Labels: []string{"phase:implement"}}
-	if resummonGuardAccepts(b) {
+	if resummonGuardAccepts(b, resummonEvidence{}) {
 		t.Error("expected normal open bead to be rejected by resummon guard")
 	}
 }
