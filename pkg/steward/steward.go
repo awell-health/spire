@@ -172,6 +172,24 @@ func removeStaleWizardEntry(wizName string) {
 	}
 }
 
+// shouldRunLocalRegistryOps reports whether the steward may read or
+// mutate the local wizard registry (~/.config/spire/wizards.json) for
+// the given deployment mode. Only local-native towers may; cluster-
+// native towers see pod names that won't appear in the local registry,
+// so using it as a liveness oracle would mis-classify live pod
+// attempts as orphans (spi-40rtru).
+//
+// Empty mode counts as local-native to preserve the PhaseDispatch
+// zero-value contract documented in cluster_dispatch.go: tests that
+// don't exercise cluster-native paths can pass a zero-value
+// PhaseDispatch, and the dispatchPhase seam treats zero-value as
+// local-native by falling through to backend.Spawn. The stricter
+// fail-closed guard for unknown deployment mode lives in TowerCycle's
+// modeLoadOK gate, not here.
+func shouldRunLocalRegistryOps(mode config.DeploymentMode) bool {
+	return mode == "" || mode == config.DeploymentModeLocalNative
+}
+
 // CheckExistingAlertFunc checks whether an open corrupted-bead alert already exists.
 // Checks both caused-by (current) and related (legacy) deps to find the link.
 var CheckExistingAlertFunc = func(beadID string) bool {
@@ -352,6 +370,30 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	// Step 1: Commit any local changes (pull/push disabled — shared dolt server is source of truth).
 	_ = CommitPendingFunc("steward cycle sync")
 
+	// Resolve the tower's deployment mode early so local-registry
+	// maintenance below can branch on it. The default tower
+	// (towerName=="") implies local-native because the no-tower-config
+	// case is by definition single-host. modeLoadOK is the explicit
+	// signal for fail-closed semantics: if LoadTowerConfigFunc errors
+	// for a named tower we cannot tell whether it's a cluster tower, so
+	// the orphan sweep is skipped to avoid clobbering live pod
+	// attempts in a misconfigured cluster tower (spi-40rtru). The
+	// dispatch step further down reuses these values; loading here
+	// keeps a single source of truth per cycle.
+	var towerBindings map[string]*config.LocalRepoBinding
+	deploymentMode := config.Default()
+	modeLoadOK := true
+	if towerName != "" {
+		tower, tErr := LoadTowerConfigFunc(towerName)
+		if tErr != nil {
+			log.Printf("[steward] %sload tower config: %s — disabling local-registry maintenance for this cycle", prefix, tErr)
+			modeLoadOK = false
+		} else {
+			towerBindings = tower.LocalBindings
+			deploymentMode = tower.EffectiveDeploymentMode()
+		}
+	}
+
 	// Step 1b: OrphanSweep — close orphaned attempt beads whose wizards are
 	// no longer alive. Moved here from DaemonTowerCycle (spi-4d2i71): running
 	// it inside TowerCycle puts it in the same sequential cycle as
@@ -360,10 +402,26 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	// so any beads it reopens are visible to scheduling in the same cycle,
 	// and BEFORE SweepHookedSteps so a hooked-resume cannot be clobbered by
 	// a stale registry entry mid-cycle.
-	if report, serr := OrphanSweepFunc(); serr != nil {
-		log.Printf("[steward] %sorphan sweep error: %s", prefix, serr)
-	} else if report.Cleaned > 0 {
-		log.Printf("[steward] %sorphan sweep: examined %d, dead %d, cleaned %d", prefix, report.Examined, report.Dead, report.Cleaned)
+	//
+	// Mode gate (spi-40rtru): the default OrphanSweepFunc consults the
+	// local wizard registry for liveness. That registry is per-machine
+	// bookkeeping owned by pkg/agent's process backend — cluster-native
+	// pod attempts won't appear in it, and treating their absence as
+	// "orphan" would close the attempt and reopen the parent
+	// erroneously. Skip on cluster-native (and on any non-local mode
+	// until a cluster wizardregistry.Registry is injected) and on mode-
+	// load failure (fail closed).
+	switch {
+	case !modeLoadOK:
+		// Already logged above.
+	case shouldRunLocalRegistryOps(deploymentMode):
+		if report, serr := OrphanSweepFunc(); serr != nil {
+			log.Printf("[steward] %sorphan sweep error: %s", prefix, serr)
+		} else if report.Cleaned > 0 {
+			log.Printf("[steward] %sorphan sweep: examined %d, dead %d, cleaned %d", prefix, report.Examined, report.Dead, report.Cleaned)
+		}
+	default:
+		log.Printf("[steward] %sskipping local-registry orphan sweep: tower %q mode=%s; cluster registry not yet injected (spi-40rtru)", prefix, towerName, deploymentMode)
 	}
 
 	// Step 2: Assess — find schedulable work (ready + policy-filtered).
@@ -412,18 +470,8 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		prefix, len(schedulable), aliveCount, maxConcurrent)
 
 	// Step 4: Auto-summon — spawn new wizards for schedulable work up to capacity.
-	// Also load the tower's EffectiveDeploymentMode so the dispatch step
-	// branches on it. The default tower (towerName=="") and any tower whose
-	// config can't be loaded both fall through to local-native, preserving
-	// pre-deployment-mode behavior.
-	var towerBindings map[string]*config.LocalRepoBinding
-	deploymentMode := config.Default()
-	if towerName != "" {
-		if tower, tErr := LoadTowerConfigFunc(towerName); tErr == nil {
-			towerBindings = tower.LocalBindings
-			deploymentMode = tower.EffectiveDeploymentMode()
-		}
-	}
+	// towerBindings and deploymentMode were resolved at the top of this
+	// cycle (so the orphan sweep could gate on mode); reuse them here.
 
 	// Resolve ClusterDispatch lazily for cluster-native mode: if the
 	// caller set it explicitly (test override) use that; otherwise invoke
@@ -1510,11 +1558,19 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				// removed before the status update, no concurrent
 				// orphan sweep can find a dead PID to declare against
 				// this bead during the resume window.
+				//
+				// Mode gate (spi-40rtru): the local registry is
+				// per-machine bookkeeping; for cluster-native towers
+				// the wizard runs in a pod and has no entry to clear,
+				// so the call would touch wizards.json for a name
+				// that has no business being there.
 				wizName := agentName
 				if wizName == "" {
 					wizName = "wizard-" + SanitizeK8sLabel(parent.ID)
 				}
-				removeStaleWizardEntry(wizName)
+				if shouldRunLocalRegistryOps(pd.Mode) {
+					removeStaleWizardEntry(wizName)
+				}
 
 				// Set parent bead back to in_progress.
 				if err := UpdateBeadFunc(parent.ID, map[string]interface{}{
@@ -1625,10 +1681,16 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		// daemon-side orphan sweep ever runs concurrently here, the
 		// stale entry is already gone, so it cannot mis-classify the
 		// bead as orphaned during the resume window.
+		//
+		// Mode gate (spi-40rtru): the local registry is per-machine
+		// bookkeeping; cluster-native pods register elsewhere and
+		// have no entry to clear here.
 		if agentName == "" {
 			agentName = "wizard-" + SanitizeK8sLabel(parent.ID)
 		}
-		removeStaleWizardEntry(agentName)
+		if shouldRunLocalRegistryOps(pd.Mode) {
+			removeStaleWizardEntry(agentName)
+		}
 
 		// 2. Check if any other step beads for this parent are still hooked.
 		remainingHooked, _ := GetHookedStepsFunc(parent.ID)

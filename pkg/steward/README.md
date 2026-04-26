@@ -64,6 +64,26 @@ call `pkg/agent.BuildApprenticePod` rather than building the pod shape
 locally. There is no in-package pod construction in cluster-native code
 paths.
 
+### Local-registry maintenance is local-native-only
+
+Steward-side orphan cleanup and the hooked-resume `removeStaleWizardEntry`
+defense both consult the local wizard registry
+(`~/.config/spire/wizards.json`). That registry is per-machine
+bookkeeping owned by `pkg/agent`'s process backend — cluster pod
+attempts won't appear in it, so reading it as a liveness oracle in
+cluster mode would mis-classify live pods as orphans, close the
+attempt with `interrupted:orphan`, and reopen the parent (spi-40rtru).
+
+`TowerCycle` resolves the tower's `EffectiveDeploymentMode` before
+either op runs and gates them through `shouldRunLocalRegistryOps`. The
+gate fires for `local-native` (and the no-tower-config default-tower
+path); cluster-native and attached-reserved towers skip both ops with a
+diagnostic log line. Mode-load failures fail closed: the orphan sweep
+is skipped rather than risk clobbering a misconfigured cluster tower.
+Until a cluster-native `wizardregistry.Registry` is wired in,
+cluster towers run without steward-side orphan recovery — that is the
+intended posture.
+
 ### Cluster-native fail-closed posture
 
 Every cluster-native steward path fails closed when a seam is missing.
