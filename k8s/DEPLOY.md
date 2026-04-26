@@ -146,8 +146,11 @@ bundleStore:
     bucket: <your-bundle-bucket>
     prefix: minikube                    # per-env namespace in the bucket
 
-# Cluster-as-truth: syncer disabled, backup enabled
-# (see spi-q5q6s6 — until that lands, syncer.enabled=true causes divergence)
+# Cluster-as-truth: syncer disabled (chart default), backup enabled.
+# Bidirectional DoltHub sync is no longer supported in this topology;
+# the runtime cluster Sync is itself a no-op even when enabled=true.
+# Set true ONLY for a deliberate one-shot first-install seed. GCS
+# backup (`backup.*` below) is the archive/DR path.
 syncer:
   enabled: false
 
@@ -432,7 +435,7 @@ Expect (Running, Ready):
 - `spire-steward-*` (2/2 — steward + sidecar)
 - `spire-operator-*` (1/1)
 - `spire-gateway-*` (1/1 minikube; 2/2 if `gateway.replicas=2`)
-- `spire-syncer-*` (1/1, only if `syncer.enabled=true`)
+- `spire-syncer-*` (1/1, only if `syncer.enabled=true` — left disabled by default in cluster-as-truth installs; the runtime cluster Sync is a no-op even when this pod runs)
 
 ### 5.6 Gateway health
 
@@ -600,7 +603,6 @@ All filed under epic [spi-i7k1ag — DoltHub becomes archive-only](https://). Se
 | **spi-zz2ve9** | P1 | `attach-cluster` silently duplicates same-prefix towers | Remove existing local tower before attach (§6.2) |
 | **spi-n6fk2h** | P1 | Gateway-mode write routing loses to CWD-resolved tower | Run mutations from a non-tower dir (`cd /tmp`) until landed |
 | **spi-1h1ucq** | P1 | `/api/v1/*` mutations don't carry per-call archmage identity | Set a default archmage on the cluster tower (§6.3) |
-| **spi-q5q6s6** | P1 | Bidirectional DoltHub sync produces non-fast-forward push errors | `syncer.enabled=false`; rely on `backup.enabled=true` for archival |
 | **spi-6f6ky8** | P1 | Nothing prevents a laptop in gateway-mode from running `spire push` | Operational discipline — don't run `spire push` against a gateway-mode tower |
 | **spi-hr3tcv** | P2 | Auto-push call sites in pkg/dolt, pkg/store, pkg/syncer not gated by mode | Same as above — discipline + spi-6f6ky8 |
 | **spi-43q7hp** | P2 | `spire tower list` shows `kind=dolthub remote=local` for gateway-mode towers | Cosmetic only; identify gateway-mode towers by the `Mode=gateway` line in `~/.spire/towers/<name>.json` |

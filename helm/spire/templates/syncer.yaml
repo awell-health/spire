@@ -1,8 +1,18 @@
+# DEPRECATED: bidirectional cluster<->DoltHub sync recreates the
+# non-fast-forward / merge-conflict divergence class observed on
+# 2026-04-26 whenever both DoltHub and the cluster write. Disabled by
+# default in cluster-as-truth installs (`.Values.syncer.enabled=false`).
+# The cluster Dolt database is the write authority; GCS backup
+# (`.Values.backup.*`) is the canonical archive/DR path. The runtime
+# Sync method is itself a no-op now (pkg/steward/daemon_runner.go::
+# clusterStrategy.Sync), so even an opt-in syncer pod will not perform
+# DOLT_PULL/DOLT_PUSH against DoltHub on its loop. The template is
+# preserved so a deliberate one-shot first-install seed can still set
+# `syncer.enabled=true`.
 {{- if .Values.syncer.enabled }}
-# Syncer: long-running loop that bridges the cluster dolt DB and DoltHub.
-# Converted from a CronJob to a Deployment because k8s CronJob cannot
-# schedule sub-minute intervals. Runs `spire pull && spire push` every
-# .Values.syncer.interval so cluster and laptop see each other's work.
+# Syncer: long-running loop that previously bridged the cluster dolt DB
+# and DoltHub. Converted from a CronJob to a Deployment because k8s
+# CronJob cannot schedule sub-minute intervals.
 #
 # Requires the same JWK + .beads bootstrap as the dolt pod because
 # spire pull/push authenticate to DoltHub via the JWK credential file.

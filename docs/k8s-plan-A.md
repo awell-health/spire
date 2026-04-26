@@ -338,17 +338,23 @@ secrets:
   path: secret/data/spire
 ```
 
-### 2.5 Syncer pod
+### 2.5 Syncer pod (DEPRECATED — historical plan-A content)
 
-The syncer runs `spire pull` and `spire push` on a configurable interval. It is the bridge between the cluster's Dolt instance and DoltHub.
+> **Superseded by epic spi-i7k1ag (cluster-as-truth):** the bidirectional
+> cluster<->DoltHub syncer described below is no longer the topology.
+> The cluster Dolt database is now the single write authority and GCS
+> backup (`backup.*` Helm values, `dolt backup sync` CronJob) is the
+> canonical archive/DR substrate. The Helm syncer template (`helm/spire/
+> templates/syncer.yaml`) is preserved as `enabled=false` by default for
+> deliberate one-shot first-install seed scenarios; the runtime cluster
+> Sync is itself a no-op now (`pkg/steward/daemon_runner.go::
+> clusterStrategy.Sync`). The `k8s/syncer.yaml` and
+> `k8s/dolt-sync-cronjob.yaml` legacy hand-rolled manifests have been
+> removed. Read this section as historical context for plan-A only.
 
-**Current implementation** (in `k8s/syncer.yaml`) is a shell loop. For production:
+The syncer ran `spire pull` and `spire push` on a configurable interval as a bridge between the cluster's Dolt instance and DoltHub.
 
-1. Replace the shell loop with a Go binary that handles graceful shutdown, exponential backoff on failures, and conflict resolution logging.
-2. Add a `/healthz` endpoint so k8s can detect a stuck syncer.
-3. Add Prometheus metrics: `spire_sync_last_success_timestamp`, `spire_sync_duration_seconds`, `spire_sync_conflicts_total`.
-
-**Conflict resolution.** The field-level ownership model (cluster owns status, user owns content, append-only for comments/messages) is already defined in ARCHITECTURE.md. The syncer enforces this programmatically during merge. If a conflict cannot be resolved by ownership rules, it is logged and an alert bead is created.
+**Conflict resolution.** Field-level ownership (cluster owns status, user owns content, append-only for comments/messages) is defined in ARCHITECTURE.md. In the bidirectional plan-A model, the syncer would have enforced this programmatically during merge. In the cluster-as-truth model the merge problem disappears because there is only one writer.
 
 ### 2.6 Helm chart evolution
 

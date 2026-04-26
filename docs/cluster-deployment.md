@@ -9,25 +9,31 @@ This guide covers deploying Spire to Kubernetes for team and production use.
 ## Architecture overview
 
 ```
-Developer laptop          DoltHub                 Kubernetes cluster
------------------         -------                 ------------------
-spire tower create ──>  remote ──────────────> syncer pod (pull)
-spire push         ──>  remote
-spire pull         <──  remote <────────────── syncer pod (push)
-                                                      |
-                                                 operator
-                                                  ├── BeadWatcher
-                                                  ├── WorkloadAssigner
-                                                  └── AgentMonitor
-                                                      |
-                                                 wizard pods (one-shot)
-                                                  ├── init: tower-attach
-                                                  ├── init: cache-bootstrap
-                                                  └── agent container
-                                                      (spire execute)
+Developer laptop / Desktop          DoltHub             Kubernetes cluster
+--------------------------          -------             ------------------
+spire tower create  ─────>  remote (first-install seed) ──> dolt-init (clone)
+spire tower attach-cluster  ────────────────────────────>  gateway pod (HTTP)
+spire file / mutations      ─────── HTTPS POST ─────────>  /api/v1/* (gateway)
+                                                                  |
+                                                          cluster Dolt
+                                                          (write authority)
+                                                                  |
+                                                           operator
+                                                            ├── BeadWatcher
+                                                            ├── WorkloadAssigner
+                                                            └── AgentMonitor
+                                                                  |
+                                                           wizard pods (one-shot)
+                                                            ├── init: tower-attach
+                                                            ├── init: cache-bootstrap
+                                                            └── agent container
+                                                                (spire execute)
+
+                                  GCS bucket  <─────── dolt-backup CronJob
+                                  (archive/DR)         (`dolt backup sync`)
 ```
 
-The cluster never creates a tower — it attaches to one you created locally. Developers file work locally, push to DoltHub, and the cluster picks it up.
+The cluster Dolt database is the write authority for cluster-as-truth deployments. Desktops/laptops attach via the gateway and route mutations through `/api/v1/*` over HTTP. DoltHub is used as a **first-install seed only** — the dolt-init container clones from it on first boot — and is no longer a bidirectional mirror. GCS backup is the canonical archive/DR substrate (see [Backup bucket setup](#backup-bucket-setup)).
 
 ---
 
@@ -298,12 +304,14 @@ kubectl rollout status deployment/spire-operator -n spire
 
 ### Step 4: Verify the pipeline
 
-File a bead and push it:
+Attach the laptop/Desktop to the cluster gateway, then file a bead.
+In cluster-as-truth installs, mutations route through the gateway HTTP
+API — `spire push` is no longer the path that publishes work to the
+cluster.
 
 ```bash
-# On your laptop
+# On your laptop, after `spire tower attach-cluster --tower <name> --url <gateway-url> --token <bearer>`
 spire file "Test cluster deployment" -t task -p 2
-spire push
 ```
 
 Watch the cluster pick it up:
@@ -447,8 +455,8 @@ All configurable values are documented in `helm/spire/values.yaml`. Key values:
 | `spireConfig.polling.staleThreshold` | `4h` | Mark workload stale after this |
 | `spireConfig.polling.reassignThreshold` | `6h` | Reassign stale workloads after this |
 | `agents` | `[]` | List of WizardGuild definitions |
-| `syncer.enabled` | `false` | Enable DoltHub sync CronJob |
-| `syncer.schedule` | `*/2 * * * *` | CronJob schedule |
+| `syncer.enabled` | `false` | DEPRECATED. Bidirectional DoltHub sync is disabled in cluster-as-truth installs (the runtime Sync is a no-op even when this is true). Set to true only for a one-shot first-install seed. Use `backup.*` for archive/DR. |
+| `backup.enabled` | `true` | Render the GCS backup CronJob (canonical archive/DR substrate). Helm fails fast if true without bucket+auth. |
 
 ---
 
@@ -603,41 +611,65 @@ spire metrics --model # cost breakdown
 
 ---
 
-## Syncer (optional)
+## Archive and disaster recovery
 
-For continuous bidirectional sync without the daemon, enable the syncer CronJob:
+Cluster-as-truth deployments treat the cluster Dolt database as the
+single write authority. Bidirectional cluster<->DoltHub sync is
+**disabled by default** in the chart (`syncer.enabled=false`) because
+running it concurrently with cluster writes recreates the
+non-fast-forward / merge-conflict divergence class fixed in epic
+`spi-i7k1ag`. The runtime Sync method itself is a no-op now, so even an
+opt-in `syncer.enabled=true` install will not perform DOLT_PULL/DOLT_PUSH
+against DoltHub on its loop — the template is preserved only so a
+deliberate one-shot first-install seed scenario can still be expressed
+in values.
+
+The canonical archive/DR substrate is GCS backup, configured via the
+chart's `backup.*` block:
 
 ```yaml
-# in my-values.yaml
-syncer:
+# in my-values.yaml — chart default backup.enabled=true; helm fails fast
+# without bucket+auth (see Backup bucket setup above).
+backup:
   enabled: true
-  schedule: "*/2 * * * *"
+  schedule: "0 3 * * *"   # daily 03:00 UTC
+  remoteName: gcs-backup
+  gcs:
+    bucket: <your-backup-bucket>
+    prefix: prod
 ```
 
-Then upgrade:
-
-```bash
-helm upgrade spire ./helm/spire --namespace spire --values my-values.yaml
-```
-
-The syncer CronJob runs `spire pull && spire push` on the configured interval.
+The dolt-init container registers the `dolt backup` remote on first
+boot and the `spire-dolt-backup` CronJob runs `dolt backup sync` on the
+configured cadence. Restore is exercised by a separate runbook —
+[`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md) — because a
+backup that has never been restored is unproven, not unwritten. **Do
+NOT re-enable bidirectional DoltHub sync after a restore;** the
+post-restore guard checks in that runbook list the exact verification
+an operator must perform before promoting the restored cluster.
 
 ---
 
 ## Troubleshooting
 
-### Operator can't sync from DoltHub
+### Backup CronJob not landing objects in GCS
 
 ```bash
-kubectl logs -n spire deploy/spire-operator | grep "pull failed"
+kubectl get cronjob spire-dolt-backup -n spire
+kubectl logs -n spire job/<latest-backup-job-name>
 ```
 
 Check credentials:
 
 ```bash
-kubectl get secret spire-credentials -n spire -o jsonpath='{.data}' | \
-  jq 'keys'    # verify expected keys are present
+kubectl get secret -n spire | grep gcp-sa    # chart-rendered <release>-gcp-sa Secret
+kubectl describe pod -n spire -l app.kubernetes.io/name=spire-dolt | grep -A2 GOOGLE_APPLICATION_CREDENTIALS
 ```
+
+If the bucket is missing or the SA lacks `roles/storage.objectAdmin`,
+`dolt backup sync` exits non-zero and the CronJob's last `Job` is in
+`Failed` state. Re-check [Backup bucket setup](#backup-bucket-setup)
+and [GCP auth](#gcp-auth).
 
 ### Workloads stuck in Pending
 

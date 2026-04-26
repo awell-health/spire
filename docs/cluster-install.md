@@ -469,10 +469,12 @@ What each override does and where it lands:
   `ANTHROPIC_SUBSCRIPTION_TOKEN`).
 - `github.token` — GitHub PAT used by wizard pods to clone, push, and
   open PRs. Rendered as `GITHUB_TOKEN`.
-- `dolthub.remoteUrl` — the DoltHub repo that is the source of truth
-  for this tower's beads (e.g. `acmeco/spire-tower`). The steward and
-  the syncer both read this. Mandatory whenever `syncer.enabled=true`
-  (the chart default).
+- `dolthub.remoteUrl` — the DoltHub repo used as the **first-install
+  seed** for this tower's beads (e.g. `acmeco/spire-tower`). The
+  dolt-init container clones from it on first boot. In cluster-as-truth
+  installs it is no longer a writable mirror — `syncer.enabled` defaults
+  to `false` and the runtime cluster Sync is a no-op even when set
+  true. GCS backup (`backup.*`) is the canonical archive/DR path.
 - `dolthub.user` / `dolthub.password` — username and password for the
   cluster-side `remotesapi` SQL user that the post-install
   `spire-dolt-provision` Job creates. Laptops use these when they
@@ -750,7 +752,34 @@ empty and the gateway is running in dev mode (no auth). Re-run
 `helm upgrade` with a real token before exposing the Ingress to
 anything beyond a port-forward.
 
-With all four checks green, the tower is up and ready for the CLI
+### Backup landed in GCS
+
+Cluster-as-truth installs make GCS backup the canonical archive/DR
+substrate (the chart defaults `backup.enabled=true`; see the values
+overlay in §5). Verify the dolt-backup CronJob is configured and that
+the first scheduled run lands an object in the bucket — backup-enabled
+is not the same as DR-ready, but a missing CronJob or empty bucket
+means the install never wired backup up at all.
+
+```bash
+# CronJob exists and is scheduled
+kubectl -n spire get cronjob spire-dolt-backup
+
+# After the first scheduled run (or `kubectl create job --from=cronjob/...`
+# to trigger one immediately), confirm the bucket has objects:
+gsutil ls gs://${PROJECT_ID}-spire-backups/prod/
+```
+
+If `kubectl get cronjob` returns `NotFound`, the chart did not render
+the backup resources — re-check `backup.enabled=true` in your values
+overlay. If the Job runs but the bucket is empty, jump to "Backup
+landed in GCS" in §12 to debug GCP auth.
+
+The full restore drill (proving DR works end-to-end) lives in
+[`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md) and is run
+out-of-band, not as part of first install.
+
+With these checks green, the tower is up and ready for the CLI
 attach in section 8.
 
 ## 8. Attach the CLI
@@ -1467,20 +1496,19 @@ kubectl patch storageclass standard-rwo \
   -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
 ```
 
-### Dolt push fails with auth error / 403
+### Dolt clone fails with auth error / 403 (first-install seed)
 
-**Symptom:** the dolt sync sidecar (or the dolt-backup CronJob) logs:
-
-```
-remote.SyncError: failed to push to remote 'origin':
-  fatal: authentication failed for https://doltremoteapi.dolthub.com/<org>/<repo>
-```
-
-Or `spire push` from outside the cluster returns:
+**Symptom:** the dolt-init container's first-install clone from DoltHub
+fails:
 
 ```
-Error: failed to push: 403 Forbidden
+fatal: authentication failed for https://doltremoteapi.dolthub.com/<org>/<repo>
 ```
+
+DoltHub auth is only exercised at first-install seed time in
+cluster-as-truth installs (the bidirectional syncer is disabled and the
+runtime cluster Sync is a no-op); ongoing operation does not require
+DoltHub credentials.
 
 **Likely cause:** the `doltCreds` Secret holds a key that's no longer valid
 on DoltHub, the `dolthub.userName` configured on the cluster doesn't match
@@ -1724,40 +1752,63 @@ kubectl delete pod -n spire $STEWARD
 kubectl get pod -n spire -l app.kubernetes.io/name=spire-steward -w
 ```
 
-### Beads aren't syncing back to DoltHub from the cluster
+### Cluster mutations not visible on the laptop
 
-**Symptom:** wizards complete and close beads inside the cluster (visible
-via `kubectl logs deploy/spire-steward`), but `spire pull` on the laptop
-shows no movement; the dolt commit log on DoltHub has no new commits.
+**Symptom:** wizards complete and close beads inside the cluster
+(visible via `kubectl logs deploy/spire-steward`), but
+`spire focus`/`spire grok` on the laptop don't show the new state.
 
-**Likely cause:** the dolt sync sidecar / syncer CronJob is disabled or
-failing silently; OR the steward is committing locally but never pushing
-because `dolthub.user`/`password` (the remotesapi user) is wrong.
+**Expected behavior in cluster-as-truth installs:** this is by design.
+The cluster Dolt database is the write authority and DoltHub is no
+longer a bidirectional mirror — laptops do **not** see cluster state by
+running `spire pull`. They see it by attaching to the gateway
+(`spire tower attach-cluster`) and routing reads/mutations through
+`/api/v1/*`. The bidirectional syncer (`syncer.enabled`) is disabled by
+default and the runtime cluster Sync is a no-op even when set true.
+
+**Diagnose / fix:**
+
+```bash
+# Confirm the laptop is attached to the cluster tower and resolves to it
+spire tower list
+spire focus <bead-id>      # should reach the cluster via gateway HTTP
+
+# If the laptop has a same-prefix local tower that wins CWD resolution,
+# remove or rename it and re-attach to the cluster (see spi-43q7hp /
+# spi-i7k1ag.2 cutover runbook).
+```
+
+For long-term archive/DR (laptop-side replica is NOT the model), the
+canonical substrate is GCS backup — see [Backup
+landed in GCS](#backup-landed-in-gcs) below.
+
+### Backup landed in GCS
+
+**Symptom:** verifying that the dolt-backup CronJob is actually
+producing objects in `gs://<backup.gcs.bucket>/<backup.gcs.prefix>`.
 
 **Diagnose:**
 
 ```bash
-# Are syncs being attempted at all?
-kubectl logs -n spire deploy/spire-steward -c sidecar | grep -iE "push|pull|sync"
+# CronJob and most-recent Job status
+kubectl get cronjob spire-dolt-backup -n spire
+kubectl get jobs -n spire -l app.kubernetes.io/name=spire-dolt-backup
 
-# Or, if you enabled the syncer CronJob
-kubectl get cronjob -n spire spire-syncer
-kubectl get jobs -n spire | head
-kubectl logs -n spire job/<latest-syncer-job>
+# Logs from the latest backup run
+LATEST=$(kubectl get jobs -n spire -l app.kubernetes.io/name=spire-dolt-backup \
+  --sort-by=.metadata.creationTimestamp -o name | tail -1)
+kubectl logs -n spire $LATEST
 
-# Confirm the dolt commit log inside the cluster has the changes
-kubectl exec -n spire deploy/spire-dolt -- \
-  dolt sql -q "SELECT message, committer, date FROM dolt_log LIMIT 5"
+# List bucket contents (should grow on each successful run)
+gsutil ls gs://<backup.gcs.bucket>/<backup.gcs.prefix>/
 ```
 
-**Fix:** see "Dolt push fails with auth error" above for credential
-problems. If the syncer is disabled, enable it:
-
-```bash
-helm upgrade --install spire helm/spire -n spire -f values.gke.yaml \
-  --set syncer.enabled=true \
-  --set syncer.schedule="*/2 * * * *"
-```
+**Fix:** if the Job exits non-zero, check that the `<release>-gcp-sa`
+Secret is mounted on the dolt pod and that the SA has
+`roles/storage.objectAdmin` on the bucket. Restore is exercised by a
+separate runbook ([`docs/runbooks/gcs-restore.md`](runbooks/gcs-restore.md))
+— the first-install verification here only proves backup is landing,
+not that DR is healthy.
 
 ### First wizard pod runs but never produces any apprentice work
 

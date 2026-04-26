@@ -554,20 +554,26 @@ spireConfig:
 ## supply guilds per deployment. See section header for naming convention.
 guilds: []
 
-## @section Syncer
+## @section Syncer (DEPRECATED — disabled by default)
 ##
-## Long-running Deployment that runs `spire pull && spire push` on a loop.
-## Bridges the cluster's dolt DB and DoltHub so laptop work becomes visible
-## in-cluster and cluster work flows back out. Was a CronJob before, but
-## k8s CronJob cannot schedule sub-minute intervals — and 10s is the right
-## cadence for dogfooding.
+## Bidirectional DoltHub sync is disabled by default in cluster-as-truth
+## installs. The cluster Dolt database is the write authority; GCS backup
+## (`backup.*` / `dolt backup sync`) is the canonical archive/DR path.
+## Bidirectional cluster<->DoltHub sync recreates the non-fast-forward /
+## merge-conflict divergence class observed on 2026-04-26 whenever both
+## sides write — see epic spi-i7k1ag. The Helm template is preserved so
+## a deliberate one-shot first-install seed can still opt in by setting
+## `syncer.enabled=true`; the runtime Sync method is itself a no-op now
+## (pkg/steward/daemon_runner.go::clusterStrategy.Sync), so even an
+## opt-in syncer pod will not perform DOLT_PULL/DOLT_PUSH against
+## DoltHub on its loop.
 
-## @param syncer.enabled Whether to render the syncer Deployment + Service. Default false — Phase 1 does not need a DoltHub-sync loop because the cluster's dolt serves its own remotesapi. Re-enable when archival DoltHub sync is wanted (Phase 2).
+## @param syncer.enabled Whether to render the syncer Deployment + Service. Default false — bidirectional DoltHub sync is disabled in cluster-as-truth installs (use `backup.*` for archive/DR). Set to true only for a one-shot first-install seed scenario.
 ## @param syncer.interval Background sync interval when the syncer is enabled.
 ## @param syncer.debounce Minimum time between triggered syncs. Rapid POSTs to /sync coalesce within this window.
 ## @param syncer.port HTTP port the syncer's gateway endpoint listens on (exposed as the spire-syncer Service).
 syncer:
-  enabled: true
+  enabled: false
   interval: "1m"
   debounce: "5s"
   port: 8082

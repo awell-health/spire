@@ -180,24 +180,29 @@ dolt:
     # latency on commit and on remotesapi clone/pull.
     storageClass: premium-rwo
 
-## --- Syncer ---
-# DoltHub round-trip loop. Replace the placeholder remoteUrl with the
-# DoltHub repo this tower archives to (e.g. `your-org/your-tower`). Required
-# whenever syncer.enabled=true; if you don't archive to DoltHub, override
-# syncer.enabled=false instead.
+## --- Syncer (DEPRECATED — disabled by default in cluster-as-truth) ---
+# Bidirectional cluster<->DoltHub sync is disabled by default; the cluster
+# Dolt database is the write authority and GCS backup (see `backup.*`
+# below) is the archive/DR path. Re-enabling this on a production cluster
+# re-creates the non-fast-forward / merge-conflict divergence class fixed
+# in epic spi-i7k1ag — only set true for a deliberate one-shot first-install
+# seed and unset it again immediately. The chart default (false) is the
+# correct production setting; left here to keep the field discoverable.
 syncer:
-  enabled: true
+  enabled: false
 
 ## --- DoltHub remote ---
-# Operators MUST set dolthub.remoteUrl when the syncer is enabled. The
-# user/password/JWK fields stay in chart defaults here (empty); supply
-# them via External Secrets, KMS-backed Secret, or `--set-file` for the
-# JWK at install time. Never commit DoltHub creds to this file.
+# Cluster-as-truth installs use DoltHub as a one-shot first-install seed,
+# not a writable mirror. Set `dolthub.remoteUrl` to the DoltHub repo the
+# cluster clones from on first boot (e.g. `your-org/your-tower`); leave
+# the user/password/JWK fields empty here and supply them via External
+# Secrets, KMS-backed Secret, or `--set-file` for the JWK at install
+# time. Never commit DoltHub creds to this file.
 dolthub:
   # Placeholder — replace with `your-org/your-tower` when you install.
-  # Leaving this blank with syncer.enabled=true will boot a syncer that
-  # logs auth errors every interval. See header "Secrets handling" for
-  # the recommended out-of-band injection path.
+  # Used by the dolt-init container as the first-install seed source.
+  # The bidirectional syncer loop that previously consumed this is
+  # disabled by default (see `syncer` block above and `backup` below).
   remoteUrl: ""
 
 ## --- BundleStore (GCS via Workload Identity) ---

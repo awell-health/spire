@@ -6,8 +6,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/awell-health/spire/pkg/dolt"
 )
 
 // Daemon is a long-running sync worker. It owns the ticker, the debounce
@@ -198,15 +196,25 @@ func (c *clusterStrategy) Describe() string {
 	return fmt.Sprintf("cluster-sql:%s:%s/%s", c.database, c.remote, c.branch)
 }
 
+// clusterSyncDeprecationOnce gates a single deprecation log per process,
+// not per Sync call — the daemon loop calls Sync on every interval and
+// would otherwise spam the log. Package-level so multiple clusterStrategy
+// instances over a daemon's lifetime still log only once.
+var clusterSyncDeprecationOnce sync.Once
+
+// Sync is a no-op in cluster-as-truth deployments. The bidirectional
+// DOLT_PULL/DOLT_PUSH loop that previously lived here recreated the
+// non-fast-forward / merge-conflict divergence class observed on
+// 2026-04-26 whenever both DoltHub and the cluster wrote concurrently.
+// The cluster Dolt database is now the write authority; GCS backup
+// (helm `backup.*` / `dolt backup sync`) is the archive/DR path. The
+// method and its signature are preserved so the daemon loop's strategy
+// dispatch keeps working — we want fail-safe (return nil), not
+// fail-compile.
 func (c *clusterStrategy) Sync(_ context.Context, _ string) error {
-	if err := dolt.SQLPull(c.database, c.remote, c.branch); err != nil {
-		// Log pull errors but continue to push — push may still succeed
-		// (laptop committed, pull has nothing to fetch, push has work).
-		log.Printf("[daemon] pull: %s", err)
-	}
-	if err := dolt.SQLPush(c.database, c.remote, c.branch); err != nil {
-		return fmt.Errorf("push: %w", err)
-	}
+	clusterSyncDeprecationOnce.Do(func() {
+		log.Printf("[daemon] cluster syncer bidirectional DoltHub sync is disabled; cluster Dolt is the write authority, GCS backup is the archive/DR path")
+	})
 	return nil
 }
 
