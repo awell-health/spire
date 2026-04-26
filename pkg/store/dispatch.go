@@ -17,6 +17,24 @@ import (
 // gateway-mode callers can branch on a single errors.Is check.
 var ErrNotFound = errors.New("store: bead not found")
 
+// ErrGatewayUnsupported is the sentinel returned by every public store API
+// that has no gatewayclient equivalent yet. Wrapped with the operation name
+// so error strings tell the operator which call must be routed (or added)
+// rather than failing silently. CLI surfaces match it via errors.Is and
+// surface a clear "this call must go through the gateway" message.
+//
+// The fail-closed guard inside getStore() also wraps this sentinel so any
+// dispatch entry that slips past the gateway branch is caught before
+// touching local Dolt.
+var ErrGatewayUnsupported = errors.New("store: API not implemented for gateway-mode tower")
+
+// gatewayUnsupportedErr returns ErrGatewayUnsupported wrapped with the
+// public API name. Used by every dispatch entry that has no gateway client
+// method and by the getStore() fail-closed guard.
+func gatewayUnsupportedErr(op string) error {
+	return fmt.Errorf("store API %q not implemented for gateway-mode tower: %w", op, ErrGatewayUnsupported)
+}
+
 // activeTowerFn resolves the current tower. Swapped in tests to inject a
 // fake TowerConfig (gateway or direct) without touching real config files.
 var activeTowerFn = resolveActiveTower

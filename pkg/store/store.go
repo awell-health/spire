@@ -337,7 +337,16 @@ var BeadsDirResolver func() string
 
 // getStore returns the active store, auto-initializing via BeadsDirResolver
 // if no store is open and a resolver has been set.
+//
+// Under TowerModeGateway, getStore fails closed before touching local Dolt:
+// dispatch entries route through gatewayclient, and any code path that
+// slips past dispatch lands here and returns a wrapped ErrGatewayUnsupported
+// rather than silently mutating the laptop's database. This is the
+// belt-and-suspenders backstop for the structural transport split.
 func getStore() (beads.Storage, context.Context, error) {
+	if t, ok := isGatewayMode(); ok && t != nil {
+		return nil, nil, fmt.Errorf("getStore called under gateway-mode tower %q (missing dispatch entry): %w", t.Name, ErrGatewayUnsupported)
+	}
 	if activeStore == nil && BeadsDirResolver != nil {
 		if _, err := Ensure(BeadsDirResolver()); err != nil {
 			return nil, nil, err

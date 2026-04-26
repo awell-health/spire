@@ -83,7 +83,12 @@ func AddDep(issueID, dependsOnID string) error {
 
 // AddDepTyped adds a dependency with a specific type.
 // depType should be one of the beads.Dep* constants (e.g. "discovered-from", "related", "blocks").
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func AddDepTyped(issueID, dependsOnID, depType string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("AddDepTyped")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -97,7 +102,12 @@ func AddDepTyped(issueID, dependsOnID, depType string) error {
 }
 
 // RemoveDep removes a dependency between two beads.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func RemoveDep(issueID, dependsOnID string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("RemoveDep")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -106,7 +116,13 @@ func RemoveDep(issueID, dependsOnID string) error {
 }
 
 // CloseBead closes a bead.
+//
+// Gateway mode: routes to UpdateBead({"status":"closed"}) so the gateway's
+// PATCH /api/v1/beads/{id} endpoint handles the close server-side.
 func CloseBead(id string) error {
+	if _, ok := isGatewayMode(); ok {
+		return UpdateBead(id, map[string]interface{}{"status": "closed"})
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -119,7 +135,14 @@ func CloseBead(id string) error {
 }
 
 // DeleteBead permanently deletes a bead and its associated data.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
+// Hard delete is intentionally not exposed through the gateway today; callers
+// should prefer CloseBead.
 func DeleteBead(id string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("DeleteBead")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -157,7 +180,12 @@ func updateBeadDirect(id string, updates map[string]interface{}) error {
 }
 
 // AddLabel adds a label to a bead.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func AddLabel(id, label string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("AddLabel")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -166,7 +194,12 @@ func AddLabel(id, label string) error {
 }
 
 // RemoveLabel removes a label from a bead.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func RemoveLabel(id, label string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("RemoveLabel")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -175,7 +208,12 @@ func RemoveLabel(id, label string) error {
 }
 
 // SetConfig sets a config value.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func SetConfig(key, val string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("SetConfig")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -184,7 +222,12 @@ func SetConfig(key, val string) error {
 }
 
 // DeleteConfig deletes a config key. Requires ConfigDeleter sub-interface.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func DeleteConfig(key string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("DeleteConfig")
+	}
 	s, _, err := getStore()
 	if err != nil {
 		return err
@@ -197,7 +240,12 @@ func DeleteConfig(key string) error {
 }
 
 // AddComment adds a comment to a bead.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func AddComment(id, text string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("AddComment")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -207,7 +255,12 @@ func AddComment(id, text string) error {
 }
 
 // AddCommentReturning adds a comment and returns its ID.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func AddCommentReturning(id, text string) (string, error) {
+	if _, ok := isGatewayMode(); ok {
+		return "", gatewayUnsupportedErr("AddCommentReturning")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return "", err
@@ -227,7 +280,12 @@ func AddCommentReturning(id, text string) (string, error) {
 // Unlike AddComment, which defaults to Actor()="spire" for agent-issued
 // comments, AddCommentAs lets the caller supply an explicit author string
 // (e.g. "Name <email>" for archmage-authored comments from the CLI).
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func AddCommentAs(id, author, text string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("AddCommentAs")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -262,7 +320,14 @@ func AddCommentAsReturning(id, author, text string) (string, error) {
 }
 
 // CommitPending commits pending dolt changes. Requires PendingCommitter sub-interface.
+//
+// Gateway mode: dolt commits are server-owned in cluster-as-truth deployments;
+// this CLI/steward call is meaningless against a gateway tower. Fails closed
+// so steward bubbles the error up rather than silently no-oping.
 func CommitPending(message string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("CommitPending")
+	}
 	s, _, err := getStore()
 	if err != nil {
 		return err

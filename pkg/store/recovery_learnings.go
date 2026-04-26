@@ -151,7 +151,16 @@ func getDB() (*sql.DB, error) {
 }
 
 // WriteRecoveryLearningAuto writes a recovery learning using the active store's DB.
+//
+// Gateway mode: recovery_learnings is a sidecar SQL table owned by the local
+// Dolt server; gateway-mode clients have no equivalent endpoint, so this
+// fails closed with ErrGatewayUnsupported. The fail-closed guard inside
+// getStore() (called via getDB) would catch this anyway, but the explicit
+// branch keeps the error message tied to the public API name.
 func WriteRecoveryLearningAuto(l RecoveryLearningRow) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("WriteRecoveryLearningAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return fmt.Errorf("get db for recovery learning write: %w", err)
@@ -160,7 +169,12 @@ func WriteRecoveryLearningAuto(l RecoveryLearningRow) error {
 }
 
 // GetBeadLearningsAuto queries bead-specific learnings using the active store's DB.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetBeadLearningsAuto(sourceBeadID, failureClass string) ([]RecoveryLearningRow, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetBeadLearningsAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return nil, fmt.Errorf("get db for bead learnings: %w", err)
@@ -169,7 +183,12 @@ func GetBeadLearningsAuto(sourceBeadID, failureClass string) ([]RecoveryLearning
 }
 
 // GetCrossBeadLearningsAuto queries cross-bead learnings using the active store's DB.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetCrossBeadLearningsAuto(failureClass string, limit int) ([]RecoveryLearningRow, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetCrossBeadLearningsAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return nil, fmt.Errorf("get db for cross-bead learnings: %w", err)
@@ -288,7 +307,12 @@ func GetLearningStats(ctx context.Context, db *sql.DB, failureClass string) (*Le
 }
 
 // GetLearningStatsAuto wraps GetLearningStats using the active store's DB.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetLearningStatsAuto(failureClass string) (*LearningStats, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetLearningStatsAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return nil, fmt.Errorf("get db for learning stats: %w", err)
@@ -311,7 +335,12 @@ func UpdateLearningOutcome(ctx context.Context, db *sql.DB, recoveryBeadID, outc
 }
 
 // UpdateLearningOutcomeAuto updates the outcome using the active store's DB.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func UpdateLearningOutcomeAuto(recoveryBeadID, outcome string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("UpdateLearningOutcomeAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return fmt.Errorf("get db for learning outcome update: %w", err)
@@ -382,7 +411,12 @@ func GetPromotionSnapshot(ctx context.Context, db *sql.DB, failureSig string) (*
 }
 
 // GetPromotionSnapshotAuto wraps GetPromotionSnapshot using the active store's DB.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func GetPromotionSnapshotAuto(failureSig string) (*PromotionSnapshot, error) {
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetPromotionSnapshotAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return nil, fmt.Errorf("get db for promotion snapshot: %w", err)
@@ -413,7 +447,12 @@ func DemotePromotedRows(ctx context.Context, db *sql.DB, failureSig string) erro
 }
 
 // DemotePromotedRowsAuto wraps DemotePromotedRows using the active store's DB.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func DemotePromotedRowsAuto(failureSig string) error {
+	if _, ok := isGatewayMode(); ok {
+		return gatewayUnsupportedErr("DemotePromotedRowsAuto")
+	}
 	db, err := getDB()
 	if err != nil {
 		return fmt.Errorf("get db for demotion: %w", err)
