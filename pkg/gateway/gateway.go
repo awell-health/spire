@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
@@ -698,10 +699,22 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 		agents = a
 	} else {
 		rosterDeps := board.RosterDeps{
-			LoadWizardRegistry: func() []board.LocalAgent { return nil },
-			SaveWizardRegistry: func([]board.LocalAgent) {},
-			CleanDeadWizards:   func(a []board.LocalAgent) []board.LocalAgent { return a },
-			ProcessAlive:       dolt.ProcessAlive,
+			LoadWizardRegistry: func() []board.LocalAgent {
+				return agent.LoadRegistry().Wizards
+			},
+			SaveWizardRegistry: func(agents []board.LocalAgent) {
+				agent.SaveRegistry(agent.Registry{Wizards: agents})
+			},
+			CleanDeadWizards: func(agents []board.LocalAgent) []board.LocalAgent {
+				var live []board.LocalAgent
+				for _, w := range agents {
+					if w.PID > 0 && process.ProcessAlive(w.PID) {
+						live = append(live, w)
+					}
+				}
+				return live
+			},
+			ProcessAlive: dolt.ProcessAlive,
 		}
 		if local := board.RosterFromLocalWizards(timeout, rosterDeps); len(local) > 0 {
 			agents = local
