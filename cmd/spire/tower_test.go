@@ -276,6 +276,65 @@ func TestListTowerConfigs_Multiple(t *testing.T) {
 	}
 }
 
+func TestCmdTowerList_GatewayMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	gw := &TowerConfig{
+		Name:      "spi",
+		ProjectID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		HubPrefix: "spi",
+		Database:  "beads_spi",
+		CreatedAt: "2026-04-26T20:00:00Z",
+		Mode:      config.TowerModeGateway,
+		URL:       "http://127.0.0.1:3030",
+		TokenRef:  "spi",
+	}
+	if err := saveTowerConfig(gw); err != nil {
+		t.Fatalf("save gateway tower: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error { return cmdTowerList() })
+	if err != nil {
+		t.Fatalf("cmdTowerList: %v", err)
+	}
+
+	var row string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, " spi ") || strings.HasSuffix(line, " spi") || strings.Contains(line, "  spi  ") {
+			if strings.Contains(line, "beads_spi") {
+				row = line
+				break
+			}
+		}
+	}
+	if row == "" {
+		t.Fatalf("could not find row for tower 'spi' in output:\n%s", out)
+	}
+
+	if !strings.Contains(row, "gateway") {
+		t.Errorf("expected gateway tower row to contain 'gateway', got: %q", row)
+	}
+	if !strings.Contains(row, "http://127.0.0.1:3030") {
+		t.Errorf("expected gateway tower row to contain URL 'http://127.0.0.1:3030', got: %q", row)
+	}
+	if strings.Contains(row, "dolthub") {
+		t.Errorf("gateway tower row should not contain 'dolthub', got: %q", row)
+	}
+	// The KIND/REMOTE columns must not show "local" for a gateway tower.
+	// Strip the leading marker+name+prefix+database columns and inspect only
+	// the trailing kind+remote portion so we don't false-positive on a tower
+	// name or database that happens to embed the substring.
+	idx := strings.Index(row, "beads_spi")
+	if idx < 0 {
+		t.Fatalf("row missing database column: %q", row)
+	}
+	tail := row[idx+len("beads_spi"):]
+	if strings.Contains(tail, "local") {
+		t.Errorf("gateway tower KIND/REMOTE columns should not contain 'local', got tail: %q", tail)
+	}
+}
+
 func TestNormalizeDolthubURL(t *testing.T) {
 	tests := []struct {
 		input string

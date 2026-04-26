@@ -1279,9 +1279,19 @@ func cmdTowerList() error {
 	fmt.Printf("  %-16s %-8s %-20s %-10s %s\n", "NAME", "PREFIX", "DATABASE", "KIND", "REMOTE")
 	fmt.Printf("  %-16s %-8s %-20s %-10s %s\n", "----", "------", "--------", "----", "------")
 	for _, t := range towers {
-		remote := "local"
-		if t.DolthubRemote != "" {
-			remote = t.DolthubRemote
+		var kind, remote string
+		if t.IsGateway() {
+			kind = "gateway"
+			remote = t.URL
+			if remote == "" {
+				remote = "(no url)"
+			}
+		} else {
+			kind = t.EffectiveRemoteKind()
+			remote = "local"
+			if t.DolthubRemote != "" {
+				remote = t.DolthubRemote
+			}
 		}
 		marker := " "
 		if t.Name == activeTower && t.Name == cwdTower {
@@ -1291,7 +1301,7 @@ func cmdTowerList() error {
 		} else if t.Name == activeTower {
 			marker = "~" // global default (not CWD)
 		}
-		fmt.Printf("%s %-16s %-8s %-20s %-10s %s\n", marker, t.Name, t.HubPrefix, t.Database, t.EffectiveRemoteKind(), remote)
+		fmt.Printf("%s %-16s %-8s %-20s %-10s %s\n", marker, t.Name, t.HubPrefix, t.Database, kind, remote)
 	}
 
 	fmt.Println()
