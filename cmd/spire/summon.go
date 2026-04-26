@@ -292,7 +292,25 @@ func cmdSummon(args []string) error {
 		if !isK8sAvailableFunc() {
 			return fmt.Errorf("summon: tower %q is cluster-native but kubectl cannot reach the spire namespace", tower.Name)
 		}
-		return summonK8s(count)
+		// Targeted summon (positional bead IDs or --targets) is local-only:
+		// summonK8s creates generic WizardGuild capacity (wizard-N) and
+		// silently discards target IDs. Reject here so operators don't
+		// believe a specific bead has been claimed when only generic
+		// cluster capacity was created. Use `spire ready` to enqueue a
+		// specific bead for the cluster steward/operator. (spi-v1hcrs)
+		if len(targetIDs) > 0 {
+			return fmt.Errorf(
+				"spire summon <bead-id> is not supported in cluster mode: "+
+					"summon creates generic wizard capacity (wizard-N), it "+
+					"does not bind to a specific bead.\n\n"+
+					"To enqueue a specific bead for cluster dispatch, use:\n"+
+					"  spire ready %s\n\n"+
+					"To create generic cluster capacity, use a count:\n"+
+					"  spire summon <N>",
+				strings.Join(targetIDs, " "),
+			)
+		}
+		return summonK8sFunc(count)
 	case config.DeploymentModeLocalNative:
 		return summonLocal(count, targetIDs, dispatch, authFlags)
 	case config.DeploymentModeAttachedReserved:
@@ -491,6 +509,12 @@ func dismissK8s(count int, all bool) error {
 	fmt.Printf("\n%d wizard(s) dismissed.\n", count)
 	return nil
 }
+
+// summonK8sFunc is the indirection around summonK8s used by cmdSummon so
+// tests can verify (a) that targeted summon never reaches it in cluster
+// mode and (b) that bare counts still do, without needing a real
+// kubectl/cluster. Production callers leave this alone.
+var summonK8sFunc = summonK8s
 
 // isK8sAvailableFunc is the indirection used by cmdSummon / cmdDismiss so
 // tests can stub k8s detection without shelling out. Production callers

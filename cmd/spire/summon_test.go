@@ -778,6 +778,131 @@ func TestCmdDismiss_UnknownModeErrors(t *testing.T) {
 	}
 }
 
+// --- Targeted-summon-in-cluster-mode guard tests (spi-v1hcrs) ---
+//
+// `spire summon <bead-id>` in cluster-native mode used to silently route
+// to summonK8s(count), which creates generic WizardGuild capacity and
+// discards the parsed target IDs. These tests pin the new behavior:
+// targeted summon must be rejected with a redirect to `spire ready`,
+// while bare-count summon continues to work.
+
+// TestCmdSummon_K8sTargetedRejected verifies that a positional bead ID
+// in cluster-native mode is refused with a clear redirect to
+// `spire ready`, and that summonK8s is NOT invoked.
+func TestCmdSummon_K8sTargetedRejected(t *testing.T) {
+	// Stub the preflight resolver so the test doesn't touch dolt for
+	// prefix binding — we're testing the cluster-mode guard, not the
+	// preflight.
+	prevResolve := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "/tmp/fake", "git@example/fake.git", "main", nil
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prevResolve })
+
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "remote", DeploymentMode: config.DeploymentModeClusterNative}, nil
+	}
+
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return true }
+
+	// Spy: if the gate is wrong and we route to summonK8s, the test
+	// fails loudly rather than silently creating capacity.
+	origK8sFn := summonK8sFunc
+	defer func() { summonK8sFunc = origK8sFn }()
+	called := false
+	summonK8sFunc = func(count int) error {
+		called = true
+		return nil
+	}
+
+	err := cmdSummon([]string{"spi-abc123"})
+	if err == nil {
+		t.Fatal("expected error for targeted summon in cluster-native mode")
+	}
+	if called {
+		t.Fatal("summonK8s must NOT be called for targeted summon in cluster mode")
+	}
+	if !strings.Contains(err.Error(), "spire ready spi-abc123") {
+		t.Fatalf("error must redirect to `spire ready spi-abc123`, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not supported in cluster mode") {
+		t.Fatalf("error must explain cluster-mode incompatibility, got: %v", err)
+	}
+}
+
+// TestCmdSummon_K8sTargetedRejected_MultipleIDs verifies that all
+// passed-in target IDs appear in the redirect so the operator can
+// re-run the right ready command.
+func TestCmdSummon_K8sTargetedRejected_MultipleIDs(t *testing.T) {
+	prevResolve := wizardResolveRepoForSummon
+	wizardResolveRepoForSummon = func(beadID string) (string, string, string, error) {
+		return "/tmp/fake", "git@example/fake.git", "main", nil
+	}
+	t.Cleanup(func() { wizardResolveRepoForSummon = prevResolve })
+
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "remote", DeploymentMode: config.DeploymentModeClusterNative}, nil
+	}
+
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return true }
+
+	origK8sFn := summonK8sFunc
+	defer func() { summonK8sFunc = origK8sFn }()
+	summonK8sFunc = func(count int) error {
+		t.Fatalf("summonK8s must NOT be called with %d, got call", count)
+		return nil
+	}
+
+	err := cmdSummon([]string{"spi-aaa", "spi-bbb"})
+	if err == nil {
+		t.Fatal("expected error for targeted summon in cluster-native mode")
+	}
+	for _, id := range []string{"spi-aaa", "spi-bbb"} {
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("error must list bead %q, got: %v", id, err)
+		}
+	}
+}
+
+// TestCmdSummon_K8sCountStillWorks verifies that a bare numeric count
+// in cluster-native mode still routes to summonK8s — the targeted
+// guard is scoped to len(targetIDs) > 0, not "all summons in cluster
+// mode".
+func TestCmdSummon_K8sCountStillWorks(t *testing.T) {
+	origTower := activeTowerConfigFunc
+	defer func() { activeTowerConfigFunc = origTower }()
+	activeTowerConfigFunc = func() (*TowerConfig, error) {
+		return &TowerConfig{Name: "remote", DeploymentMode: config.DeploymentModeClusterNative}, nil
+	}
+
+	origK8s := isK8sAvailableFunc
+	defer func() { isK8sAvailableFunc = origK8s }()
+	isK8sAvailableFunc = func() bool { return true }
+
+	origK8sFn := summonK8sFunc
+	defer func() { summonK8sFunc = origK8sFn }()
+	var gotCount int
+	summonK8sFunc = func(count int) error {
+		gotCount = count
+		return nil
+	}
+
+	if err := cmdSummon([]string{"3"}); err != nil {
+		t.Fatalf("bare count in cluster-native mode should succeed, got: %v", err)
+	}
+	if gotCount != 3 {
+		t.Fatalf("expected summonK8s to be called with count=3, got %d", gotCount)
+	}
+}
+
 // TestCmdSummon_LocalNative_IgnoresK8sReachability is the central
 // regression test for spi-jsxa3v: a local-native tower with kubectl
 // reporting the spire namespace as reachable must STILL take the
