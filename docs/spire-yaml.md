@@ -19,7 +19,7 @@ runtime:
 agent:
   backend: process
   model: claude-sonnet-4-6
-  max-turns: 30
+  max-turns: 0              # omit Claude turn cap; timeout remains the guard
   stale: 10m
   timeout: 15m
 
@@ -76,7 +76,7 @@ Controls how wizards run.
 |-------|------|---------|-------------|
 | `backend` | string | `process` | Execution backend: `process`, `docker`, or `k8s`. |
 | `model` | string | `claude-sonnet-4-6` | Claude model for implementation. |
-| `max-turns` | int | `30` | Claude Code turn limit per phase. |
+| `max-turns` | int | `0` | Optional Claude Code turn limit per phase. `0` means omit `--max-turns` and rely on timeout. |
 | `stale` | duration | `10m` | Steward warning threshold. After this time, steward flags the wizard as stale. |
 | `timeout` | duration | `15m` | Hard kill threshold. Steward terminates the wizard after this time. |
 | `design-timeout` | duration | unset | Optional override for the design phase timeout. |

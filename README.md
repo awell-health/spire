@@ -214,7 +214,7 @@ runtime:
 agent:
   backend: process
   model: claude-sonnet-4-6
-  max-turns: 30
+  max-turns: 0
   stale: 10m
   timeout: 15m
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/awell-health/spire/pkg/repoconfig"
 )
 
 func TestParseClaudeResultJSON(t *testing.T) {
@@ -245,6 +247,25 @@ func TestWizardBuildClaudeArgsStreamJSON(t *testing.T) {
 		if a == "--output-format" && i+1 < len(args) && args[i+1] == "json" {
 			t.Errorf("must not use plain --output-format json (emits only final result), got %v", args)
 		}
+	}
+}
+
+func TestWizardBuildClaudeArgsZeroMaxTurnsOmitsFlag(t *testing.T) {
+	args := WizardBuildClaudeArgs("hello", "claude-sonnet-4-6", 0)
+	if containsArg(args, "--max-turns") {
+		t.Fatalf("expected zero maxTurns to omit --max-turns, got %v", args)
+	}
+}
+
+func TestWizardConfiguredMaxTurnsZeroMeansUnlimited(t *testing.T) {
+	if got := wizardConfiguredMaxTurns(nil); got != 0 {
+		t.Fatalf("nil config maxTurns = %d, want 0", got)
+	}
+	if got := wizardConfiguredMaxTurns(&repoconfig.RepoConfig{}); got != 0 {
+		t.Fatalf("zero config maxTurns = %d, want 0", got)
+	}
+	if got := wizardConfiguredMaxTurns(&repoconfig.RepoConfig{Agent: repoconfig.AgentConfig{MaxTurns: 12}}); got != 12 {
+		t.Fatalf("positive config maxTurns = %d, want 12", got)
 	}
 }
 

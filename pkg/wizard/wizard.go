@@ -141,9 +141,9 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 			StopReason   string  `json:"stop_reason"`
 			TotalCostUSD float64 `json:"total_cost_usd"`
 			Usage        struct {
-				InputTokens             int   `json:"input_tokens"`
-				OutputTokens            int   `json:"output_tokens"`
-				CacheReadInputTokens    int64 `json:"cache_read_input_tokens"`
+				InputTokens              int   `json:"input_tokens"`
+				OutputTokens             int   `json:"output_tokens"`
+				CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 				CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 			} `json:"usage"`
 		}
@@ -370,10 +370,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	model := repoconfig.ResolveModel("", repoCfg.Agent.Model)
 	timeout := repoconfig.ResolveTimeout("", repoCfg.Agent.Timeout, repoconfig.DefaultTimeout)
-	maxTurns := repoCfg.Agent.MaxTurns
-	if maxTurns == 0 {
-		maxTurns = 150
-	}
+	maxTurns := wizardConfiguredMaxTurns(repoCfg)
 	designTimeout := repoconfig.ResolveDesignTimeout(repoCfg.Agent.DesignTimeout)
 	branchPattern := repoconfig.ResolveBranchPattern(repoCfg.Branch.Pattern)
 	if repoCfg.Branch.Base != "" && baseBranch == "" {
@@ -866,10 +863,7 @@ func cmdBuildFix(beadID, wizardName, worktreeDir string, startedAt time.Time,
 	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
-	maxTurns := repoCfg.Agent.MaxTurns
-	if maxTurns == 0 {
-		maxTurns = 30 // build fixes should be quick
-	}
+	maxTurns := wizardConfiguredMaxTurns(repoCfg)
 	buildFixTimeout := "5m"
 
 	// Resolve the build command for verification after fix.
@@ -1292,6 +1286,16 @@ func WizardBuildClaudeArgs(prompt, model string, maxTurns int) []string {
 	return args
 }
 
+// wizardConfiguredMaxTurns returns the configured Claude turn cap for wizard
+// subprocesses. Zero is intentional and means timeout-gated/unlimited: do not
+// synthesize a default cap here.
+func wizardConfiguredMaxTurns(cfg *repoconfig.RepoConfig) int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Agent.MaxTurns
+}
+
 // sanitizeClaudeLogLabel normalizes a semantic label into a filesystem-safe
 // token. Mirrors pkg/executor/claude_runner.go so the board inspector's
 // glob + sort treats wizard and executor logs consistently.
@@ -1656,10 +1660,7 @@ func wizardBuildGateImpl(wc *spgit.WorktreeContext, beadID, beadTitle, worktreeD
 	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
-	maxTurns := cfg.Agent.MaxTurns
-	if maxTurns == 0 {
-		maxTurns = 30
-	}
+	maxTurns := wizardConfiguredMaxTurns(cfg)
 	buildFixTimeout := "5m"
 
 	for round := 1; round <= maxRounds; round++ {

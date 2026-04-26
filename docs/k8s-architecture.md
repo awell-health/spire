@@ -298,7 +298,7 @@ runtime:
 
 agent:
   model: claude-sonnet-4-6  # default
-  max-turns: 50             # safety limit
+  max-turns: 0              # omit Claude turn cap; timeout remains the guard
   timeout: 30m              # hard timeout per task
 
 branch:
