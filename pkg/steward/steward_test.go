@@ -653,10 +653,11 @@ func TestCleanUpdatedLabels_RemoveLabelErrorContinues(t *testing.T) {
 // fakeBackend implements agent.Backend for testing.
 type fakeBackend struct {
 	killed []string
+	agents []agent.Info
 }
 
 func (f *fakeBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) { return nil, nil }
-func (f *fakeBackend) List() ([]agent.Info, error)                       { return nil, nil }
+func (f *fakeBackend) List() ([]agent.Info, error)                       { return f.agents, nil }
 func (f *fakeBackend) Logs(name string) (io.ReadCloser, error) {
 	return nil, os.ErrNotExist
 }
@@ -681,7 +682,7 @@ func TestCheckBeadHealth_StaleIncrementsCount(t *testing.T) {
 	defer func() { GetActiveAttemptFunc = origAttempt }()
 
 	backend := &fakeBackend{}
-	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
 	if staleCount != 1 {
 		t.Errorf("staleCount = %d, want 1", staleCount)
@@ -695,7 +696,9 @@ func TestCheckBeadHealth_StaleIncrementsCount(t *testing.T) {
 }
 
 func TestCheckBeadHealth_ShutdownKillsAgent(t *testing.T) {
-	// Bead updated 45 minutes ago (beyond shutdown threshold).
+	// Bead updated 45 minutes ago (beyond shutdown threshold) AND attempt
+	// heartbeat is also 45 minutes old — both clocks agree the wizard is
+	// wedged. Owner is reported alive in the backend, so we kill it.
 	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
@@ -719,8 +722,20 @@ func TestCheckBeadHealth_ShutdownKillsAgent(t *testing.T) {
 	}
 	defer func() { GetActiveAttemptFunc = origAttempt }()
 
-	backend := &fakeBackend{}
-	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid", LastSeenAt: oldTime}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-old", Alive: true}},
+	}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
 	if shutdownCount != 1 {
 		t.Errorf("shutdownCount = %d, want 1", shutdownCount)
@@ -742,8 +757,12 @@ func TestCheckBeadHealth_NoUpdatedAtSkipped(t *testing.T) {
 	}
 	defer func() { ListBeadsFunc = origList }()
 
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) { return nil, nil }
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
 	backend := &fakeBackend{}
-	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
 	if staleCount != 0 || shutdownCount != 0 {
 		t.Errorf("expected 0/0, got stale=%d shutdown=%d", staleCount, shutdownCount)
@@ -762,7 +781,7 @@ func TestCheckBeadHealth_ReviewApprovedSkipped(t *testing.T) {
 	defer func() { ListBeadsFunc = origList }()
 
 	backend := &fakeBackend{}
-	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
 	if staleCount != 0 || shutdownCount != 0 {
 		t.Errorf("expected 0/0 for review-approved bead, got stale=%d shutdown=%d", staleCount, shutdownCount)
@@ -2933,7 +2952,7 @@ func TestCheckBeadHealth_SkipsForeignOwnedAttempts(t *testing.T) {
 	defer func() { InstanceIDFunc = origInstanceID }()
 
 	backend := &fakeBackend{}
-	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
 	// Foreign attempt should be skipped entirely — no stale, no shutdown, no kills.
 	if staleCount != 0 {
@@ -2948,7 +2967,9 @@ func TestCheckBeadHealth_SkipsForeignOwnedAttempts(t *testing.T) {
 }
 
 func TestCheckBeadHealth_ProcessesLocallyOwnedAttempts(t *testing.T) {
-	// Bead updated 45 minutes ago (beyond shutdown threshold).
+	// Bead updated 45 minutes ago, attempt heartbeat also 45 minutes old:
+	// the wizard is wedged. Owner is reported alive in the backend, so the
+	// shutdown branch fires.
 	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
@@ -2972,10 +2993,10 @@ func TestCheckBeadHealth_ProcessesLocallyOwnedAttempts(t *testing.T) {
 	}
 	defer func() { GetActiveAttemptFunc = origAttempt }()
 
-	// Return local instance metadata.
+	// Return local instance metadata WITH a stale heartbeat.
 	origGetInstance := GetAttemptInstanceFunc
 	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
-		return &store.InstanceMeta{InstanceID: "local-instance-uuid"}, nil
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid", LastSeenAt: oldTime}, nil
 	}
 	defer func() { GetAttemptInstanceFunc = origGetInstance }()
 
@@ -2983,8 +3004,10 @@ func TestCheckBeadHealth_ProcessesLocallyOwnedAttempts(t *testing.T) {
 	InstanceIDFunc = func() string { return "local-instance-uuid" }
 	defer func() { InstanceIDFunc = origInstanceID }()
 
-	backend := &fakeBackend{}
-	_, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-local", Alive: true}},
+	}
+	_, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
 	// Local attempt should be processed — shutdown threshold exceeded.
 	if shutdownCount != 1 {
@@ -3032,14 +3055,280 @@ func TestCheckBeadHealth_TreatsUnstampedAttemptsAsLocal(t *testing.T) {
 	defer func() { InstanceIDFunc = origInstanceID }()
 
 	backend := &fakeBackend{}
-	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend)
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
 
-	// Unstamped attempts are treated as local — should be processed.
+	// Unstamped attempts are treated as local — should be processed (warn-only,
+	// since heartbeat data is unavailable, the conservative path applies).
 	if staleCount != 1 {
 		t.Errorf("staleCount = %d, want 1 (unstamped attempt treated as local)", staleCount)
 	}
 	if shutdownCount != 0 {
 		t.Errorf("shutdownCount = %d, want 0", shutdownCount)
+	}
+}
+
+// TestCheckBeadHealth_LiveAttemptKeepsBeadAlive is the spi-9ixgqy /
+// spi-n6fk2h / spi-i7k1ag.4 regression: a long-running wizard with an
+// untouched parent bead and a fresh heartbeat must NOT be killed.
+func TestCheckBeadHealth_LiveAttemptKeepsBeadAlive(t *testing.T) {
+	parentOld := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+	heartbeatFresh := time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339)
+
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-live", Title: "live task", Status: "in_progress", UpdatedAt: parentOld, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-live.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-live"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-live" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid", LastSeenAt: heartbeatFresh}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-live", Alive: true}},
+	}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
+
+	if staleCount != 0 {
+		t.Errorf("staleCount = %d, want 0 (fresh heartbeat keeps wizard alive)", staleCount)
+	}
+	if shutdownCount != 0 {
+		t.Errorf("shutdownCount = %d, want 0 (fresh heartbeat keeps wizard alive)", shutdownCount)
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills, got %v", backend.killed)
+	}
+}
+
+// TestCheckBeadHealth_StaleHeartbeatShutsDown verifies that a stale
+// heartbeat WITH a live owner is treated as wedged and shut down.
+func TestCheckBeadHealth_StaleHeartbeatShutsDown(t *testing.T) {
+	old := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-wedged", Title: "wedged", Status: "in_progress", UpdatedAt: old, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-wedged.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-wedged"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-wedged" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid", LastSeenAt: old}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-wedged", Alive: true}},
+	}
+	_, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
+
+	if shutdownCount != 1 {
+		t.Errorf("shutdownCount = %d, want 1 (stale heartbeat + live owner = wedged)", shutdownCount)
+	}
+	if len(backend.killed) != 1 || backend.killed[0] != "wizard-wedged" {
+		t.Errorf("killed = %v, want [wizard-wedged]", backend.killed)
+	}
+}
+
+// TestCheckBeadHealth_DeadOwnerSkipsKill verifies that a stale heartbeat
+// with a DEAD owner skips the kill — orphan sweep handles it on its next
+// pass, so a redundant kill here is just spam.
+func TestCheckBeadHealth_DeadOwnerSkipsKill(t *testing.T) {
+	old := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-dead", Title: "dead-owner task", Status: "in_progress", UpdatedAt: old, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-dead.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-dead"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-dead" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid", LastSeenAt: old}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	// Backend reports owner as NOT alive (or absent) — the orphan sweep is
+	// the right authority, not us.
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-dead", Alive: false}},
+	}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
+
+	if shutdownCount != 0 {
+		t.Errorf("shutdownCount = %d, want 0 (dead owner deferred to orphan sweep)", shutdownCount)
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills for dead owner, got %v", backend.killed)
+	}
+	if staleCount != 1 {
+		t.Errorf("staleCount = %d, want 1 (warn-only when owner is gone)", staleCount)
+	}
+}
+
+// TestCheckBeadHealth_MissingHeartbeatConservative verifies that an attempt
+// with NO heartbeat (just claimed, pre-heartbeat schema) is never killed,
+// even when the parent bead is far past the shutdown threshold. We log
+// stale and let the orphan sweep / cleric reconcile if the owner truly
+// died.
+func TestCheckBeadHealth_MissingHeartbeatConservative(t *testing.T) {
+	parentOld := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-noheartbeat", Title: "claimed but no heartbeat", Status: "in_progress", UpdatedAt: parentOld, Type: "task"},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-noheartbeat.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-noheartbeat"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-noheartbeat" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	// Stamped but LastSeenAt empty: the BeginAttempt + 30s rate-limit window.
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{InstanceID: "local-instance-uuid", LastSeenAt: ""}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-noheartbeat", Alive: true}},
+	}
+	_, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
+
+	if shutdownCount != 0 {
+		t.Errorf("shutdownCount = %d, want 0 (missing heartbeat must never escalate to kill)", shutdownCount)
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills when heartbeat is absent, got %v", backend.killed)
+	}
+}
+
+// TestCheckBeadHealth_SkipsClusterNativeMode verifies that cluster-native
+// towers do not run local timeout decisions for cluster-owned work.
+func TestCheckBeadHealth_SkipsClusterNativeMode(t *testing.T) {
+	listCalled := false
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		listCalled = true
+		return nil, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeClusterNative)
+
+	if staleCount != 0 || shutdownCount != 0 {
+		t.Errorf("expected 0/0 in cluster-native mode, got stale=%d shutdown=%d", staleCount, shutdownCount)
+	}
+	if listCalled {
+		t.Errorf("ListBeadsFunc must not be called in cluster-native mode")
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills in cluster-native mode, got %v", backend.killed)
+	}
+}
+
+// TestCheckBeadHealth_SkipsAttachedReservedMode verifies that attached-
+// reserved towers skip local timeout decisions.
+func TestCheckBeadHealth_SkipsAttachedReservedMode(t *testing.T) {
+	listCalled := false
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		listCalled = true
+		return nil, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	backend := &fakeBackend{}
+	staleCount, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeAttachedReserved)
+
+	if staleCount != 0 || shutdownCount != 0 {
+		t.Errorf("expected 0/0 in attached-reserved mode, got stale=%d shutdown=%d", staleCount, shutdownCount)
+	}
+	if listCalled {
+		t.Errorf("ListBeadsFunc must not be called in attached-reserved mode")
+	}
+	if len(backend.killed) != 0 {
+		t.Errorf("expected no kills in attached-reserved mode, got %v", backend.killed)
 	}
 }
 

@@ -630,8 +630,11 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		DetectMergeReady(cfg.DryRun, cfg.MergeQueue)
 	}
 
-	// Step 5: Stale + shutdown check.
-	staleCount, shutdownCount := CheckBeadHealth(cfg.StaleThreshold, cfg.ShutdownThreshold, cfg.DryRun, cfg.Backend)
+	// Step 5: Stale + shutdown check. Pass the resolved deployment mode so
+	// cluster-native and attached-reserved towers fail closed (the cluster
+	// owner is the authority for shutdowns; local-registry timeout decisions
+	// would mis-classify live pod attempts).
+	staleCount, shutdownCount := CheckBeadHealth(cfg.StaleThreshold, cfg.ShutdownThreshold, cfg.DryRun, cfg.Backend, deploymentMode)
 	if staleCount > 0 || shutdownCount > 0 {
 		log.Printf("[steward] %sstale: %d warning(s), %d shutdown(s)", prefix, staleCount, shutdownCount)
 	} else {
@@ -775,16 +778,55 @@ func RecoverStaleDispatched(timeout time.Duration, dryRun bool) int {
 //   - stale: wizard exceeded guidelines (warning + alert bead)
 //   - shutdown: tower kills the wizard via backend.Kill()
 //
-// Only processes attempts owned by this instance. Foreign attempts (owned by
-// another instance) are skipped. Unstamped pre-migration attempts are treated
-// as local for backward compatibility.
+// The clock is the active attempt bead's last_seen_at heartbeat (written by
+// the executor every ~30s) when present — NOT the parent bead's UpdatedAt.
+// A long-running implement/review/merge step heartbeats while the parent
+// bead may not be mutated for >15m; using the parent clock killed live work
+// (spi-9ixgqy).
+//
+// Behavior in each clock-state:
+//   - active attempt with non-empty last_seen_at: heartbeat is the clock;
+//     a shutdown will kill only if the backend reports the owner Alive.
+//     A stale heartbeat with a dead owner falls to the orphan sweep.
+//   - active attempt with empty last_seen_at: conservative — heartbeat may
+//     not have fired yet (BeginAttempt + 30s rate-limit window). Never kill;
+//     warn only when b.UpdatedAt crosses the stale threshold.
+//   - no active attempt: warn-only via b.UpdatedAt, matching the historical
+//     "no owner" behavior.
+//
+// Only attempts owned by this instance are processed. Foreign attempts are
+// skipped. Unstamped pre-migration attempts are treated as local for
+// backward compatibility.
+//
+// Mode gate: cluster-native and attached-reserved towers skip this check
+// entirely — the cluster owner (pod status, operator) is the authority for
+// shutdowns. Empty mode counts as local-native (matches the PhaseDispatch
+// zero-value contract).
 //
 // Returns (staleCount, shutdownCount).
-func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, backend agent.Backend) (int, int) {
+func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun bool, backend agent.Backend, deploymentMode config.DeploymentMode) (int, int) {
+	if !shouldRunLocalRegistryOps(deploymentMode) {
+		log.Printf("[steward] skipping bead health: tower mode=%s; cluster owner is the authority for shutdowns", deploymentMode)
+		return 0, 0
+	}
+
 	inProgress, err := ListBeadsFunc(beads.IssueFilter{Status: store.StatusPtr(beads.StatusInProgress)})
 	if err != nil {
 		log.Printf("[steward] check health: %s", err)
 		return 0, 0
+	}
+
+	// Build owner→Alive map once per call so the shutdown branch doesn't
+	// hit the backend repeatedly.
+	aliveByOwner := map[string]bool{}
+	if backend != nil {
+		if agents, lerr := backend.List(); lerr != nil {
+			log.Printf("[steward] check health: backend list: %s", lerr)
+		} else {
+			for _, a := range agents {
+				aliveByOwner[a.Name] = a.Alive
+			}
+		}
 	}
 
 	localInstanceID := InstanceIDFunc()
@@ -800,73 +842,116 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 			continue
 		}
 
-		if b.UpdatedAt == "" {
-			continue
-		}
-
-		t, err := time.Parse(time.RFC3339, b.UpdatedAt)
-		if err != nil {
-			t, err = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
-			if err != nil {
-				continue
-			}
-		}
-
-		age := now.Sub(t)
+		// Look up the active attempt first — it (not the parent bead) is
+		// the primary source of liveness/clock truth.
 		owner := ""
 		attempt, aErr := GetActiveAttemptFunc(b.ID)
 		if aErr != nil {
-			// Invariant violation: multiple open attempts. Raise an alert and
-			// continue health checking with empty owner (Kill("") will fail
-			// gracefully if the shutdown threshold is also exceeded).
+			// Invariant violation: multiple open attempts. Raise an alert
+			// and fall through to the no-attempt path (no owner, warn-only).
 			log.Printf("[steward] %s has multiple open attempts (invariant violation): %v", b.ID, aErr)
-			RaiseCorruptedBeadAlert(b.ID, aErr)
-		} else if attempt != nil {
-			owner = store.HasLabel(*attempt, "agent:")
+			RaiseCorruptedBeadAlertFunc(b.ID, aErr)
+			attempt = nil
+		}
 
-			// Check instance ownership of the attempt.
-			meta, metaErr := GetAttemptInstanceFunc(attempt.ID)
+		// Foreign-instance scoping must short-circuit before any clock
+		// evaluation: a foreign attempt is some other instance's
+		// responsibility.
+		var meta *store.InstanceMeta
+		if attempt != nil {
+			owner = store.HasLabel(*attempt, "agent:")
+			m, metaErr := GetAttemptInstanceFunc(attempt.ID)
 			if metaErr != nil {
 				log.Printf("[steward] check health: get instance meta for %s: %s", attempt.ID, metaErr)
-			} else if meta != nil && meta.InstanceID != "" && meta.InstanceID != localInstanceID {
-				// Foreign attempt — skip health check.
-				log.Printf("[steward] foreign attempt %s on instance %s — skipping health check", attempt.ID, meta.InstanceID)
+			} else if m != nil && m.InstanceID != "" && m.InstanceID != localInstanceID {
+				log.Printf("[steward] foreign attempt %s on instance %s — skipping health check", attempt.ID, m.InstanceID)
 				foreignCount++
 				continue
 			}
 			// meta == nil || meta.InstanceID == "": backward compat (unstamped) — treat as local.
 			// meta.InstanceID == localInstanceID: local — proceed with health check.
+			meta = m
 		}
 
-		if age > shutdownThreshold {
-			// Without an identifiable owner there is no wizard to kill —
-			// calling Kill("") just spams "agent \"\" not found in
-			// registry" each cycle. This typically means the attempt bead
-			// was never created or never stamped (e.g. schema mismatch,
-			// foreign-instance work whose attempt lookup failed). Log
-			// stale and move on; a human can investigate the orphan.
-			if owner == "" {
-				staleCount++
-				log.Printf("[steward] STALE (no owner): %s (%s) age=%s — not killing, investigate orphan", b.ID, b.Title, age.Round(time.Second))
+		// Choose the clock. heartbeatDriven == true gates the shutdown
+		// branch — anything else is warn-only, no matter how old the bead is.
+		var (
+			t                time.Time
+			heartbeatDriven  bool
+			clockSourceLabel string
+		)
+		if attempt != nil && meta != nil && meta.LastSeenAt != "" {
+			parsed, perr := time.Parse(time.RFC3339, meta.LastSeenAt)
+			if perr != nil {
+				log.Printf("[steward] check health: parse last_seen_at for %s: %s", attempt.ID, perr)
+			} else {
+				t = parsed
+				heartbeatDriven = true
+				clockSourceLabel = "heartbeat"
+			}
+		}
+		if !heartbeatDriven {
+			// Fallback to bead UpdatedAt for warn-only purposes (no
+			// heartbeat / no attempt / unparseable heartbeat).
+			if b.UpdatedAt == "" {
 				continue
 			}
-			// Fatal: kill the wizard via backend.
+			parsed, perr := time.Parse(time.RFC3339, b.UpdatedAt)
+			if perr != nil {
+				parsed, perr = time.Parse("2006-01-02 15:04:05", b.UpdatedAt)
+				if perr != nil {
+					continue
+				}
+			}
+			t = parsed
+			clockSourceLabel = "bead"
+		}
+
+		age := now.Sub(t)
+
+		if heartbeatDriven && age > shutdownThreshold {
+			// Without an identifiable owner there is no wizard to kill —
+			// calling Kill("") just spams "agent \"\" not found in
+			// registry" each cycle. Log stale and move on.
+			if owner == "" {
+				staleCount++
+				log.Printf("[steward] STALE (no owner): %s (%s) age=%s clock=%s — not killing, investigate orphan", b.ID, b.Title, age.Round(time.Second), clockSourceLabel)
+				continue
+			}
+			// Liveness gate: only kill processes the backend reports
+			// alive. A dead-owner attempt is reaped by the orphan sweep
+			// on its next pass; killing again here is redundant.
+			if alive, ok := aliveByOwner[owner]; !ok || !alive {
+				staleCount++
+				log.Printf("[steward] STALE (owner gone): %s (%s) owner=%s age=%s — orphan sweep will reconcile", b.ID, b.Title, owner, age.Round(time.Second))
+				continue
+			}
 			shutdownCount++
 			if dryRun {
-				log.Printf("[steward] [dry-run] SHUTDOWN: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
+				log.Printf("[steward] [dry-run] SHUTDOWN: %s (%s) owner=%s age=%s clock=%s", b.ID, b.Title, owner, age.Round(time.Second), clockSourceLabel)
 			} else {
-				log.Printf("[steward] SHUTDOWN: %s (%s) owner=%s age=%s — killing wizard", b.ID, b.Title, owner, age.Round(time.Second))
+				log.Printf("[steward] SHUTDOWN: %s (%s) owner=%s age=%s clock=%s — killing wizard", b.ID, b.Title, owner, age.Round(time.Second), clockSourceLabel)
 				if killErr := backend.Kill(owner); killErr != nil {
 					log.Printf("[steward] kill %s: %s", owner, killErr)
 				}
 			}
 		} else if age > staleThreshold {
-			// Warning: wizard exceeded guidelines.
+			// Warn-only path. Reasons we may be here:
+			//   - heartbeat-driven and age in (stale, shutdown]
+			//   - attempt without heartbeat data (be conservative: never kill)
+			//   - no active attempt at all (no owner to kill)
 			staleCount++
+			label := "STALE"
+			switch {
+			case attempt != nil && !heartbeatDriven:
+				label = "STALE (no heartbeat)"
+			case attempt == nil:
+				label = "STALE (no attempt)"
+			}
 			if dryRun {
-				log.Printf("[steward] [dry-run] STALE: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
+				log.Printf("[steward] [dry-run] %s: %s (%s) owner=%s age=%s clock=%s", label, b.ID, b.Title, owner, age.Round(time.Second), clockSourceLabel)
 			} else {
-				log.Printf("[steward] STALE: %s (%s) owner=%s age=%s", b.ID, b.Title, owner, age.Round(time.Second))
+				log.Printf("[steward] %s: %s (%s) owner=%s age=%s clock=%s", label, b.ID, b.Title, owner, age.Round(time.Second), clockSourceLabel)
 			}
 		}
 	}
@@ -880,7 +965,9 @@ func CheckBeadHealth(staleThreshold, shutdownThreshold time.Duration, dryRun boo
 
 // CleanUpdatedLabels removes stale updated:<timestamp> labels from open/in_progress
 // beads. These labels were written by the old touchUpdatedLabel() heartbeat mechanism
-// and are no longer used — CheckBeadHealth now reads b.UpdatedAt directly.
+// and are no longer used — CheckBeadHealth now reads the active attempt's
+// last_seen_at metadata as the primary clock (with b.UpdatedAt only as a
+// warn-only fallback).
 func CleanUpdatedLabels() int {
 	all, err := ListBeadsFunc(beads.IssueFilter{
 		ExcludeStatus: []beads.Status{beads.StatusClosed},

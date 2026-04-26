@@ -177,7 +177,7 @@ Recovery paths (steward-owned):
 | `dispatched → in_progress` | Wizard (`spire claim`) |
 | `in_progress → closed` | Wizard (close action) |
 | `dispatched → ready` (stale) | Steward (`RecoverStaleDispatched`, short timeout) |
-| `in_progress → ready` (stale) | Steward (`CheckBeadHealth`, long timeout) |
+| `in_progress → ready` (stale) | Steward (`CheckBeadHealth`, long timeout, attempt-heartbeat clock) |
 
 The operator is task-status-agnostic: it reconciles `workload_intents`
 rows into apprentice pods, but never mutates `issues.status`. That
@@ -353,7 +353,7 @@ it probably belongs in `pkg/executor`, not here.
 |-------------|---------|
 | `Cycle` | Run one steward cycle across all configured towers. |
 | `TowerCycle` | Run ready-work assignment and health checks for one tower. |
-| `CheckBeadHealth` | Detect stale, wedged, or corrupt work and trigger cleanup or alerts. |
+| `CheckBeadHealth` | Detect stale, wedged, or corrupt work and trigger cleanup or alerts. Uses the active attempt's `last_seen_at` heartbeat as the primary clock (NOT bead `updated_at`); skips entirely on cluster-native and attached-reserved towers. |
 | `daemon.go` flows | Run tower-wide background duties like sync, inbox delivery, and dead-agent cleanup. |
 
 ## Practical rules
