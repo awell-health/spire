@@ -102,6 +102,7 @@ func TestDispatch_PanicStoreBackstop(t *testing.T) {
 		{"AddComment", func() error { return AddComment("spi-x", "hi") }},
 		{"AddCommentReturning", func() error { _, err := AddCommentReturning("spi-x", "hi"); return err }},
 		{"AddCommentAs", func() error { return AddCommentAs("spi-x", "alice", "hi") }},
+		{"AddCommentAsReturning", func() error { _, err := AddCommentAsReturning("spi-x", "alice", "hi"); return err }},
 		{"CommitPending", func() error { return CommitPending("msg") }},
 
 		// dispatch.go
@@ -202,6 +203,10 @@ func TestDispatch_FailsClosedWithSentinel(t *testing.T) {
 			return err
 		}, "AddCommentReturning"},
 		{"AddCommentAs", func() error { return AddCommentAs("a", "b", "c") }, "AddCommentAs"},
+		{"AddCommentAsReturning", func() error {
+			_, err := AddCommentAsReturning("a", "b", "c")
+			return err
+		}, "AddCommentAsReturning"},
 		{"GetComments", func() error { _, err := GetComments("a"); return err }, "GetComments"},
 		{"CommitPending", func() error { return CommitPending("m") }, "CommitPending"},
 		{"GetIssue", func() error { _, err := GetIssue("a"); return err }, "GetIssue"},

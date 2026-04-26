@@ -172,6 +172,7 @@ var dispatchedAPIs = []string{
 	"AddComment",
 	"AddCommentReturning",
 	"AddCommentAs",
+	"AddCommentAsReturning",
 	"CommitPending",
 
 	// dispatch.go (messages and deps)

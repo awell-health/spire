@@ -301,7 +301,12 @@ func AddCommentAs(id, author, text string) error {
 // id the desktop renders in its response. An empty author falls back to
 // Actor()="spire" so callers don't need a separate branch when they don't
 // have an identity to attribute to.
+//
+// Gateway mode: no client method yet — fails closed with ErrGatewayUnsupported.
 func AddCommentAsReturning(id, author, text string) (string, error) {
+	if _, ok := isGatewayMode(); ok {
+		return "", gatewayUnsupportedErr("AddCommentAsReturning")
+	}
 	s, ctx, err := getStore()
 	if err != nil {
 		return "", err
