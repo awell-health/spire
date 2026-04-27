@@ -745,15 +745,28 @@ func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, st
 		withParentRun(e.currentRunID),
 		withAttemptNumber(attemptNum))
 
+	if hasResultJSON && wizardRunResultIsFailure(outputs["result"]) {
+		return ActionResult{Outputs: outputs, Error: fmt.Errorf("subprocess %s reported %s", stepName, outputs["result"])}
+	}
+
 	// Propagate child process failure as a node error only when no
-	// result.json was written. If the child declared its output, trust
-	// it mechanically — the executor does not reinterpret subprocess
-	// results.
+	// result.json was written. If the child declared a non-failure output,
+	// trust it mechanically — the executor does not reinterpret successful
+	// or salvageable subprocess results.
 	if waitErr != nil && !hasResultJSON {
 		return ActionResult{Outputs: outputs, Error: fmt.Errorf("subprocess %s exited: %w", stepName, waitErr)}
 	}
 
 	return ActionResult{Outputs: outputs}
+}
+
+func wizardRunResultIsFailure(result string) bool {
+	switch result {
+	case "build_failure", "implement_failure", "retry_failure", "retry_error", "error", "timeout":
+		return true
+	default:
+		return false
+	}
 }
 
 // stepRoleAndPhase maps the executor's local (SpawnRole, step.Flow,

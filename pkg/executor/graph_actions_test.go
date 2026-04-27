@@ -487,6 +487,54 @@ func TestWizardRunSpawnSucceedsWithResultJSONDespiteWaitErr(t *testing.T) {
 	}
 }
 
+func TestWizardRunSpawnFailsWhenResultJSONReportsImplementFailure(t *testing.T) {
+	agentName := "wizard-test"
+	stepName := "implement"
+	spawnName := agentName + "-" + stepName + "-1"
+
+	resultDir := t.TempDir()
+	ar := agentResultJSON{Result: "implement_failure", Branch: "feat/spi-test"}
+	data, _ := json.Marshal(ar)
+	os.WriteFile(filepath.Join(resultDir, "result.json"), data, 0644)
+
+	backend := &mockBackend{
+		spawnFn: func(cfg agent.SpawnConfig) (agent.Handle, error) {
+			return &mockHandle{}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	deps := &Deps{
+		Spawner:   backend,
+		ConfigDir: func() (string, error) { return dir, nil },
+		AgentResultDir: func(name string) string {
+			if name == spawnName {
+				return resultDir
+			}
+			return ""
+		},
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-implement-failure-result",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			stepName: {Action: "wizard.run", Flow: "implement"},
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", agentName, graph, nil, deps)
+	step := StepConfig{Action: "wizard.run", Flow: "implement"}
+	result := wizardRunSpawn(exec, stepName, step, exec.graphState, agent.RoleApprentice, []string{"--apprentice"}, nil)
+
+	if result.Error == nil {
+		t.Fatal("expected Error when result.json reports implement_failure, got nil")
+	}
+	if result.Outputs["result"] != "implement_failure" {
+		t.Errorf("outputs[result] = %q, want implement_failure", result.Outputs["result"])
+	}
+}
+
 // TestWizardRunSpawnTrustsApproveResultDespiteWaitErr verifies that when a
 // sage-review writes result.json with result="approve" and then exits non-zero,
 // the executor trusts the declared output. This is the ZFC contract: the

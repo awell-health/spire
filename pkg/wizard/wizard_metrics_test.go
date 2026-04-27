@@ -38,11 +38,35 @@ func TestParseClaudeResultJSON(t *testing.T) {
 		if metrics.StopReason != "end_turn" {
 			t.Errorf("StopReason = %q, want %q", metrics.StopReason, "end_turn")
 		}
+		if metrics.Subtype != "success" {
+			t.Errorf("Subtype = %q, want success", metrics.Subtype)
+		}
+		if metrics.IsError {
+			t.Error("IsError = true, want false")
+		}
 		if metrics.CacheReadTokens != 12345 {
 			t.Errorf("CacheReadTokens = %d, want 12345", metrics.CacheReadTokens)
 		}
 		if metrics.CacheWriteTokens != 6789 {
 			t.Errorf("CacheWriteTokens = %d, want 6789", metrics.CacheWriteTokens)
+		}
+	})
+
+	t.Run("error result event", func(t *testing.T) {
+		input := []byte(`{"type":"result","subtype":"error_max_turns","is_error":true,"api_error_status":429,"num_turns":151,"result":"limit","stop_reason":"tool_use","terminal_reason":"max_turns","total_cost_usd":1.23,"usage":{"input_tokens":10,"output_tokens":20}}
+`)
+		_, metrics := parseClaudeResultJSON(input)
+		if !metrics.IsError {
+			t.Error("IsError = false, want true")
+		}
+		if metrics.Subtype != "error_max_turns" {
+			t.Errorf("Subtype = %q, want error_max_turns", metrics.Subtype)
+		}
+		if metrics.TerminalReason != "max_turns" {
+			t.Errorf("TerminalReason = %q, want max_turns", metrics.TerminalReason)
+		}
+		if metrics.APIErrorStatus != 429 {
+			t.Errorf("APIErrorStatus = %d, want 429", metrics.APIErrorStatus)
 		}
 	})
 

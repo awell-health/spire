@@ -52,6 +52,10 @@ type ClaudeMetrics struct {
 	Turns            int
 	MaxTurns         int    // the cap in effect for this run (set by caller, not from result event)
 	StopReason       string // "end_turn" | "max_turns" | "tool_use" | ... (from Claude result.stop_reason)
+	Subtype          string // Claude result subtype, e.g. "success" or "error_max_turns"
+	IsError          bool   // Claude result.is_error
+	TerminalReason   string // Claude result.terminal_reason, e.g. "max_turns"
+	APIErrorStatus   int    // Claude result.api_error_status, when present
 	CacheReadTokens  int64
 	CacheWriteTokens int64
 	CostUSD          float64
@@ -76,12 +80,25 @@ func (m ClaudeMetrics) Add(other ClaudeMetrics) ClaudeMetrics {
 		CostUSD:          m.CostUSD + other.CostUSD,
 		MaxTurns:         m.MaxTurns,
 		StopReason:       m.StopReason,
+		Subtype:          m.Subtype,
+		IsError:          m.IsError || other.IsError,
+		TerminalReason:   m.TerminalReason,
+		APIErrorStatus:   m.APIErrorStatus,
 	}
 	if merged.MaxTurns == 0 {
 		merged.MaxTurns = other.MaxTurns
 	}
 	if merged.StopReason == "" {
 		merged.StopReason = other.StopReason
+	}
+	if merged.Subtype == "" {
+		merged.Subtype = other.Subtype
+	}
+	if merged.TerminalReason == "" {
+		merged.TerminalReason = other.TerminalReason
+	}
+	if merged.APIErrorStatus == 0 {
+		merged.APIErrorStatus = other.APIErrorStatus
 	}
 	// AuthProfileFinal is sticky: if either side observed a 429 auto-promote
 	// anywhere in the run, the merged metrics carry "api-key" forward so
@@ -135,12 +152,16 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 			continue
 		}
 		var evt struct {
-			Type         string  `json:"type"`
-			Result       string  `json:"result"`
-			NumTurns     int     `json:"num_turns"`
-			StopReason   string  `json:"stop_reason"`
-			TotalCostUSD float64 `json:"total_cost_usd"`
-			Usage        struct {
+			Type           string  `json:"type"`
+			Subtype        string  `json:"subtype"`
+			Result         string  `json:"result"`
+			IsError        bool    `json:"is_error"`
+			APIErrorStatus int     `json:"api_error_status"`
+			NumTurns       int     `json:"num_turns"`
+			StopReason     string  `json:"stop_reason"`
+			TerminalReason string  `json:"terminal_reason"`
+			TotalCostUSD   float64 `json:"total_cost_usd"`
+			Usage          struct {
 				InputTokens              int   `json:"input_tokens"`
 				OutputTokens             int   `json:"output_tokens"`
 				CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
@@ -158,6 +179,10 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 				TotalTokens:      evt.Usage.InputTokens + evt.Usage.OutputTokens,
 				Turns:            evt.NumTurns,
 				StopReason:       evt.StopReason,
+				Subtype:          evt.Subtype,
+				IsError:          evt.IsError,
+				TerminalReason:   evt.TerminalReason,
+				APIErrorStatus:   evt.APIErrorStatus,
 				CacheReadTokens:  evt.Usage.CacheReadInputTokens,
 				CacheWriteTokens: evt.Usage.CacheCreationInputTokens,
 				CostUSD:          evt.TotalCostUSD,
@@ -169,6 +194,137 @@ func parseClaudeResultJSON(output []byte) (resultText string, metrics ClaudeMetr
 		}
 	}
 	return
+}
+
+type implementClaudeFailure struct {
+	Err            string
+	IsError        bool
+	Subtype        string
+	TerminalReason string
+	StopReason     string
+	Turns          int
+	APIErrorStatus int
+}
+
+func newImplementClaudeFailure(runErr error, metrics ClaudeMetrics) *implementClaudeFailure {
+	terminal := strings.TrimSpace(metrics.TerminalReason)
+	abnormalTerminal := terminal != "" && terminal != "completed" && terminal != "end_turn"
+	stopReason := strings.TrimSpace(metrics.StopReason)
+	abnormalStop := stopReason == "max_turns"
+	abnormalSubtype := strings.HasPrefix(strings.TrimSpace(metrics.Subtype), "error")
+	if runErr == nil && !metrics.IsError && !abnormalTerminal && !abnormalStop && !abnormalSubtype {
+		return nil
+	}
+	f := &implementClaudeFailure{
+		IsError:        metrics.IsError,
+		Subtype:        metrics.Subtype,
+		TerminalReason: metrics.TerminalReason,
+		StopReason:     metrics.StopReason,
+		Turns:          metrics.Turns,
+		APIErrorStatus: metrics.APIErrorStatus,
+	}
+	if runErr != nil {
+		f.Err = runErr.Error()
+	}
+	return f
+}
+
+func (f *implementClaudeFailure) reason() string {
+	if f == nil {
+		return ""
+	}
+	switch {
+	case f.APIErrorStatus != 0:
+		return fmt.Sprintf("api-%d", f.APIErrorStatus)
+	case f.TerminalReason != "":
+		return f.TerminalReason
+	case f.Subtype != "":
+		return f.Subtype
+	case f.StopReason != "":
+		return f.StopReason
+	case f.Err != "":
+		return "cli-error"
+	default:
+		return "unknown"
+	}
+}
+
+func implementResult(committed, buildPassed, testsPassed bool, failure *implementClaudeFailure) string {
+	if !buildPassed {
+		return "build_failure"
+	}
+	if !committed {
+		if failure != nil {
+			return "implement_failure"
+		}
+		return "no_changes"
+	}
+	if failure != nil {
+		return "partial"
+	}
+	if !testsPassed {
+		return "test_failure"
+	}
+	return "success"
+}
+
+func annotateImplementClaudeFailure(beadID, result string, committed, buildPassed bool, failure *implementClaudeFailure, deps *Deps, log func(string, ...interface{})) {
+	if failure == nil || deps == nil {
+		return
+	}
+	reason := sanitizeResultLabelPart(failure.reason())
+	labelPrefix := "implement:failed-"
+	if result == "partial" {
+		labelPrefix = "implement:partial-"
+	}
+	label := labelPrefix + reason
+	if deps.AddLabel != nil {
+		if err := deps.AddLabel(beadID, label); err != nil && log != nil {
+			log("warning: could not add %s label: %s", label, err)
+		}
+	}
+
+	note := fmt.Sprintf("Claude implement subprocess did not finish cleanly; recorded result=%s (committed=%t build_passed=%t reason=%s err=%q is_error=%t subtype=%q terminal_reason=%q stop_reason=%q turns=%d api_error_status=%d).",
+		result, committed, buildPassed, reason, failure.Err, failure.IsError, failure.Subtype,
+		failure.TerminalReason, failure.StopReason, failure.Turns, failure.APIErrorStatus)
+	if deps.GetComments != nil {
+		if comments, err := deps.GetComments(beadID); err == nil {
+			for _, c := range comments {
+				if c != nil && strings.Contains(c.Text, "Claude implement subprocess did not finish cleanly") &&
+					strings.Contains(c.Text, "reason="+reason) {
+					return
+				}
+			}
+		}
+	}
+	if deps.AddComment != nil {
+		if err := deps.AddComment(beadID, note); err != nil && log != nil {
+			log("warning: could not add implement failure comment: %s", err)
+		}
+	}
+}
+
+func sanitizeResultLabelPart(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	return out
 }
 
 // wizardAuthState caches the AuthContext for the wizard subprocess so the
@@ -509,6 +665,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	// 8-9. Phase execution
 	var accMetrics ClaudeMetrics
+	var implFailure *implementClaudeFailure
 	// reviewFixSubprocessErr captures a non-zero exit from the review-fix
 	// claude subprocess (kill, timeout, bad prompt, etc.). It's checked
 	// after the commit step: if the subprocess failed AND nothing was
@@ -621,6 +778,7 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			log("starting implement phase (timeout: %s)", timeout)
 			implMetrics, runErr := WizardRunClaude(worktreeDir, implPromptPath, model, timeout, maxTurns,
 				WizardAgentResultDir(deps, wizardName), "implement")
+			implFailure = newImplementClaudeFailure(runErr, implMetrics)
 			if runErr != nil {
 				log("claude implement failed: %s", runErr)
 				if retry.handleStepFailure(runErr.Error()) {
@@ -709,6 +867,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	// 13. Update bead (comment)
 	wizardUpdateBead(beadID, wizardName, branchName, commitSHA, committed, testsPassed, deps, log)
 
+	result := implementResult(committed, buildPassed, testsPassed, implFailure)
+	if implFailure != nil {
+		annotateImplementClaudeFailure(beadID, result, committed, buildPassed, implFailure, deps, log)
+	}
+
 	// 14. Review handoff if committed and build passes.
 	if !retry.shouldSkipTo("review") {
 		retry.enterStep("review")
@@ -761,15 +924,6 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	// 16. Write result
 	elapsed := time.Since(startedAt)
-	result := "success"
-	if !committed {
-		result = "no_changes"
-	}
-	if !buildPassed {
-		result = "build_failure"
-	} else if !testsPassed {
-		result = "test_failure"
-	}
 	WizardWriteResult(wizardName, beadID, result, branchName, commitSHA, elapsed, accMetrics, deps, log)
 
 	log("done (%.0fs total)", elapsed.Seconds())
@@ -1899,6 +2053,10 @@ func WizardWriteResult(wizardName, beadID, result, branchName, commitSHA string,
 		"turns":              metrics.Turns,
 		"max_turns":          metrics.MaxTurns,
 		"stop_reason":        metrics.StopReason,
+		"subtype":            metrics.Subtype,
+		"is_error":           metrics.IsError,
+		"terminal_reason":    metrics.TerminalReason,
+		"api_error_status":   metrics.APIErrorStatus,
 		"cache_read_tokens":  metrics.CacheReadTokens,
 		"cache_write_tokens": metrics.CacheWriteTokens,
 		"cost_usd":           metrics.CostUSD,

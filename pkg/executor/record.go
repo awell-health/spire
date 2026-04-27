@@ -13,10 +13,10 @@ import (
 
 // agentResultJSON matches the structure of result.json written by apprentices/sages.
 type agentResultJSON struct {
-	Result     string `json:"result"`
-	Branch     string `json:"branch"`
-	Commit     string `json:"commit"`
-	ElapsedS   int    `json:"elapsed_s"`
+	Result   string `json:"result"`
+	Branch   string `json:"branch"`
+	Commit   string `json:"commit"`
+	ElapsedS int    `json:"elapsed_s"`
 	// Extended fields (populated when available)
 	TotalTokens      int            `json:"total_tokens,omitempty"`
 	ContextIn        int            `json:"context_tokens_in,omitempty"`
@@ -331,7 +331,8 @@ func (e *Executor) readAgentResult(agentName string) *agentResultJSON {
 func mapResultValue(raw string) string {
 	switch raw {
 	case "success", "test_failure", "no_changes", "timeout",
-		"review_rejected", "empty_diff", "error":
+		"review_rejected", "empty_diff", "error", "partial",
+		"build_failure", "implement_failure", "retry_failure", "retry_error":
 		return raw
 	case "":
 		return "success"
@@ -357,7 +358,7 @@ func resultFromError(err error) string {
 // Returns "" for successful runs.
 func classifyFailure(spawnErr error, result string) string {
 	switch result {
-	case "success", "no_changes", "":
+	case "success", "no_changes", "partial", "":
 		return ""
 	case "timeout":
 		return "timeout"
@@ -365,6 +366,12 @@ func classifyFailure(spawnErr error, result string) string {
 		return "test_fail"
 	case "review_rejected":
 		return "review_reject"
+	case "build_failure":
+		return "build_fail"
+	case "implement_failure":
+		return "implement_fail"
+	case "retry_failure", "retry_error":
+		return "retry_fail"
 	}
 
 	if spawnErr != nil {
