@@ -99,6 +99,17 @@ type Opts struct {
 	RootCmd   *cobra.Command // root cobra command for command mode completion/execution
 	TowerName string         // current tower name (shown in header)
 
+	// SkipLocalConflictCheck disables FetchBoard's call into
+	// dolt.HasUnresolvedConflicts. The conflict check fork-execs
+	// `dolt sql` and is a per-request hot path on dolt-touching
+	// callers — fine for a TUI that runs on a laptop with a writable
+	// local Dolt mirror that the user is expected to reconcile, dead
+	// weight for HTTP gateway servers that do not own a local Dolt.
+	// Caller-controlled by design: deciding this from the deployment
+	// mode would conflate sync-transport semantics with topology, and
+	// docs/ARCHITECTURE.md is explicit those axes are orthogonal.
+	SkipLocalConflictCheck bool
+
 	// ListTowersFn returns available towers for the T-key switcher. Injected by caller.
 	ListTowersFn func() []TowerItem
 	// ResolveFn resolves a hooked bead with a recovery learning comment.

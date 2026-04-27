@@ -777,7 +777,13 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := board.Opts{}
+	// SkipLocalConflictCheck=true: this server has no writable local
+	// Dolt mirror — backend Dolt lives in the cluster, and conflict
+	// resolution there is the operator's concern, not a per-HTTP-request
+	// warning. Leaving the check on fork-execs `dolt sql` on every
+	// /api/v1/board hit and accumulates zombies in the gateway pod.
+	// See docs/k8s-v1-punchlist.md item #6.
+	opts := board.Opts{SkipLocalConflictCheck: true}
 	result, err := board.FetchBoard(opts, "")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

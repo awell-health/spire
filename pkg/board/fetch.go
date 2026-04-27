@@ -24,19 +24,13 @@ type BoardResult struct {
 // string if any exist. Returns "", nil when there are no conflicts or when the
 // database name cannot be resolved (non-fatal).
 //
-// Skipped on cluster-native towers because the cluster's Dolt is the
-// single writer — there is no remote to merge from, so unresolved
-// conflicts cannot exist. Running the check anyway means every
-// FetchBoard call (e.g. every /api/v1/board request from Spire Desktop)
-// fork-execs `dolt sql` to count conflicts, adding ~100-200ms latency
-// per request and accumulating zombie subprocesses inside the gateway
-// pod. See docs/k8s-v1-punchlist.md item #6.
+// Callers gate the check via Opts.SkipLocalConflictCheck — the function
+// itself never branches on deployment mode or sync transport, since
+// docs/ARCHITECTURE.md keeps those axes orthogonal. The skip is for
+// callers that demonstrably do not own a writable local Dolt mirror
+// (e.g. an HTTP gateway server whose backing Dolt is the cluster's,
+// not the request-serving pod's).
 func checkDoltConflicts() (string, error) {
-	if t, err := config.ResolveTowerConfig(); err == nil && t != nil &&
-		t.EffectiveDeploymentMode() == config.DeploymentModeClusterNative {
-		return "", nil
-	}
-
 	dbName, err := config.DetectDBName()
 	if err != nil || dbName == "" {
 		return "", nil // can't check — not an error
@@ -57,11 +51,18 @@ func checkDoltConflicts() (string, error) {
 func FetchBoard(opts Opts, identity string) (BoardResult, error) {
 	var warnings []string
 
-	// Check for Dolt conflicts before store reads.
-	if w, err := checkDoltConflicts(); err != nil {
-		log.Printf("[board] conflict check: %s", err)
-	} else if w != "" {
-		warnings = append(warnings, w)
+	// Check for Dolt conflicts before store reads. Callers without a
+	// writable local Dolt mirror (gateway HTTP server) opt out via
+	// Opts.SkipLocalConflictCheck — the check fork-execs `dolt sql`
+	// and is a per-request hot path that adds latency and accumulates
+	// subprocess zombies on those callers. See docs/k8s-v1-punchlist.md
+	// item #6 for the diagnosis.
+	if !opts.SkipLocalConflictCheck {
+		if w, err := checkDoltConflicts(); err != nil {
+			log.Printf("[board] conflict check: %s", err)
+		} else if w != "" {
+			warnings = append(warnings, w)
+		}
 	}
 
 	openBeads, err := store.ListBoardBeads(beads.IssueFilter{
@@ -143,11 +144,13 @@ func fetchSnapshotCmd(db beads.Storage, opts Opts, identity string, fetchAgents 
 func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents func() []LocalAgent) (*BoardSnapshot, error) {
 	var warnings []string
 
-	// Check for Dolt conflicts before store reads.
-	if w, err := checkDoltConflicts(); err != nil {
-		log.Printf("[board] snapshot conflict check: %s", err)
-	} else if w != "" {
-		warnings = append(warnings, w)
+	// Same SkipLocalConflictCheck gate as FetchBoard — see comment there.
+	if !opts.SkipLocalConflictCheck {
+		if w, err := checkDoltConflicts(); err != nil {
+			log.Printf("[board] snapshot conflict check: %s", err)
+		} else if w != "" {
+			warnings = append(warnings, w)
+		}
 	}
 
 	ctx := context.Background()
