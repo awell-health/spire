@@ -73,14 +73,17 @@ smoke-test-helm:
 
 # --- CRD drift guard ---
 
-# k8s/crds/ is the authoritative CRD source; helm/spire/crds/ MUST be a
-# byte-identical copy so `helm install` and `kubectl apply -f k8s/crds/`
-# produce the same schema. Drift here silently strips unknown fields
-# (see spi-8fvhv: missing spec.cache schema dropped Cache from every
-# applied WizardGuild CR).
+# controller-gen generates CRDs into helm/spire/crds/ (see
+# operator/api/v1alpha1/generate.go); the same go:generate directive
+# mirrors them into k8s/crds/ so `helm install` and `kubectl apply -f
+# k8s/crds/` produce the same schema. Drift here silently strips unknown
+# fields (see spi-8fvhv: missing spec.cache schema dropped Cache from
+# every applied WizardGuild CR). The guard catches hand-edits that bypass
+# `go generate`; the regenerate-and-diff pattern catches stale checked-in
+# CRDs.
 crd-check:
 	@diff -r k8s/crds/ helm/spire/crds/ \
-		|| { echo "CRD drift: k8s/crds and helm/spire/crds disagree; cp k8s/crds/<file>.yaml helm/spire/crds/"; exit 1; }
+		|| { echo "CRD drift: k8s/crds and helm/spire/crds disagree; run 'go generate ./api/...' in operator/ to regenerate both."; exit 1; }
 
 # --- Observability regression suite ---
 
