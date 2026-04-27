@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +13,13 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // ErrAttachedRosterNotImplemented signals that the active tower is in
@@ -84,16 +90,82 @@ type RosterEpicGroup struct {
 	Items []RosterWorkItem
 }
 
-// k8sPod is the subset of pod JSON we need.
-type k8sPod struct {
-	Metadata struct {
-		Name   string            `json:"name"`
-		Labels map[string]string `json:"labels"`
-	} `json:"metadata"`
-	Status struct {
-		Phase     string `json:"phase"`
-		StartTime string `json:"startTime"`
-	} `json:"status"`
+// rosterClusterClient is the swappable seam RosterFromClusterRegistry
+// uses to query Kubernetes. The production implementation hits the
+// in-cluster API server via client-go; tests substitute a fake.
+//
+// Two narrow methods are enough for the roster query: pod listing for
+// live wizard state, WizardGuild name listing for idle slots. Keeping
+// the surface small so the fake in tests doesn't drag in the whole
+// kubernetes.Interface.
+type rosterClusterClient interface {
+	ListWizardPods(ctx context.Context, namespace string) ([]corev1.Pod, error)
+	ListWizardGuildNames(ctx context.Context, namespace string) ([]string, error)
+}
+
+// newRosterClusterClient is the package-level factory swapped in tests.
+// Production callers leave this alone — it dials the API server via
+// in-cluster service-account creds and falls back to a kubeconfig file
+// for local-development runs of the gateway.
+var newRosterClusterClient = newRealRosterClusterClient
+
+func newRealRosterClusterClient() (rosterClusterClient, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		rules := clientcmd.NewDefaultClientConfigLoadingRules()
+		cfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			rules, &clientcmd.ConfigOverrides{},
+		).ClientConfig()
+		if err != nil {
+			return nil, fmt.Errorf("k8s config: %w", err)
+		}
+	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("k8s clientset: %w", err)
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("k8s dynamic client: %w", err)
+	}
+	return &realRosterClusterClient{cs: cs, dyn: dyn}, nil
+}
+
+type realRosterClusterClient struct {
+	cs  kubernetes.Interface
+	dyn dynamic.Interface
+}
+
+func (r *realRosterClusterClient) ListWizardPods(ctx context.Context, namespace string) ([]corev1.Pod, error) {
+	list, err := r.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "spire.awell.io/managed=true",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// wizardGuildGVR is the GroupVersionResource for the WizardGuild CRD.
+// Hardcoded here rather than imported from the operator module to keep
+// pkg/board independent of the operator's CRD types — we only need the
+// guild name, which the unstructured/dynamic client returns.
+var wizardGuildGVR = schema.GroupVersionResource{
+	Group:    "spire.awell.io",
+	Version:  "v1alpha1",
+	Resource: "wizardguilds",
+}
+
+func (r *realRosterClusterClient) ListWizardGuildNames(ctx context.Context, namespace string) ([]string, error) {
+	list, err := r.dyn.Resource(wizardGuildGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list.Items))
+	for _, item := range list.Items {
+		names = append(names, item.GetName())
+	}
+	return names, nil
 }
 
 // RosterDeps holds external dependencies needed by the local-native
@@ -130,42 +202,38 @@ type RosterDeps struct {
 // unrelated cluster a developer's kubectl happens to point at
 // (spi-rx6bf6).
 //
-// The ctx argument is reserved for future cancellation plumbing on the
-// underlying kubectl invocations; today it is honoured by the caller's
-// HTTP request scope but not yet threaded into exec.CommandContext —
-// the implementation continues to use the same kubectl shell-out as
-// the previous RosterFromK8s did, renamed for clarity per the
-// spi-rx6bf6 acceptance ("operator-side wizard registry surface").
+// Uses an in-cluster k8s client (with kubeconfig fallback for local
+// development) rather than shelling out to kubectl. The previous
+// kubectl implementation broke when the gateway pod ran inside the
+// cluster — gateway images don't ship a kubectl binary, so every
+// /api/v1/roster call returned HTTP 500 "exit status 1". The k8s
+// client uses the pod's service account when InClusterConfig
+// succeeds; the gateway's KSA needs list permissions on pods and
+// wizardguilds for this to work, which the chart's RBAC already
+// grants to the operator KSA the gateway shares.
 func RosterFromClusterRegistry(ctx context.Context, timeout time.Duration) ([]RosterAgent, error) {
-	_ = ctx
-	cmd := exec.Command("kubectl", "get", "pods", "-n", "spire",
-		"-l", "spire.awell.io/managed=true",
-		"-o", "json")
-	out, err := cmd.Output()
+	cli, err := newRosterClusterClient()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("roster: build cluster client: %w", err)
 	}
 
-	var podList struct {
-		Items []k8sPod `json:"items"`
-	}
-	if err := json.Unmarshal(out, &podList); err != nil {
-		return nil, err
+	pods, err := cli.ListWizardPods(ctx, "spire")
+	if err != nil {
+		return nil, fmt.Errorf("roster: list wizard pods: %w", err)
 	}
 
-	var agentNames []string
-	if names, err := exec.Command("kubectl", "get", "wizardguild", "-n", "spire",
-		"-o", "jsonpath={.items[*].metadata.name}").Output(); err == nil {
-		for _, n := range strings.Fields(strings.TrimSpace(string(names))) {
-			agentNames = append(agentNames, n)
-		}
-	}
+	// Guild names provide the "idle slots" the roster surfaces when
+	// no wizard is currently running for a given guild. A list error
+	// here is non-fatal — we still return live pods, just without idle
+	// rows. Matches the previous kubectl shell-out's behaviour: it
+	// logged-and-swallowed the error from the second kubectl call.
+	agentNames, _ := cli.ListWizardGuildNames(ctx, "spire")
 
 	podAgents := make(map[string]RosterAgent)
-	for _, pod := range podList.Items {
-		agentName := pod.Metadata.Labels["spire.awell.io/agent"]
-		beadID := pod.Metadata.Labels["spire.awell.io/bead"]
-		role := pod.Metadata.Labels["spire.awell.io/role"]
+	for _, pod := range pods {
+		agentName := pod.Labels["spire.awell.io/agent"]
+		beadID := pod.Labels["spire.awell.io/bead"]
+		role := pod.Labels["spire.awell.io/role"]
 		if role == "" {
 			role = "wizard"
 		}
@@ -173,7 +241,7 @@ func RosterFromClusterRegistry(ctx context.Context, timeout time.Duration) ([]Ro
 		// archmage's name flow per-archmage origin into the roster row.
 		// Older pods without this label leave Archmage empty — that maps
 		// to "tower default" on the gateway side.
-		archmage := pod.Metadata.Labels["spire.awell.io/archmage"]
+		archmage := pod.Labels["spire.awell.io/archmage"]
 
 		agent := RosterAgent{
 			Name:     agentName,
@@ -184,20 +252,19 @@ func RosterFromClusterRegistry(ctx context.Context, timeout time.Duration) ([]Ro
 			Archmage: archmage,
 		}
 
-		if pod.Status.StartTime != "" {
-			if t, err := time.Parse(time.RFC3339, pod.Status.StartTime); err == nil {
-				agent.Elapsed = time.Since(t).Round(time.Second)
-				agent.Remaining = timeout - agent.Elapsed
-				if agent.Remaining < 0 {
-					agent.Remaining = 0
-				}
+		if pod.Status.StartTime != nil {
+			elapsed := time.Since(pod.Status.StartTime.Time).Round(time.Second)
+			agent.Elapsed = elapsed
+			agent.Remaining = timeout - elapsed
+			if agent.Remaining < 0 {
+				agent.Remaining = 0
 			}
 		}
 
 		switch pod.Status.Phase {
-		case "Succeeded", "Failed":
+		case corev1.PodSucceeded, corev1.PodFailed:
 			agent.Status = "done"
-		case "Pending":
+		case corev1.PodPending:
 			agent.Status = "provisioning"
 		}
 
