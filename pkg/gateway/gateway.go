@@ -795,10 +795,6 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
 
 	timeout := 15 * time.Minute
 
