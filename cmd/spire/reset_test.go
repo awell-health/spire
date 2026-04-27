@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -727,6 +728,33 @@ func writeGraphState(t *testing.T, configRoot, wizardName string, gs *executor.G
 	if err := os.WriteFile(filepath.Join(runtimeDir, "graph_state.json"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func initResetGitRepo(t *testing.T) string {
+	t.Helper()
+	repoDir := t.TempDir()
+	runResetGit(t, repoDir, "init", "-b", "main")
+	runResetGit(t, repoDir, "config", "user.name", "Test")
+	runResetGit(t, repoDir, "config", "user.email", "test@test.com")
+	runResetGit(t, repoDir, "commit", "--allow-empty", "-m", "initial")
+	return repoDir
+}
+
+func runResetGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@test",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@test",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestSoftResetV3_RewindsStepsAndPreservesUpstream(t *testing.T) {
@@ -2391,6 +2419,167 @@ func TestResetTo_ForceNormalizesAbandonedActivePredecessor(t *testing.T) {
 	}
 	if stepBead.Status != "closed" {
 		t.Errorf("step bead status = %q, want closed (matches force-normalized graph state)", stepBead.Status)
+	}
+}
+
+func TestResetTo_ForceRebindsRunScopedWorkspaceFromDisk(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+	withFakeLiveWizardLookup(t, nil)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-rebinds-workspace",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-force-rebinds-workspace"
+
+	repoDir := initResetGitRepo(t)
+	branch := "feat/" + beadID
+	wtDir := filepath.Join(repoDir, ".worktrees", beadID+"-feature")
+	runResetGit(t, repoDir, "branch", branch, "main")
+	runResetGit(t, repoDir, "worktree", "add", wtDir, branch)
+
+	gs := writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "active", StartedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "pending"},
+			"merge":     {Status: "pending"},
+			"discard":   {Status: "pending"},
+			"close":     {Status: "pending"},
+		},
+		"implement",
+		nil,
+	)
+	gs.RepoPath = repoDir
+	gs.BaseBranch = "main"
+	gs.Workspaces["feature"] = executor.WorkspaceState{
+		Name:       "feature",
+		Kind:       formula.WorkspaceKindOwnedWorktree,
+		Branch:     "feat/{vars.bead_id}",
+		BaseBranch: "{vars.base_branch}",
+		Status:     "pending",
+		Scope:      formula.WorkspaceScopeRun,
+		Ownership:  "owned",
+		Cleanup:    formula.WorkspaceCleanupTerminal,
+	}
+	writeGraphState(t, tmp, wizardName, gs)
+
+	if err := softResetV3(beadID, "review", wizardName, true, nil); err != nil {
+		t.Fatalf("softResetV3 --to review --force: %v", err)
+	}
+
+	loaded, err := executor.LoadGraphState(wizardName, configDir)
+	if err != nil || loaded == nil {
+		t.Fatalf("load graph state: err=%v nil=%v", err, loaded == nil)
+	}
+	if got := loaded.Steps["implement"].Status; got != "completed" {
+		t.Errorf("implement.status = %q, want completed", got)
+	}
+	if got := loaded.Steps["review"].Status; got != "pending" {
+		t.Errorf("review.status = %q, want pending", got)
+	}
+
+	ws := loaded.Workspaces["feature"]
+	if ws.Status != "active" {
+		t.Errorf("workspace.status = %q, want active", ws.Status)
+	}
+	if ws.Dir != wtDir {
+		t.Errorf("workspace.dir = %q, want %q", ws.Dir, wtDir)
+	}
+	if ws.Branch != branch {
+		t.Errorf("workspace.branch = %q, want %q", ws.Branch, branch)
+	}
+	if ws.BaseBranch != "main" {
+		t.Errorf("workspace.base_branch = %q, want main", ws.BaseBranch)
+	}
+	if ws.StartSHA == "" {
+		t.Error("workspace.start_sha = empty, want captured HEAD")
+	}
+	if got := runResetGit(t, wtDir, "branch", "--show-current"); got != branch {
+		t.Errorf("worktree branch = %q, want %q", got, branch)
+	}
+}
+
+func TestResetTo_ForceCorruptRunScopedWorkspaceFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+	withSummonRecorder(t)
+	withFakeLiveWizardLookup(t, nil)
+
+	beadID := createTestBead(t, createOpts{
+		Title:    "test-resetto-force-corrupt-workspace",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+	wizardName := "wizard-test-resetto-force-corrupt-workspace"
+
+	repoDir := initResetGitRepo(t)
+	branch := "feat/" + beadID
+	wtDir := filepath.Join(repoDir, ".worktrees", beadID+"-feature")
+	runResetGit(t, repoDir, "branch", branch, "main")
+	runResetGit(t, repoDir, "worktree", "add", wtDir, branch)
+	if err := os.Remove(filepath.Join(wtDir, ".git")); err != nil {
+		t.Fatalf("remove worktree .git: %v", err)
+	}
+
+	gs := writeV3GraphStateForTask(t, tmp, wizardName, beadID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "active", StartedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "pending"},
+			"merge":     {Status: "pending"},
+			"discard":   {Status: "pending"},
+			"close":     {Status: "pending"},
+		},
+		"implement",
+		nil,
+	)
+	gs.RepoPath = repoDir
+	gs.BaseBranch = "main"
+	gs.Workspaces["feature"] = executor.WorkspaceState{
+		Name:      "feature",
+		Kind:      formula.WorkspaceKindOwnedWorktree,
+		Branch:    "feat/{vars.bead_id}",
+		Status:    "pending",
+		Scope:     formula.WorkspaceScopeRun,
+		Ownership: "owned",
+		Cleanup:   formula.WorkspaceCleanupTerminal,
+	}
+	writeGraphState(t, tmp, wizardName, gs)
+
+	gsPath := filepath.Join(tmp, "runtime", wizardName, "graph_state.json")
+	before, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state before: %v", err)
+	}
+
+	err = softResetV3(beadID, "review", wizardName, true, nil)
+	if err == nil {
+		t.Fatal("expected corrupt workspace rebind error, got nil")
+	}
+	if !strings.Contains(err.Error(), "rebind run-scoped workspaces") {
+		t.Fatalf("error = %v, want rebind context", err)
+	}
+
+	after, err := os.ReadFile(gsPath)
+	if err != nil {
+		t.Fatalf("read graph_state after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Error("graph_state.json was mutated despite corrupt workspace — operation must fail closed")
 	}
 }
 

@@ -874,6 +874,20 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 
 	fmt.Printf("  %sresetting steps: %s%s\n", dim, strings.Join(mapKeys(stepsToReset), ", "), reset)
 
+	// Under --force, reset may skip an implementation step and resume at a
+	// later step that expects the run-scoped workspace to already exist. Rebind
+	// any canonical on-disk worktrees before mutating graph state so a corrupt
+	// workspace fails closed without a partial reset.
+	if forceAdvance {
+		rebound, err := executor.RebindRunScopedWorkspacesFromDisk(gs, graph)
+		if err != nil {
+			return fmt.Errorf("rebind run-scoped workspaces: %w", err)
+		}
+		for _, name := range rebound {
+			fmt.Printf("  %srebound run-scoped workspace %q to existing worktree%s\n", yellow, name, reset)
+		}
+	}
+
 	// --- 5. Rewind step states ---
 	resetCount := 0
 	for stepName := range stepsToReset {

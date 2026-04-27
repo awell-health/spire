@@ -4,8 +4,10 @@ package executor
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/awell-health/spire/pkg/formula"
@@ -408,14 +410,158 @@ func (e *Executor) resolveGraphWorkspace(name string, state *GraphState) (string
 // resolveGraphWorkspaceBranch interpolates a branch pattern using graph state
 // vars (e.g. "staging/{vars.bead_id}" → "staging/spi-abc").
 func (e *Executor) resolveGraphWorkspaceBranch(pattern string, state *GraphState) string {
+	return resolveGraphWorkspaceBranchForStateWithFallback(pattern, state, e.beadID)
+}
+
+func resolveGraphWorkspaceBranchForState(pattern string, state *GraphState) string {
+	return resolveGraphWorkspaceBranchForStateWithFallback(pattern, state, "")
+}
+
+func resolveGraphWorkspaceBranchForStateWithFallback(pattern string, state *GraphState, fallbackBeadID string) string {
 	if pattern == "" {
 		return ""
 	}
+	beadID := fallbackBeadID
+	baseBranch := ""
+	if state != nil {
+		if state.BeadID != "" {
+			beadID = state.BeadID
+		}
+		baseBranch = state.BaseBranch
+	}
 	r := strings.NewReplacer(
-		"{vars.bead_id}", e.beadID,
-		"{vars.base_branch}", state.BaseBranch,
+		"{vars.bead_id}", beadID,
+		"{vars.base_branch}", baseBranch,
 	)
 	return r.Replace(pattern)
+}
+
+// RebindRunScopedWorkspacesFromDisk reconciles graph workspace state with
+// existing canonical run-scoped worktrees. It is used by reset --to --force:
+// operator recovery may intentionally skip implementation and resume at review,
+// so the graph must point at the already-created feature worktree instead of
+// trying to create that branch/worktree again.
+func RebindRunScopedWorkspacesFromDisk(state *GraphState, graph *formula.FormulaStepGraph) ([]string, error) {
+	if state == nil {
+		return nil, fmt.Errorf("graph state is nil")
+	}
+	if graph == nil || len(graph.Workspaces) == 0 {
+		return nil, nil
+	}
+
+	updates := make(map[string]WorkspaceState)
+	for name, decl := range graph.Workspaces {
+		formula.DefaultWorkspaceDecl(&decl)
+		if decl.Scope != formula.WorkspaceScopeRun {
+			continue
+		}
+		if decl.Kind != formula.WorkspaceKindOwnedWorktree && decl.Kind != formula.WorkspaceKindStaging {
+			continue
+		}
+
+		cur := WorkspaceState{}
+		if state.Workspaces != nil {
+			cur = state.Workspaces[name]
+		}
+
+		dir := cur.Dir
+		if dir == "" {
+			if state.RepoPath == "" {
+				return nil, fmt.Errorf("rebind workspace %q: repo path is empty", name)
+			}
+			dir = filepath.Join(state.RepoPath, ".worktrees", state.BeadID+"-"+name)
+		}
+
+		info, err := os.Stat(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat workspace %q at %s: %w", name, dir, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("rebind workspace %q at %s: not a directory", name, dir)
+		}
+		if err := validateWorkspaceGitRoot(dir); err != nil {
+			return nil, fmt.Errorf("rebind workspace %q at %s: %w; investigate the worktree before retrying", name, dir, err)
+		}
+
+		basePattern := cur.BaseBranch
+		if basePattern == "" {
+			basePattern = decl.Base
+		}
+		if basePattern == "" {
+			basePattern = state.BaseBranch
+		}
+		baseBranch := resolveGraphWorkspaceBranchForState(basePattern, state)
+		if baseBranch == "" {
+			baseBranch = state.BaseBranch
+		}
+
+		wc, err := spgit.ResumeWorktreeContext(dir, "", baseBranch, state.RepoPath, nil)
+		if err != nil {
+			return nil, fmt.Errorf("rebind workspace %q at %s: %w; investigate the worktree before retrying", name, dir, err)
+		}
+
+		updates[name] = WorkspaceState{
+			Name:       name,
+			Kind:       decl.Kind,
+			Dir:        dir,
+			Branch:     wc.Branch,
+			BaseBranch: baseBranch,
+			StartSHA:   wc.StartSHA,
+			Status:     "active",
+			Scope:      decl.Scope,
+			Ownership:  decl.Ownership,
+			Cleanup:    decl.Cleanup,
+			Origin:     WorkspaceOriginLocalBind,
+		}
+	}
+
+	if len(updates) == 0 {
+		return nil, nil
+	}
+	if state.Workspaces == nil {
+		state.Workspaces = make(map[string]WorkspaceState, len(updates))
+	}
+
+	rebound := make([]string, 0, len(updates))
+	for name, ws := range updates {
+		state.Workspaces[name] = ws
+		if ws.Kind == formula.WorkspaceKindStaging && ws.Branch != "" {
+			state.StagingBranch = ws.Branch
+		}
+		rebound = append(rebound, name)
+	}
+	sort.Strings(rebound)
+	return rebound, nil
+}
+
+func validateWorkspaceGitRoot(dir string) error {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return fmt.Errorf("detect git top-level: %w", err)
+	}
+
+	top := strings.TrimSpace(string(out))
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	absTop, err := filepath.Abs(top)
+	if err != nil {
+		return fmt.Errorf("resolve git top-level: %w", err)
+	}
+	if resolvedDir, err := filepath.EvalSymlinks(absDir); err == nil {
+		absDir = resolvedDir
+	}
+	if resolvedTop, err := filepath.EvalSymlinks(absTop); err == nil {
+		absTop = resolvedTop
+	}
+	if filepath.Clean(absTop) != filepath.Clean(absDir) {
+		return fmt.Errorf("git top-level is %s, expected workspace root %s", absTop, absDir)
+	}
+	return nil
 }
 
 // releaseGraphRunWorkspaces releases all run-scoped workspaces in the graph state.

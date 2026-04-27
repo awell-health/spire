@@ -5,10 +5,38 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/formula"
 )
+
+func initWorkspaceTestRepo(t *testing.T) string {
+	t.Helper()
+	repoDir := t.TempDir()
+	runWorkspaceGit(t, repoDir, "init", "-b", "main")
+	runWorkspaceGit(t, repoDir, "config", "user.name", "Test")
+	runWorkspaceGit(t, repoDir, "config", "user.email", "test@test.com")
+	runWorkspaceGit(t, repoDir, "commit", "--allow-empty", "-m", "initial")
+	return repoDir
+}
+
+func runWorkspaceGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@test",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@test",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // --- ValidateWorkspaces tests ---
 
@@ -837,6 +865,133 @@ func TestResolveWorkspace_RunScopeResume(t *testing.T) {
 	// Clean up.
 	e.terminated = true
 	e.releaseWorkspace("staging")
+}
+
+func TestRebindRunScopedWorkspacesFromDisk_RebindsExistingOwnedWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repoDir := initWorkspaceTestRepo(t)
+	beadID := "spi-rebind"
+	branch := "feat/" + beadID
+	wtDir := filepath.Join(repoDir, ".worktrees", beadID+"-feature")
+	runWorkspaceGit(t, repoDir, "branch", branch, "main")
+	runWorkspaceGit(t, repoDir, "worktree", "add", wtDir, branch)
+
+	state := &GraphState{
+		BeadID:     beadID,
+		RepoPath:   repoDir,
+		BaseBranch: "main",
+		Workspaces: map[string]WorkspaceState{
+			"feature": {
+				Name:       "feature",
+				Kind:       formula.WorkspaceKindOwnedWorktree,
+				Branch:     "feat/{vars.bead_id}",
+				BaseBranch: "{vars.base_branch}",
+				Status:     "pending",
+				Scope:      formula.WorkspaceScopeRun,
+				Ownership:  "owned",
+				Cleanup:    formula.WorkspaceCleanupTerminal,
+			},
+		},
+	}
+	graph := &formula.FormulaStepGraph{
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"feature": {
+				Kind:    formula.WorkspaceKindOwnedWorktree,
+				Branch:  "feat/{vars.bead_id}",
+				Base:    "{vars.base_branch}",
+				Scope:   formula.WorkspaceScopeRun,
+				Cleanup: formula.WorkspaceCleanupTerminal,
+			},
+		},
+	}
+
+	rebound, err := RebindRunScopedWorkspacesFromDisk(state, graph)
+	if err != nil {
+		t.Fatalf("RebindRunScopedWorkspacesFromDisk: %v", err)
+	}
+	if got, want := strings.Join(rebound, ","), "feature"; got != want {
+		t.Fatalf("rebound = %q, want %q", got, want)
+	}
+
+	ws := state.Workspaces["feature"]
+	if ws.Status != "active" {
+		t.Errorf("status = %q, want active", ws.Status)
+	}
+	if ws.Dir != wtDir {
+		t.Errorf("dir = %q, want %q", ws.Dir, wtDir)
+	}
+	if ws.Branch != branch {
+		t.Errorf("branch = %q, want %q", ws.Branch, branch)
+	}
+	if ws.BaseBranch != "main" {
+		t.Errorf("base_branch = %q, want main", ws.BaseBranch)
+	}
+	if ws.StartSHA == "" {
+		t.Error("start_sha should be captured")
+	}
+	if ws.Origin != WorkspaceOriginLocalBind {
+		t.Errorf("origin = %q, want %q", ws.Origin, WorkspaceOriginLocalBind)
+	}
+	if got := runWorkspaceGit(t, wtDir, "branch", "--show-current"); got != branch {
+		t.Errorf("worktree branch = %q, want %q", got, branch)
+	}
+}
+
+func TestRebindRunScopedWorkspacesFromDisk_CorruptWorktreeFailsWithoutMutation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repoDir := initWorkspaceTestRepo(t)
+	beadID := "spi-corrupt"
+	branch := "feat/" + beadID
+	wtDir := filepath.Join(repoDir, ".worktrees", beadID+"-feature")
+	runWorkspaceGit(t, repoDir, "branch", branch, "main")
+	runWorkspaceGit(t, repoDir, "worktree", "add", wtDir, branch)
+	if err := os.Remove(filepath.Join(wtDir, ".git")); err != nil {
+		t.Fatalf("remove worktree .git: %v", err)
+	}
+
+	original := WorkspaceState{
+		Name:      "feature",
+		Kind:      formula.WorkspaceKindOwnedWorktree,
+		Branch:    "feat/{vars.bead_id}",
+		Status:    "pending",
+		Scope:     formula.WorkspaceScopeRun,
+		Ownership: "owned",
+		Cleanup:   formula.WorkspaceCleanupTerminal,
+	}
+	state := &GraphState{
+		BeadID:     beadID,
+		RepoPath:   repoDir,
+		BaseBranch: "main",
+		Workspaces: map[string]WorkspaceState{"feature": original},
+	}
+	graph := &formula.FormulaStepGraph{
+		Workspaces: map[string]formula.WorkspaceDecl{
+			"feature": {
+				Kind:    formula.WorkspaceKindOwnedWorktree,
+				Branch:  "feat/{vars.bead_id}",
+				Base:    "{vars.base_branch}",
+				Scope:   formula.WorkspaceScopeRun,
+				Cleanup: formula.WorkspaceCleanupTerminal,
+			},
+		},
+	}
+
+	_, err := RebindRunScopedWorkspacesFromDisk(state, graph)
+	if err == nil {
+		t.Fatal("expected corrupt worktree error, got nil")
+	}
+	if !strings.Contains(err.Error(), "investigate the worktree") {
+		t.Fatalf("error = %v, want actionable worktree message", err)
+	}
+	if got := state.Workspaces["feature"]; got != original {
+		t.Fatalf("workspace mutated on failed rebind:\n got:  %+v\n want: %+v", got, original)
+	}
 }
 
 // --- ParseFormulaStepGraph defaults test ---
