@@ -63,3 +63,4 @@ dist/
 
 # Per-session smoke-test runbooks and attempt logs (never canonical)
 k8s-smoke-test/
+SPIRE-DESKTOP-FRESH-INSTALL-TEST.md
