@@ -1,0 +1,404 @@
+/* Spire Desktop — mission control aesthetic */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Press+Start+2P&family=VT323&display=swap');
+
+:root {
+  /* Surfaces — near-black with cool blue tint */
+  --bg-0: #06080c;       /* deepest, outside window */
+  --bg-1: #0b0e14;       /* app background */
+  --bg-2: #0f131b;       /* column/panel */
+  --bg-3: #141924;       /* card */
+  --bg-4: #1a2030;       /* card hover / input */
+  --bg-5: #232a3d;       /* border-strong */
+
+  /* Strokes */
+  --line-1: #1a202e;
+  --line-2: #242c3e;
+  --line-3: #323c54;
+
+  /* Ink */
+  --ink-0: #f2f5fa;      /* titles */
+  --ink-1: #cdd3e0;      /* body */
+  --ink-2: #8b93a7;      /* secondary */
+  --ink-3: #5d6477;      /* tertiary */
+  --ink-4: #3f4659;      /* disabled */
+
+  /* Signal — tuned for dark */
+  --sig-red:    #ff5d5d;  /* P0 */
+  --sig-orange: #ff9849;  /* P1 */
+  --sig-amber:  #f7c948;  /* P2, hooked */
+  --sig-blue:   #5aa5ff;  /* P3 */
+  --sig-slate:  #6e7793;  /* P4 */
+  --sig-green:  #4fe38a;  /* active / running */
+  --sig-mint:   #2bd9a1;
+  --sig-purple: #b38cff;  /* review */
+  --sig-violet: #8a6eff;
+  --sig-cyan:   #5ce1e6;  /* wizard */
+  --sig-magenta:#ff7bd4;  /* sage */
+
+  /* Phosphor */
+  --pulse: 0 0 0 1px rgba(79, 227, 138, 0.45), 0 0 14px rgba(79, 227, 138, 0.35);
+  --pulse-red: 0 0 0 1px rgba(255, 93, 93, 0.45), 0 0 12px rgba(255, 93, 93, 0.30);
+
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  --sans: 'Inter Tight', ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+  overflow: hidden;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1f2636; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: #2a3348; background-clip: padding-box; border: 2px solid transparent; }
+
+/* Utility */
+.mono { font-family: var(--mono); font-feature-settings: "zero", "ss01"; }
+.sans { font-family: var(--sans); }
+
+/* Subtle grid pattern for mission-control feel */
+.grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.015) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Pulse animation for active agents */
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 227, 138, 0.55), 0 0 8px rgba(79, 227, 138, 0.35); }
+  50%      { box-shadow: 0 0 0 4px rgba(79, 227, 138, 0), 0 0 12px rgba(79, 227, 138, 0.5); }
+}
+.pulse-green { animation: pulse-dot 2.2s ease-in-out infinite; }
+
+@keyframes pulse-dot-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,93,93,0.55), 0 0 8px rgba(255,93,93,0.35); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,93,93,0), 0 0 12px rgba(255,93,93,0.5); }
+}
+.pulse-red { animation: pulse-dot-red 1.8s ease-in-out infinite; }
+
+@keyframes pulse-amber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(247,201,72,0.55), 0 0 8px rgba(247,201,72,0.35); }
+  50%      { box-shadow: 0 0 0 4px rgba(247,201,72,0), 0 0 12px rgba(247,201,72,0.5); }
+}
+.pulse-amber { animation: pulse-amber 2.2s ease-in-out infinite; }
+
+/* Ticker blink */
+@keyframes blink { 50% { opacity: 0.3; } }
+.blink { animation: blink 1.1s step-end infinite; }
+
+/* Scan sweep on cards when updated */
+@keyframes scan {
+  0% { transform: translateY(-100%); opacity: 0; }
+  10% { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+
+/* Slide-in */
+@keyframes slide-in-right {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.slide-in { animation: slide-in-right 260ms cubic-bezier(.2,.7,.2,1); }
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+.fade-in { animation: fade-in 160ms ease-out; }
+
+/* Focus rings */
+button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
+  outline: 2px solid var(--sig-green);
+  outline-offset: 2px;
+}
+
+/* Hide default button styling */
+button { background: none; border: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+input { background: none; border: none; color: inherit; font: inherit; outline: none; }
+input::placeholder { color: var(--ink-3); }
+
+/* Selection */
+::selection { background: rgba(79, 227, 138, 0.35); color: var(--ink-0); }
+
+/* Dotted leader for timeline rail */
+.rail {
+  background-image: linear-gradient(to bottom, var(--line-3) 50%, transparent 50%);
+  background-size: 1px 4px;
+  background-repeat: repeat-y;
+  background-position: 5px 0;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   SQUARE THEME — FF6 / Secret of Mana menu aesthetic
+   Deep royal-blue window panels, thick light-blue borders,
+   chunky pixel titles, golden highlights, blinking cursor arrows.
+   ══════════════════════════════════════════════════════════════ */
+
+:root[data-theme="square"] {
+  /* The iconic SNES RPG menu palette */
+  --bg-0: #06060f;               /* deepest outside */
+  --bg-1: #0a1a3b;               /* main royal navy */
+  --bg-2: #10245a;               /* panel */
+  --bg-3: #1c3478;               /* card/window interior */
+  --bg-4: #274c9e;               /* raised surface */
+  --bg-5: #3d66bd;
+
+  /* The bright aqua window borders */
+  --line-1: #2452b8;
+  --line-2: #4a88e8;
+  --line-3: #7eb8ff;
+
+  /* Inks — bright crisp white on navy */
+  --ink-0: #ffffff;
+  --ink-1: #e8eefc;
+  --ink-2: #a5b9e8;
+  --ink-3: #6c88c4;
+  --ink-4: #4a68a6;
+
+  /* Signal — gold/emerald/ruby instead of neon */
+  --sig-red:    #ff6b6b;         /* P0 / KO */
+  --sig-orange: #ffa940;
+  --sig-amber:  #ffd447;         /* gold for highlights, P2 */
+  --sig-blue:   #7eb8ff;         /* P3 */
+  --sig-slate:  #8397c4;
+  --sig-green:  #6ee07a;         /* active — crisp emerald */
+  --sig-mint:   #4dd498;
+  --sig-purple: #b58cff;
+  --sig-violet: #9c7cff;
+  --sig-cyan:   #7ef5ff;
+  --sig-magenta:#ff9cd4;
+
+  /* Pixel fonts — Press Start 2P for display/titles, VT323 for body */
+  --pixel: 'Press Start 2P', monospace;
+  --pixel-body: 'VT323', 'Courier New', monospace;
+
+  /* Square mode uses its own pixel-font stack by default */
+  --mono: var(--pixel-body);
+  --sans: var(--pixel-body);
+}
+
+:root[data-theme="square"] body,
+:root[data-theme="square"] #root {
+  font-family: var(--pixel-body);
+  font-size: 17px;              /* VT323 needs to be bigger to read */
+  letter-spacing: 0;
+  -webkit-font-smoothing: none;
+  image-rendering: pixelated;
+}
+
+/* Starfield + scanlines on the app background */
+:root[data-theme="square"] body {
+  background:
+    radial-gradient(1px 1px at 15% 20%, #fff 50%, transparent 100%),
+    radial-gradient(1px 1px at 72% 33%, #c4d8ff 50%, transparent 100%),
+    radial-gradient(1px 1px at 42% 71%, #fff 50%, transparent 100%),
+    radial-gradient(1px 1px at 89% 12%, #c4d8ff 50%, transparent 100%),
+    radial-gradient(1px 1px at 26% 88%, #fff 50%, transparent 100%),
+    radial-gradient(1px 1px at 58% 48%, #b8caf0 50%, transparent 100%),
+    linear-gradient(180deg, #030614 0%, #0a1a3b 60%, #061433 100%);
+  background-size: 100% 100%;
+}
+
+/* Scanline overlay on the whole root */
+:root[data-theme="square"] #root::after {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0.12) 0px,
+    rgba(0,0,0,0.12) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: multiply;
+  opacity: 0.6;
+}
+
+/* Pixel-font class you can apply explicitly */
+:root[data-theme="square"] .mono,
+:root[data-theme="square"] .sans {
+  font-family: var(--pixel-body);
+  font-feature-settings: normal;
+}
+
+/* Hide dark-mode grid in square theme */
+:root[data-theme="square"] .grid-bg {
+  background-image: none;
+}
+
+/* === The hallmark FF6 window: navy fill + bright aqua border + golden inner shadow === */
+:root[data-theme="square"] .sq-window {
+  background: linear-gradient(180deg, #0f2c70 0%, #0a1f52 100%);
+  border: 2px solid #7eb8ff;
+  box-shadow:
+    inset 0 0 0 1px #4a88e8,
+    inset 0 0 0 3px #0a1f52,
+    inset 0 0 0 4px #274c9e,
+    0 0 0 1px #0a1a3b,
+    0 6px 0 0 rgba(0,0,0,0.45);
+  border-radius: 0;
+}
+
+/* Retro headings */
+:root[data-theme="square"] h1,
+:root[data-theme="square"] h2 {
+  font-family: var(--pixel);
+  font-weight: 400;
+  letter-spacing: 1px !important;
+  text-shadow: 2px 2px 0 #000, 0 0 1px #000;
+  color: #ffd447 !important;
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+}
+
+/* Borders on everything get the retro double-line treatment */
+:root[data-theme="square"] [style*="border-radius"] {
+  border-radius: 0 !important;
+}
+
+/* Panels — any element with bg-2/bg-3 background gets the window treatment */
+:root[data-theme="square"] main,
+:root[data-theme="square"] aside {
+  background-image: linear-gradient(180deg, #0f2c70 0%, #0a1f52 100%);
+}
+
+/* Replace most subtle backgrounds with navy-blue window look */
+:root[data-theme="square"] [style*="background: var(--bg-2)"],
+:root[data-theme="square"] [style*="background: var(--bg-3)"],
+:root[data-theme="square"] [style*="background:var(--bg-2)"],
+:root[data-theme="square"] [style*="background:var(--bg-3)"] {
+  background-image: linear-gradient(180deg, #0f2c70 0%, #0a1f52 100%) !important;
+}
+
+/* Buttons — SNES menu chunk */
+:root[data-theme="square"] button {
+  font-family: var(--pixel-body);
+  font-size: 15px;
+  letter-spacing: 1px;
+}
+
+/* Blinking cursor arrow used for selections */
+@keyframes sq-cursor-blink {
+  0%, 49% { opacity: 1; transform: translateX(0); }
+  50%, 99%{ opacity: 1; transform: translateX(2px); }
+}
+.sq-cursor::before {
+  content: "▶";
+  color: #ffd447;
+  margin-right: 6px;
+  display: inline-block;
+  animation: sq-cursor-blink 0.55s step-end infinite;
+  text-shadow: 1px 1px 0 #000;
+  font-size: 11px;
+}
+
+/* Active row highlight: golden cursor + light navy wash */
+:root[data-theme="square"] .sq-selected {
+  background: linear-gradient(180deg, #2a5bc8 0%, #1c3e9c 100%) !important;
+  box-shadow: inset 0 0 0 1px #ffd447, inset 0 0 0 2px #000 !important;
+}
+
+/* Golden divider used for section headers */
+:root[data-theme="square"] hr.sq-rule,
+:root[data-theme="square"] .sq-rule {
+  height: 2px;
+  background: linear-gradient(to right, transparent, #ffd447, transparent);
+  border: 0;
+}
+
+/* Blinking gil/HP/MP style counter dots */
+@keyframes sq-glow {
+  0%, 100% { text-shadow: 0 0 3px currentColor, 1px 1px 0 #000; }
+  50%      { text-shadow: 0 0 8px currentColor, 1px 1px 0 #000; }
+}
+:root[data-theme="square"] .pulse-green,
+:root[data-theme="square"] .pulse-amber,
+:root[data-theme="square"] .pulse-red {
+  animation: sq-glow 1.4s ease-in-out infinite;
+}
+
+/* HP-bar style meter for agent heartbeat */
+:root[data-theme="square"] .sq-bar {
+  height: 8px;
+  background: #000;
+  border: 1px solid #7eb8ff;
+  box-shadow: inset 1px 1px 0 #4a88e8;
+  position: relative;
+  overflow: hidden;
+}
+:root[data-theme="square"] .sq-bar > div {
+  height: 100%;
+  background: linear-gradient(180deg, #6ee07a 0%, #2c8c3d 100%);
+  border-right: 1px solid #000;
+  box-shadow: inset 0 1px 0 #a0f0a8;
+}
+
+/* Text shadow on all square-theme ink */
+:root[data-theme="square"] * {
+  text-rendering: geometricPrecision;
+}
+
+/* Selection in square theme — golden */
+:root[data-theme="square"] ::selection {
+  background: #ffd447;
+  color: #0a1a3b;
+}
+
+/* Scrollbar — chunky navy */
+:root[data-theme="square"] ::-webkit-scrollbar { width: 14px; height: 14px; }
+:root[data-theme="square"] ::-webkit-scrollbar-track { background: #0a1a3b; }
+:root[data-theme="square"] ::-webkit-scrollbar-thumb {
+  background: #4a88e8;
+  border: 2px solid #0a1a3b;
+  border-radius: 0;
+}
+
+/* Theme toggle button set — chunky */
+.theme-toggle {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+}
+:root[data-theme="square"] .theme-toggle {
+  border-radius: 0;
+  background: #0a1f52;
+  border: 2px solid #7eb8ff;
+  box-shadow: inset 0 0 0 1px #4a88e8, 0 2px 0 rgba(0,0,0,0.4);
+}
+.theme-toggle button {
+  padding: 3px 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--ink-2);
+  border-radius: 3px;
+  font-family: var(--mono);
+}
+.theme-toggle button.active {
+  background: var(--sig-green);
+  color: #0b0e14;
+}
+:root[data-theme="square"] .theme-toggle button {
+  font-family: var(--pixel);
+  font-size: 8px;
+  padding: 4px 7px;
+  letter-spacing: 1px;
+  border-radius: 0;
+}
+:root[data-theme="square"] .theme-toggle button.active {
+  background: #ffd447;
+  color: #0a1a3b;
+  text-shadow: none;
+  box-shadow: inset 0 0 0 1px #000, inset 0 0 0 2px #ffd447;
+}

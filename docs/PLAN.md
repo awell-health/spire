@@ -223,6 +223,7 @@ working what" is not visible enough today.
 - [ ] Messages mode -- inbox, threaded conversations, send/reply
 - [ ] Metrics mode -- DORA metrics, formula performance, cost tracking
 - [ ] Mode-aware command palette -- actions contextual to the active mode
+- [ ] Spire Desktop Workshop view -- read-only GUI counterpart to the TUI Workshop mode; backed by new `/api/v1/workshop/*` gateway routes ([design](design/workshop-desktop.md), [plan](plans/2026-04-27-workshop-desktop.md))
 
 ### 6. Multi-Backend Agent Support
 
