@@ -303,8 +303,12 @@ func spanToToolSpan(span *tracepb.Span, res RunContext, defaultTower string) (To
 	// Classify span kind from name patterns.
 	kind := classifySpanKind(name, span.GetAttributes())
 
-	// Serialize span attributes to JSON.
-	attrsJSON := spanAttrsToJSON(span.GetAttributes())
+	// Serialize span attributes to JSON, merging in span events under an
+	// "events" array key. Some emitters attach tool args/results to span
+	// events (`gen_ai.tool.message`, `tool_result`, etc.) rather than to
+	// the span attributes directly; the merge captures both surfaces in
+	// one JSON blob so downstream readers don't need to care.
+	attrsJSON := spanAttrsAndEventsToJSON(span.GetAttributes(), span.GetEvents())
 
 	return ToolSpan{
 		TraceID:      hex.EncodeToString(span.GetTraceId()),
@@ -351,7 +355,9 @@ func classifySpanKind(name string, attrs []*commonpb.KeyValue) string {
 	return "other"
 }
 
-// spanAttrsToJSON serializes span attributes to a JSON string.
+// spanAttrsToJSON serializes span attributes to a JSON string. Kept for
+// callers (and tests) that don't need event merging — the receiver path
+// goes through spanAttrsAndEventsToJSON to capture both surfaces.
 func spanAttrsToJSON(attrs []*commonpb.KeyValue) string {
 	if len(attrs) == 0 {
 		return "{}"
@@ -363,6 +369,76 @@ func spanAttrsToJSON(attrs []*commonpb.KeyValue) string {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return "{}"
+	}
+	return string(b)
+}
+
+// spanEventJSON is the shape a single span event takes when merged into the
+// `events` array of a span's attribute JSON. Times are emitted as RFC3339
+// strings so tool_spans.attributes is self-describing — readers don't need
+// the original protobuf to interpret it.
+type spanEventJSON struct {
+	Name       string            `json:"name,omitempty"`
+	Timestamp  string            `json:"timestamp,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// spanAttrsAndEventsToJSON serializes span attributes and span events into
+// one JSON object. Span attributes become top-level keys (preserving the
+// historical shape — `session.id`, `user.email`, `tool_name`, etc.), and
+// span events are serialized into a top-level `events` array. Events are
+// captured because some OTel emitters place per-call argument/result data
+// on events rather than directly on the span; without merging, that data
+// is silently dropped during ingestion.
+//
+// Identity keys already on the span (`session.id`, `user.email`,
+// `organization.id`, `tool_name`) are preserved — events are emitted
+// alongside, never overwriting top-level attributes. If a JSON marshal
+// fails we fall back to the attribute-only encoding so we never lose the
+// identity context.
+func spanAttrsAndEventsToJSON(attrs []*commonpb.KeyValue, events []*tracepb.Span_Event) string {
+	hasAttrs := len(attrs) > 0
+	hasEvents := len(events) > 0
+	if !hasAttrs && !hasEvents {
+		return "{}"
+	}
+
+	// Build the top-level map from attributes.
+	m := make(map[string]any, len(attrs)+1)
+	for _, kv := range attrs {
+		m[kv.GetKey()] = kvStringValue(kv)
+	}
+
+	if hasEvents {
+		eventList := make([]spanEventJSON, 0, len(events))
+		for _, ev := range events {
+			if ev == nil {
+				continue
+			}
+			ej := spanEventJSON{
+				Name: ev.GetName(),
+			}
+			if t := ev.GetTimeUnixNano(); t > 0 {
+				ej.Timestamp = time.Unix(0, int64(t)).UTC().Format(time.RFC3339Nano)
+			}
+			if evAttrs := ev.GetAttributes(); len(evAttrs) > 0 {
+				em := make(map[string]string, len(evAttrs))
+				for _, kv := range evAttrs {
+					em[kv.GetKey()] = kvStringValue(kv)
+				}
+				ej.Attributes = em
+			}
+			eventList = append(eventList, ej)
+		}
+		if len(eventList) > 0 {
+			m["events"] = eventList
+		}
+	}
+
+	b, err := json.Marshal(m)
+	if err != nil {
+		// Fallback path: attribute-only encoding, never lose identity keys.
+		return spanAttrsToJSON(attrs)
 	}
 	return string(b)
 }

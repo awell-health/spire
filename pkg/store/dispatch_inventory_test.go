@@ -366,4 +366,13 @@ var nonDispatchableAPIs = []string{
 	// callers (cmdClose's gateway-mode short-circuit) use this to bypass the
 	// pkg/store dispatch layer entirely and talk to the gateway directly.
 	"NewGatewayClientForTower",
+
+	// lookup_commits.go — read-only git wrapper that takes a repoPath
+	// from the caller and shells out via os/exec; no Storage access
+	// beyond GetBeadMetadata (already dispatched).
+	"LookupBeadCommits",
+
+	// close_sweep.go — test helper that drains in-flight goroutines
+	// started by firePostCloseSweep. No Storage access.
+	"WaitCloseSweeps",
 }

@@ -424,6 +424,131 @@ func (d *DB) QueryToolSpansByBead(beadID string) ([]SpanRecord, error) {
 	return out, rows.Err()
 }
 
+// QueryToolCallsBySession returns per-invocation tool calls for one
+// session (typically the attempt's session_id), ordered by timestamp.
+// Spans are the primary source — they carry the rich attribute payload.
+// tool_events rows whose (session_id, tool_name, timestamp) does not
+// match a span are appended after the span set as a fallback for
+// log-only signals (rare in practice, since Claude Code emits both
+// signals; included so non-span emitters still surface).
+//
+// limit caps the result set; offset skips the first N rows so callers
+// can paginate. A limit of 0 or negative falls back to 200; offset is
+// clamped to >= 0.
+func (d *DB) QueryToolCallsBySession(sessionID string, limit, offset int) ([]ToolCallRecord, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	ctx := context.Background()
+
+	// 1) Spans for this session — preferred (they carry attributes JSON).
+	spanRows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(trace_id, '')        AS trace_id,
+			COALESCE(span_id, '')         AS span_id,
+			COALESCE(session_id, '')      AS session_id,
+			COALESCE(bead_id, '')         AS bead_id,
+			COALESCE(agent_name, '')      AS agent_name,
+			COALESCE(step, '')            AS step,
+			COALESCE(span_name, '')       AS tool_name,
+			COALESCE(duration_ms, 0)      AS duration_ms,
+			COALESCE(success, true)       AS success,
+			start_time                    AS timestamp,
+			COALESCE(attributes, '{}')    AS attributes
+		FROM tool_spans
+		WHERE session_id = ? AND kind = 'tool'
+		ORDER BY start_time ASC
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	type spanKey struct {
+		ToolName string
+		Bucket   int64 // timestamp truncated to seconds
+	}
+	seen := make(map[spanKey]struct{})
+
+	var out []ToolCallRecord
+	for spanRows.Next() {
+		var r ToolCallRecord
+		if err := spanRows.Scan(
+			&r.TraceID, &r.SpanID, &r.SessionID, &r.BeadID, &r.AgentName,
+			&r.Step, &r.ToolName, &r.DurationMs, &r.Success, &r.Timestamp,
+			&r.Attributes,
+		); err != nil {
+			spanRows.Close()
+			return nil, err
+		}
+		r.Source = "span"
+		out = append(out, r)
+		seen[spanKey{ToolName: r.ToolName, Bucket: r.Timestamp.Unix()}] = struct{}{}
+	}
+	spanRows.Close()
+	if err := spanRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 2) Log events for this session — only those NOT already covered by
+	// a span. Same-second + same tool_name dedupe handles Claude Code's
+	// dual-signal emit pattern. Codex / log-only emitters fall through
+	// here untouched.
+	logRows, err := d.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(session_id, '') AS session_id,
+			COALESCE(bead_id, '')    AS bead_id,
+			COALESCE(agent_name, '') AS agent_name,
+			COALESCE(step, '')       AS step,
+			COALESCE(tool_name, '')  AS tool_name,
+			COALESCE(duration_ms, 0) AS duration_ms,
+			COALESCE(success, true)  AS success,
+			timestamp                AS timestamp
+		FROM tool_events
+		WHERE session_id = ?
+		ORDER BY timestamp ASC
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for logRows.Next() {
+		var r ToolCallRecord
+		if err := logRows.Scan(
+			&r.SessionID, &r.BeadID, &r.AgentName, &r.Step, &r.ToolName,
+			&r.DurationMs, &r.Success, &r.Timestamp,
+		); err != nil {
+			logRows.Close()
+			return nil, err
+		}
+		key := spanKey{ToolName: r.ToolName, Bucket: r.Timestamp.Unix()}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		r.Source = "log"
+		out = append(out, r)
+		seen[key] = struct{}{}
+	}
+	logRows.Close()
+	if err := logRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Apply offset/limit at slice level. The combined data set (spans +
+	// log-only fallback) tends to be small per attempt; an in-memory
+	// slice is simpler than a UNION ALL with offset arithmetic and
+	// keeps the per-source ordering predictable.
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
+}
+
 // QueryAPIEventsByBead returns aggregated API event stats for a bead.
 func (d *DB) QueryAPIEventsByBead(beadID string) ([]APIEventStats, error) {
 	ctx := context.Background()

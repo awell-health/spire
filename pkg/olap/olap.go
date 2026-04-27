@@ -265,6 +265,31 @@ type StepToolBreakdown struct {
 	Tools []ToolEventStats `json:"tools"`
 }
 
+// ToolCallRecord is one per-invocation tool call surfaced to readers
+// (gateway endpoint, `spire attempt show`, board drill-down). It joins
+// span and log signals on (session_id, tool_name, timestamp): when both
+// shapes describe the same logical call, the span row is preferred (its
+// `Attributes` JSON carries the rich payload). When only the log row is
+// present, Attributes is empty / a thin "{}".
+//
+// Source records the origin: "span" when the row came from tool_spans,
+// "log" when it came from tool_events alone. Callers can use Source to
+// explain why some rows lack args (log-only providers).
+type ToolCallRecord struct {
+	Source     string    `json:"source"`               // "span" | "log"
+	SessionID  string    `json:"session_id,omitempty"`
+	BeadID     string    `json:"bead_id,omitempty"`
+	AgentName  string    `json:"agent_name,omitempty"`
+	Step       string    `json:"step,omitempty"`
+	ToolName   string    `json:"tool_name"`
+	SpanID     string    `json:"span_id,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	DurationMs int       `json:"duration_ms"`
+	Success    bool      `json:"success"`
+	Timestamp  time.Time `json:"timestamp"`
+	Attributes string    `json:"attributes,omitempty"`
+}
+
 // APIEventStats holds aggregated API event statistics.
 type APIEventStats struct {
 	Model             string  `json:"model"`

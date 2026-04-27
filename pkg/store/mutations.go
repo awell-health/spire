@@ -119,10 +119,19 @@ func RemoveDep(issueID, dependsOnID string) error {
 //
 // Gateway mode: routes to UpdateBead({"status":"closed"}) so the gateway's
 // PATCH /api/v1/beads/{id} endpoint handles the close server-side.
+//
+// Direct mode: after the close commits, fires the best-effort grep sweep
+// (firePostCloseSweepIfTransitioned) so every repo-convention commit that
+// referenced this bead lands in metadata.commits[] regardless of which
+// caller invoked the close. This funnels every direct close path —
+// CLI, board, approve, reset, recovery — through the same single sweep
+// hook (the wizard's recordCommitMetadata still writes commits at write
+// time; the sweep is additive and idempotent).
 func CloseBead(id string) error {
 	if _, ok := isGatewayMode(); ok {
 		return UpdateBead(id, map[string]interface{}{"status": "closed"})
 	}
+	priorStatus := readPriorBeadStatus(id)
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -131,6 +140,7 @@ func CloseBead(id string) error {
 		return err
 	}
 	stampStatusTransitionBestEffort(id, "closed")
+	firePostCloseSweepIfTransitioned(id, priorStatus)
 	return nil
 }
 
@@ -161,6 +171,19 @@ func UpdateBead(id string, updates map[string]interface{}) error {
 }
 
 func updateBeadDirect(id string, updates map[string]interface{}) error {
+	// Capture the prior status BEFORE applying the update so the
+	// post-close sweep can fire only on actual transitions (prior !=
+	// closed → closed). Without this guard, every replay or admin
+	// re-close would re-run `git log --grep` for no benefit. We only
+	// pay the read when the caller is actually trying to set status
+	// to closed — other field updates skip the cost.
+	var priorStatus string
+	if v, ok := updates["status"]; ok {
+		if newStatus, ok := v.(string); ok && newStatus == "closed" {
+			priorStatus = readPriorBeadStatus(id)
+		}
+	}
+
 	s, ctx, err := getStore()
 	if err != nil {
 		return err
@@ -172,8 +195,11 @@ func updateBeadDirect(id string, updates map[string]interface{}) error {
 	// upsert is idempotent (first-wins for ready/started, last-wins for
 	// closed) so calling this on every update is safe.
 	if v, ok := updates["status"]; ok {
-		if s, ok := v.(string); ok {
-			stampStatusTransitionBestEffort(id, s)
+		if newStatus, ok := v.(string); ok {
+			stampStatusTransitionBestEffort(id, newStatus)
+			if newStatus == "closed" {
+				firePostCloseSweepIfTransitioned(id, priorStatus)
+			}
 		}
 	}
 	return nil

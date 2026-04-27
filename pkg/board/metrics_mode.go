@@ -622,6 +622,12 @@ func (m *MetricsMode) renderToolUsageContent() []string {
 			lines = append(lines, fmt.Sprintf("  %-20s %6d %8.0f %s",
 				Truncate(t.ToolName, 20), t.Count, t.AvgDurationMs, failStyled))
 		}
+		// Drill-down hint: the per-call rendering (with Bash command
+		// text, Read file paths, Grep patterns, etc.) lives behind
+		// `spire attempt show <attempt-id>`. The aggregate panel can't
+		// expand inline (no per-attempt context here), so the footer
+		// points reviewers at the CLI surface.
+		lines = append(lines, dimStyle.Render("  ↳ drill in: spire attempt show <attempt-id>"))
 		return lines
 	}
 

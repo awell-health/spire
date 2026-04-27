@@ -966,6 +966,109 @@ func TestAttrBool(t *testing.T) {
 	}
 }
 
+// --- parseToolEvent — args/results extraction (spi-rni8lr) ---
+
+func TestParseToolEvent_ExtractsBashCommand(t *testing.T) {
+	now := uint64(time.Now().UnixNano())
+	lr := &logspb.LogRecord{
+		TimeUnixNano: now,
+		Attributes: []*commonpb.KeyValue{
+			strKV("tool_name", "Bash"),
+			strKV("command", "spire graph spi-XYZ"),
+			intKV("duration_ms", 200),
+			boolKV("success", true),
+		},
+	}
+	ev := parseToolEvent(lr, "claude", "tool_result", RunContext{}, "tower", time.Now())
+	if ev.Attributes == nil {
+		t.Fatal("expected Attributes to be populated when log carries `command`")
+	}
+	if got := ev.Attributes["command"]; got != "spire graph spi-XYZ" {
+		t.Errorf("command=%q, want %q", got, "spire graph spi-XYZ")
+	}
+}
+
+func TestParseToolEvent_ExtractsFilePath(t *testing.T) {
+	lr := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commonpb.KeyValue{
+			strKV("tool_name", "Read"),
+			strKV("file_path", "/repo/pkg/otel/log_handler.go"),
+		},
+	}
+	ev := parseToolEvent(lr, "claude", "tool_result", RunContext{}, "tower", time.Now())
+	if ev.Attributes["file_path"] != "/repo/pkg/otel/log_handler.go" {
+		t.Errorf("file_path=%q, want %q", ev.Attributes["file_path"], "/repo/pkg/otel/log_handler.go")
+	}
+}
+
+func TestParseToolEvent_ExtractsGrepPattern(t *testing.T) {
+	lr := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commonpb.KeyValue{
+			strKV("tool_name", "Grep"),
+			strKV("pattern", "TODO"),
+		},
+	}
+	ev := parseToolEvent(lr, "claude", "tool_result", RunContext{}, "tower", time.Now())
+	if ev.Attributes["pattern"] != "TODO" {
+		t.Errorf("pattern=%q, want TODO", ev.Attributes["pattern"])
+	}
+}
+
+func TestParseToolEvent_ExtractsErrorMessage(t *testing.T) {
+	lr := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commonpb.KeyValue{
+			strKV("tool_name", "Bash"),
+			strKV("error_message", "exit status 1: file not found"),
+			boolKV("success", false),
+		},
+	}
+	ev := parseToolEvent(lr, "claude", "tool_result", RunContext{}, "tower", time.Now())
+	if ev.Attributes["error_message"] != "exit status 1: file not found" {
+		t.Errorf("error_message extraction failed: %q", ev.Attributes["error_message"])
+	}
+	if ev.Success {
+		t.Error("Success should be false on error event")
+	}
+}
+
+func TestParseToolEvent_OmitsEmptyAttributes(t *testing.T) {
+	lr := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commonpb.KeyValue{
+			strKV("tool_name", "Read"),
+			intKV("duration_ms", 50),
+			boolKV("success", true),
+		},
+	}
+	ev := parseToolEvent(lr, "claude", "tool_result", RunContext{}, "tower", time.Now())
+	if ev.Attributes != nil {
+		t.Errorf("expected nil Attributes when log carries no args/results, got %+v", ev.Attributes)
+	}
+}
+
+func TestParseToolEvent_GenAIInputOutputKeys(t *testing.T) {
+	// gen_ai.* attribute keys are the OTel-standard alias for tool_input / tool_output;
+	// some emitters use them instead of the Anthropic-native names.
+	lr := &logspb.LogRecord{
+		TimeUnixNano: uint64(time.Now().UnixNano()),
+		Attributes: []*commonpb.KeyValue{
+			strKV("tool_name", "Bash"),
+			strKV("gen_ai.tool.input", "ls -la"),
+			strKV("gen_ai.tool.output", "total 24"),
+		},
+	}
+	ev := parseToolEvent(lr, "claude", "tool_result", RunContext{}, "tower", time.Now())
+	if ev.Attributes["gen_ai.tool.input"] != "ls -la" {
+		t.Errorf("gen_ai.tool.input not captured: got %q", ev.Attributes["gen_ai.tool.input"])
+	}
+	if ev.Attributes["gen_ai.tool.output"] != "total 24" {
+		t.Errorf("gen_ai.tool.output not captured: got %q", ev.Attributes["gen_ai.tool.output"])
+	}
+}
+
 // --- test helpers ---
 
 func strKV(key, val string) *commonpb.KeyValue {

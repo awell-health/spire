@@ -351,6 +351,7 @@ Evaluate:
 4. Edge cases: Are error paths and edge cases handled?
 5. Test consistency: If the diff changes function behavior, deps usage, or adds new store/deps calls, verify that corresponding test mocks and test setup are updated. Missing mock updates cause nil pointer panics at test time.
 6. Test coverage: New or significantly modified functions must have corresponding test coverage in the diff. If the diff adds or changes exported functions, unexported business-logic functions, or branching logic, look for test additions/updates that exercise those paths. Issue "request_changes" if significant new code has no tests. Exception: pure I/O glue code (main(), CLI flag wiring, signal handlers, process lifecycle) does not require unit tests.
+7. Context coverage: Verify the agent walked the relevant context — see attempt-record tool calls at "spire attempt show <attempt-id>". For changes whose specification depends on linked design or bug beads, the agent should have read them (Read calls on docs, Grep/Bash for spire graph walks). If the diff touches load-bearing context but the attempt's tool calls do not show the agent reading or graphing it, flag this as a context-coverage concern in the summary.
 
 Respond ONLY with a JSON object:
 {

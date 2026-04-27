@@ -126,7 +126,63 @@ func parseToolEvent(lr *logspb.LogRecord, provider, kind string, res RunContext,
 		Tower:      tower,
 		Provider:   provider,
 		EventKind:  kind,
+		Attributes: extractToolAttrs(attrs),
 	}
+}
+
+// toolAttrFields lists the attribute keys (across Claude / Codex / generic
+// OTel emitters) that carry per-call argument and result data. Multiple keys
+// per concept exist because emitters disagree on naming: Claude Code uses
+// `tool_input` / `tool_output`, Bash specifically often emits `command`,
+// generic OTel uses `gen_ai.tool.input` / `input_value`. We capture every
+// known surface so the downstream surfaces can render whichever one the
+// emitter chose.
+var toolAttrFields = []string{
+	// Tool inputs.
+	"command",
+	"tool_input",
+	"input_value",
+	"file_path",
+	"pattern",
+	"prompt",
+	"description",
+	"old_string",
+	"new_string",
+	"path",
+	"query",
+	"url",
+	"gen_ai.tool.input",
+	// Tool results / outputs.
+	"tool_output",
+	"output_value",
+	"result",
+	"gen_ai.tool.output",
+	// Error context.
+	"error_message",
+	"error",
+	// Optional surrounding metadata.
+	"tool_call_id",
+	"step_id",
+}
+
+// extractToolAttrs lifts the rich-payload attribute keys (args, results,
+// error context) out of a flat OTLP attribute map and returns a small map
+// suitable for surfacing per-call. Empty entries are omitted. Returns nil
+// if no relevant keys are present.
+func extractToolAttrs(attrs map[string]string) map[string]string {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(toolAttrFields))
+	for _, k := range toolAttrFields {
+		if v, ok := attrs[k]; ok && v != "" {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseAPIEvent(lr *logspb.LogRecord, provider string, res RunContext, tower string, ts time.Time) APIEvent {
@@ -173,15 +229,16 @@ func parseRateLimitEvent(lr *logspb.LogRecord, provider string, res RunContext, 
 func parseGenericToolEvent(lr *logspb.LogRecord, provider, kind string, res RunContext, tower string, ts time.Time) ToolEvent {
 	attrs := logAttrMap(lr.GetAttributes())
 	return ToolEvent{
-		SessionID: res.SessionID,
-		BeadID:    res.BeadID,
-		AgentName: res.AgentName,
-		Step:      res.FormulaStep,
-		ToolName:  attrStr(attrs, "tool_name", "tool.name"),
-		Timestamp: ts,
-		Tower:     tower,
-		Provider:  provider,
-		EventKind: kind,
+		SessionID:  res.SessionID,
+		BeadID:     res.BeadID,
+		AgentName:  res.AgentName,
+		Step:       res.FormulaStep,
+		ToolName:   attrStr(attrs, "tool_name", "tool.name"),
+		Timestamp:  ts,
+		Tower:      tower,
+		Provider:   provider,
+		EventKind:  kind,
+		Attributes: extractToolAttrs(attrs),
 	}
 }
 

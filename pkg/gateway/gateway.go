@@ -121,6 +121,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/metrics", s.corsMiddleware(s.bearerAuth(s.handleMetrics)))
 	mux.Handle("/api/v1/workshop/formulas", s.corsMiddleware(s.bearerAuth(s.handleWorkshopFormulas)))
 	mux.Handle("/api/v1/workshop/formulas/", s.corsMiddleware(s.bearerAuth(s.handleWorkshopFormulaByName)))
+	mux.Handle("/api/v1/attempts/", s.corsMiddleware(s.bearerAuth(s.handleAttemptByID)))
 
 	srv := &http.Server{
 		Addr:              s.addr,

@@ -13,6 +13,16 @@ import (
 )
 
 // ToolEvent represents a single tool invocation captured from an OTel log record or span.
+//
+// Attributes is the per-call rich payload (tool args, tool result, error
+// message) extracted from the source log record or span attributes. It is
+// kept in-memory only — the tool_events table intentionally stores none of
+// it, since `tool_spans` is the canonical store for the rich payload (one
+// JSON column there carries the full attribute set; ListAttemptToolCalls
+// joins both shapes on read). The field exists so tests can assert that
+// `parseToolEvent` extracts argument fields correctly even when downstream
+// persistence drops them, and so future read paths that want log-side
+// attributes can lift them off the in-flight struct.
 type ToolEvent struct {
 	SessionID  string
 	BeadID     string
@@ -25,6 +35,7 @@ type ToolEvent struct {
 	Tower      string
 	Provider   string // "claude" or "codex"
 	EventKind  string // "tool_result", "tool_decision", "user_prompt", etc.
+	Attributes map[string]string
 }
 
 // ToolSpan represents a single span from the OTel trace pipeline, stored in the

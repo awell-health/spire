@@ -575,9 +575,9 @@ func TestRenderToolUsageContent_BranchSelection(t *testing.T) {
 			toolUsage: []olap.ToolUsageStats{
 				{FormulaName: "task-default", Phase: "implement", TotalRead: 100, TotalEdit: 50, TotalTools: 150, ReadRatio: 0.67},
 			},
-			wantContains:    []string{"Tool", "Calls", "Avg ms", "Fails", "FileRead", "FileEdit"},
+			wantContains:    []string{"Tool", "Calls", "Avg ms", "Fails", "FileRead", "FileEdit", "spire attempt show"},
 			wantNotContains: []string{"Formula", "Phase", "No tool usage data"},
-			wantLineCount:   3, // header + 2 tools
+			wantLineCount:   4, // header + 2 tools + drill-down hint
 		},
 		{
 			name:       "legacy_fallback_when_toolEvents_empty",
@@ -603,8 +603,8 @@ func TestRenderToolUsageContent_BranchSelection(t *testing.T) {
 				{ToolName: "Bash", Count: 10, AvgDurationMs: 50.0, FailureCount: 3},
 				{ToolName: "Grep", Count: 20, AvgDurationMs: 30.0, FailureCount: 0},
 			},
-			wantContains:  []string{"Bash", "Grep", "3"},
-			wantLineCount: 3, // header + 2 tools
+			wantContains:  []string{"Bash", "Grep", "3", "spire attempt show"},
+			wantLineCount: 4, // header + 2 tools + drill-down hint
 		},
 	}
 
