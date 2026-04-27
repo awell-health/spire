@@ -43,9 +43,10 @@ RUN adduser -D -h /home/wizard -s /bin/bash wizard && \
 
 # --- Build spire binaries (only rebuilds on code change) ---
 FROM deps AS build
+ARG SPIRE_VERSION=dev
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire ./cmd/spire/ \
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${SPIRE_VERSION}" -o /out/spire ./cmd/spire/ \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/spire-sidecar ./cmd/spire-sidecar/
 
 # --- Final image: fast layer (just binaries + entrypoint) ---

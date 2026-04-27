@@ -24,9 +24,10 @@ RUN apk add --no-cache bash curl \
 
 # --- Build spire binaries (only rebuilds on code change) ---
 FROM deps AS build
+ARG SPIRE_VERSION=dev
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire ./cmd/spire/ \
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${SPIRE_VERSION}" -o /out/spire ./cmd/spire/ \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/spire-steward-sidecar ./cmd/spire-steward-sidecar/
 WORKDIR /src/operator
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/spire-operator .
