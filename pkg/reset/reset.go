@@ -58,12 +58,46 @@ type Opts struct {
 	// "<step>.outputs.<key>"; values are the override value (may
 	// contain '=').
 	Set map[string]string
+
+	// Hard, when true, runs the destructive worktree+branch+graph-state
+	// reset path instead of the soft rewind. Mutually exclusive with To
+	// (callers should reject Hard+To at the surface — CLI does this; the
+	// gateway does too). Hard is incompatible with Force/Set; those flags
+	// are ignored when Hard is true.
+	Hard bool
 }
 
 // ErrNotWired is returned by ResetBead when RunFunc has not been wired.
 // In production cmd/spire wires it during init(); a test that imports
 // pkg/reset without booting cmd/spire will see this error.
 var ErrNotWired = errors.New("reset: RunFunc is not wired")
+
+// ErrInvalidStep wraps validation failures where Opts.To names a step
+// that doesn't exist in the bead's resolved formula. HTTP callers map
+// this to 400.
+var ErrInvalidStep = errors.New("invalid step")
+
+// ErrSetSyntax wraps validation failures from the Set map: malformed
+// `<step>.outputs.<key>` paths, unknown step references inside Set, or
+// attempts to write `<step>.status=...` (rejected because --set is
+// scoped to outputs, matching CLI behavior). HTTP callers map this to
+// 400.
+var ErrSetSyntax = errors.New("invalid --set token")
+
+// ErrTargetNotReached wraps the "target must have been reached"
+// precondition failure: To names a step the bead's graph state hasn't
+// reached, and Force is false. HTTP callers map this to 409.
+var ErrTargetNotReached = errors.New("target step not reached")
+
+// ErrNoGraphState wraps the "no graph state to rewind" condition: the
+// bead's wizard has no graph_state.json on disk, so a soft rewind is
+// impossible. HTTP callers map this to 409.
+var ErrNoGraphState = errors.New("no graph state to rewind")
+
+// ErrConflict wraps generic "cannot proceed in current state" errors
+// such as a live wizard owning the bead during a --force pass. HTTP
+// callers map this to 409.
+var ErrConflict = errors.New("reset state conflict")
 
 // RunFunc is the package-level seam through which ResetBead invokes the
 // real soft-reset implementation. cmd/spire wires this in init() to a

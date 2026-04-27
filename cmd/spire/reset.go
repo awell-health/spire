@@ -120,6 +120,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/gatewayclient"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/recovery"
 	resetpkg "github.com/awell-health/spire/pkg/reset"
@@ -127,11 +128,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ErrNoGraphState is returned by softResetV3 when the bead has no graph
-// state file on disk — there is nothing to rewind. Plain reset also exits
-// early on this condition, but returns nil because plain reset has useful
-// work to do (strip labels, reopen subtasks) even without graph state.
-var ErrNoGraphState = errors.New("no graph state to rewind")
+// ErrNoGraphState is the local alias for resetpkg.ErrNoGraphState. Kept as
+// a package-level var so existing call sites (errors.Is(err, ErrNoGraphState))
+// keep working without churn; the real sentinel lives in pkg/reset so
+// gateway callers can map it to 409 via errors.Is without depending on
+// cmd/spire.
+var ErrNoGraphState = resetpkg.ErrNoGraphState
 
 // cmdSummonFunc is the function reset callers (recover, board) reach for when
 // they chain a resummon after reset. Tests swap it to a no-op recorder to
@@ -286,6 +288,22 @@ func cmdReset(args []string) error {
 	}
 
 	setMap := resetSetArgsToMap(setArgs)
+
+	// Gateway-mode dispatch: tunnel to POST /api/v1/beads/{id}/reset so
+	// the same `spire reset` invocation works against an attached cluster
+	// tower. Mirrors the v0.48 hardening pattern (spi-zz2ve9 / spi-i7k1ag.4)
+	// — local-mode towers stay on the in-process path so on-disk worktrees
+	// and graph state are reset alongside the bead.
+	if t, terr := activeTowerConfigFunc(); terr == nil && t != nil && t.IsGateway() {
+		return gatewayResetBeadFunc(context.Background(), beadID, resetpkg.Opts{
+			BeadID: beadID,
+			To:     toPhase,
+			Force:  force,
+			Set:    setMap,
+			Hard:   hard,
+		})
+	}
+
 	_, err := runResetCore(context.Background(), resetpkg.Opts{
 		BeadID: beadID,
 		To:     toPhase,
@@ -295,12 +313,57 @@ func cmdReset(args []string) error {
 	return err
 }
 
-// runResetSoft is the in-process entry point for the non-hard reset path.
-// It is wired to resetpkg.RunFunc in init() so the gateway and any other
-// pkg/reset.ResetBead caller share the exact same kill-wizard → strip-labels
-// → unhook → walk-back sequence the CLI runs.
+// gatewayResetBeadFunc is the gateway-mode dispatch seam. cmdReset calls
+// it when the active tower is gateway-mode so the reset runs against the
+// gateway endpoint instead of the local Dolt store. Tests swap this to
+// verify routing without standing up a real gateway. Default impl uses
+// store.NewGatewayClientForTower + gatewayclient.ResetBead so the wiring
+// matches the close/summon gateway-mode dispatchers.
+var gatewayResetBeadFunc = resetBeadViaGateway
+
+// resetBeadViaGateway tunnels a reset call through the active tower's
+// gatewayclient. Renders the post-reset bead's status to stdout to match
+// the local-mode CLI output shape ("<bead> reset (v3)" / soft-reset
+// preamble) so a gateway-mode invocation looks identical to a local one
+// at the terminal.
+func resetBeadViaGateway(ctx context.Context, id string, opts resetpkg.Opts) error {
+	t, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("reset %s: resolve tower: %w", id, err)
+	}
+	if t == nil {
+		return fmt.Errorf("reset %s: no active tower", id)
+	}
+	c, err := store.NewGatewayClientForTower(t)
+	if err != nil {
+		return fmt.Errorf("reset %s: %w", id, err)
+	}
+	bead, err := c.ResetBead(ctx, id, gatewayclient.ResetBeadOpts{
+		To:    opts.To,
+		Force: opts.Force,
+		Set:   opts.Set,
+		Hard:  opts.Hard,
+	})
+	if err != nil {
+		return err
+	}
+	if opts.To != "" {
+		fmt.Printf("%s soft-reset to step %q (gateway: status=%s)\n", id, opts.To, bead.Status)
+	} else {
+		fmt.Printf("%s reset (gateway: status=%s)\n", id, bead.Status)
+	}
+	return nil
+}
+
+// runResetSoft is the in-process entry point for both the soft and hard
+// reset paths. It is wired to resetpkg.RunFunc in init() so the gateway
+// and any other pkg/reset.ResetBead caller share the exact same kill-
+// wizard → strip-labels → unhook → walk-back (or destructive worktree
+// teardown) sequence the CLI runs. The historical name "soft" is kept
+// for compatibility with existing call sites; opts.Hard switches the
+// internal dispatch to the destructive path.
 func runResetSoft(ctx context.Context, opts resetpkg.Opts) (*store.Bead, error) {
-	return runResetCore(ctx, opts, false)
+	return runResetCore(ctx, opts, opts.Hard)
 }
 
 // lookupWizardForBead returns a copy of the first registry entry whose
@@ -686,22 +749,22 @@ func parseSetFlag(tokens []string, graph *formula.FormulaStepGraph) (map[string]
 	for _, tok := range tokens {
 		eq := strings.IndexByte(tok, '=')
 		if eq < 0 {
-			return nil, fmt.Errorf("--set %q: expected <step>.outputs.<key>=<value>", tok)
+			return nil, fmt.Errorf("%w: --set %q: expected <step>.outputs.<key>=<value>", resetpkg.ErrSetSyntax, tok)
 		}
 		lhs, value := tok[:eq], tok[eq+1:]
 		segs := strings.Split(lhs, ".")
 		if len(segs) != 3 {
-			return nil, fmt.Errorf("--set %q: expected <step>.outputs.<key>, got %d path segment(s)", tok, len(segs))
+			return nil, fmt.Errorf("%w: --set %q: expected <step>.outputs.<key>, got %d path segment(s)", resetpkg.ErrSetSyntax, tok, len(segs))
 		}
 		step, kind, key := segs[0], segs[1], segs[2]
 		if kind == "status" {
-			return nil, fmt.Errorf("--set %q: setting status is not allowed — --set is scoped to outputs", tok)
+			return nil, fmt.Errorf("%w: --set %q: setting status is not allowed — --set is scoped to outputs", resetpkg.ErrSetSyntax, tok)
 		}
 		if kind != "outputs" {
-			return nil, fmt.Errorf("--set %q: only <step>.outputs.<key> is supported (got middle segment %q)", tok, kind)
+			return nil, fmt.Errorf("%w: --set %q: only <step>.outputs.<key> is supported (got middle segment %q)", resetpkg.ErrSetSyntax, tok, kind)
 		}
 		if step == "" || key == "" {
-			return nil, fmt.Errorf("--set %q: step and key must be non-empty", tok)
+			return nil, fmt.Errorf("%w: --set %q: step and key must be non-empty", resetpkg.ErrSetSyntax, tok)
 		}
 		if _, ok := graph.Steps[step]; !ok {
 			var valid []string
@@ -709,8 +772,8 @@ func parseSetFlag(tokens []string, graph *formula.FormulaStepGraph) (map[string]
 				valid = append(valid, name)
 			}
 			sort.Strings(valid)
-			return nil, fmt.Errorf("--set %q: step %q not found in formula %s (valid steps: %s)",
-				tok, step, graph.Name, strings.Join(valid, ", "))
+			return nil, fmt.Errorf("%w: --set %q: step %q not found in formula %s (valid steps: %s)",
+				resetpkg.ErrSetSyntax, tok, step, graph.Name, strings.Join(valid, ", "))
 		}
 		m, ok := result[step]
 		if !ok {
@@ -801,8 +864,9 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 		for name := range graph.Steps {
 			validSteps = append(validSteps, name)
 		}
-		return fmt.Errorf("step %q not found in formula %s (valid steps: %s)",
-			targetStep, graph.Name, strings.Join(validSteps, ", "))
+		sort.Strings(validSteps)
+		return fmt.Errorf("%w: step %q not found in formula %s (valid steps: %s)",
+			resetpkg.ErrInvalidStep, targetStep, graph.Name, strings.Join(validSteps, ", "))
 	}
 
 	// Parse and validate --set tokens BEFORE any state mutation. A typo in
@@ -831,7 +895,7 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 	// mutation so the operation is all-or-nothing.
 	if !forceAdvance {
 		if ts, ok := gs.Steps[targetStep]; ok && ts.Status == "pending" {
-			return fmt.Errorf("cannot rewind %s to %q: step has not been reached yet (pass --force to advance anyway)", beadID, targetStep)
+			return fmt.Errorf("%w: cannot rewind %s to %q: step has not been reached yet (pass --force to advance anyway)", resetpkg.ErrTargetNotReached, beadID, targetStep)
 		}
 	}
 
@@ -863,8 +927,8 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 		if len(activePredecessors) > 0 {
 			if wiz := findLiveWizardForBeadFunc(beadID); wiz != nil {
 				sort.Strings(activePredecessors)
-				return fmt.Errorf("cannot --force past active step(s) %s: live wizard %s (pid %d) still owns %s; release it or kill the wizard first",
-					strings.Join(activePredecessors, ", "), wiz.Name, wiz.PID, beadID)
+				return fmt.Errorf("%w: cannot --force past active step(s) %s: live wizard %s (pid %d) still owns %s; release it or kill the wizard first",
+					resetpkg.ErrConflict, strings.Join(activePredecessors, ", "), wiz.Name, wiz.PID, beadID)
 			}
 		}
 	}

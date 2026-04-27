@@ -1171,14 +1171,24 @@ func TestHandleBeadReset_GenericErrorReturns500(t *testing.T) {
 
 func TestStatusForResetError_MapsKnownMessages(t *testing.T) {
 	tests := []struct {
+		name string
 		err  error
 		want int
 	}{
-		{nil, http.StatusOK},
-		{errors.New("get bead spi-1: not found"), http.StatusNotFound},
-		{errors.New("cannot rewind spi-1 to \"implement\": no graph state to rewind"), http.StatusConflict},
-		{errors.New("cannot rewind spi-1 to \"review\": step has not been reached yet"), http.StatusConflict},
-		{errors.New("dolt: connection reset"), http.StatusInternalServerError},
+		{"nil", nil, http.StatusOK},
+		{"bead not found", errors.New("get bead spi-1: not found"), http.StatusNotFound},
+		{"no graph state (legacy)", errors.New("cannot rewind spi-1 to \"implement\": no graph state to rewind"), http.StatusConflict},
+		{"target not reached (legacy)", errors.New("cannot rewind spi-1 to \"review\": step has not been reached yet"), http.StatusConflict},
+		{"generic dolt error", errors.New("dolt: connection reset"), http.StatusInternalServerError},
+		// New: sentinel-based mapping. Validates errors.Is integration.
+		{"invalid step sentinel", fmt.Errorf("%w: step %q not found in formula task-default", reset.ErrInvalidStep, "bogus"), http.StatusBadRequest},
+		{"invalid set sentinel", fmt.Errorf("%w: --set %q: setting status is not allowed", reset.ErrSetSyntax, "review.status=merge"), http.StatusBadRequest},
+		{"target not reached sentinel", fmt.Errorf("%w: cannot rewind spi-1 to %q: step has not been reached yet", reset.ErrTargetNotReached, "review"), http.StatusConflict},
+		{"no graph state sentinel", fmt.Errorf("cannot rewind spi-1 to %q: %w (wizard wizard-spi-1)", "review", reset.ErrNoGraphState), http.StatusConflict},
+		{"conflict sentinel", fmt.Errorf("%w: cannot --force past active step(s) implement: live wizard wizard-spi-1 (pid 12345) still owns spi-1", reset.ErrConflict), http.StatusConflict},
+		// "not found in formula" must map to 400 even without sentinel — older
+		// callers (or non-wrapped errors) still produce this exact substring.
+		{"not found in formula substring", errors.New("step \"bogus\" not found in formula task-default (valid steps: review)"), http.StatusBadRequest},
 	}
 	for _, tc := range tests {
 		got := statusForResetError(tc.err)
@@ -1187,8 +1197,273 @@ func TestStatusForResetError_MapsKnownMessages(t *testing.T) {
 			if tc.err != nil {
 				label = tc.err.Error()
 			}
-			t.Errorf("statusForResetError(%q) = %d, want %d", label, got, tc.want)
+			t.Errorf("%s: statusForResetError(%q) = %d, want %d", tc.name, label, got, tc.want)
 		}
+	}
+}
+
+// TestHandleBeadReset_HardWithToReturns400 covers the mutual-exclusion
+// rule shipped at the API boundary so callers get a clear 400 instead of
+// a deeper failure from the reset core.
+func TestHandleBeadReset_HardWithToReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withResetStubs(t, "", nil, &store.Bead{ID: "spi-abc"}, nil)
+
+	body := strings.NewReader(`{"to":"review","hard":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "cannot use --hard and --to together") {
+		t.Errorf("body = %q, want CLI parity message", rec.Body.String())
+	}
+	if calls.runs != 0 {
+		t.Errorf("resetBeadFunc invoked despite --hard+--to validation failure (%d runs)", calls.runs)
+	}
+}
+
+// TestHandleBeadReset_ForceWithoutToReturns400 covers the parity rule
+// that --force / --set require --to.
+func TestHandleBeadReset_ForceWithoutToReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withResetStubs(t, "", nil, &store.Bead{ID: "spi-abc"}, nil)
+
+	body := strings.NewReader(`{"force":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "--force and --set require --to") {
+		t.Errorf("body = %q, want parity message", rec.Body.String())
+	}
+	if calls.runs != 0 {
+		t.Errorf("resetBeadFunc invoked despite --force-without-to validation failure (%d runs)", calls.runs)
+	}
+}
+
+// TestHandleBeadReset_SetWithoutToReturns400 mirrors the --force test
+// for the --set flag.
+func TestHandleBeadReset_SetWithoutToReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	calls := withResetStubs(t, "", nil, &store.Bead{ID: "spi-abc"}, nil)
+
+	body := strings.NewReader(`{"set":{"implement.outputs.outcome":"verified"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.runs != 0 {
+		t.Errorf("resetBeadFunc invoked despite --set-without-to validation failure (%d runs)", calls.runs)
+	}
+}
+
+// TestHandleBeadReset_HardPropagatesToOpts pins the wiring from the
+// JSON body's `hard` field through to reset.Opts.Hard so the gateway
+// can drive the destructive path on operator request.
+func TestHandleBeadReset_HardPropagatesToOpts(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	want := &store.Bead{ID: "spi-abc", Status: "open"}
+	calls := withResetStubs(t, "", nil, want, nil)
+
+	body := strings.NewReader(`{"hard":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !calls.lastOpts.Hard {
+		t.Errorf("opts.Hard = false, want true (calls.lastOpts=%+v)", calls.lastOpts)
+	}
+}
+
+// TestHandleBeadReset_InvalidStepReturns400 verifies that the validation
+// sentinel from pkg/reset.ErrInvalidStep maps to 400, distinguishing
+// step-name validation errors from bead-not-found 404s.
+func TestHandleBeadReset_InvalidStepReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	stepErr := fmt.Errorf("%w: step %q not found in formula task-default (valid steps: review)", reset.ErrInvalidStep, "bogus")
+	withResetStubs(t, "", nil, nil, stepErr)
+
+	body := strings.NewReader(`{"to":"bogus","force":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not found in formula") {
+		t.Errorf("body = %q, want canonical step-validation message", rec.Body.String())
+	}
+}
+
+// TestHandleBeadReset_SetStatusReturns400 verifies the CLI parity rule
+// rejecting `--set <step>.status=...` at the gateway boundary.
+func TestHandleBeadReset_SetStatusReturns400(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	setErr := fmt.Errorf("%w: --set %q: setting status is not allowed — --set is scoped to outputs", reset.ErrSetSyntax, "review.status=merge")
+	withResetStubs(t, "", nil, nil, setErr)
+
+	body := strings.NewReader(`{"to":"review","force":true,"set":{"review.status":"merge"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "setting status is not allowed") {
+		t.Errorf("body = %q, want parity message", rec.Body.String())
+	}
+}
+
+// TestHandleBeadReset_TargetNotReachedReturns409 verifies the canonical
+// "target must have been reached" 409 mapping.
+func TestHandleBeadReset_TargetNotReachedReturns409(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	preErr := fmt.Errorf("%w: cannot rewind spi-abc to %q: step has not been reached yet (pass --force to advance anyway)", reset.ErrTargetNotReached, "review")
+	withResetStubs(t, "", nil, nil, preErr)
+
+	body := strings.NewReader(`{"to":"review"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", body)
+	req.ContentLength = int64(body.Len())
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "step has not been reached") {
+		t.Errorf("body = %q, want canonical 409 message", rec.Body.String())
+	}
+}
+
+// TestHandleBeadReset_ArchmageStamping verifies the X-Archmage-Name
+// audit-trail stamping on the post-reset bead. The handler appends
+// archmage:<name> labels via appendArchmageLabels (the same helper the
+// createBead path uses) so both surfaces converge on the same label
+// shape.
+func TestHandleBeadReset_ArchmageStamping(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	want := &store.Bead{ID: "spi-abc", Status: "open", Labels: []string{"type:task"}}
+	withResetStubs(t, "", nil, want, nil)
+
+	var stampedLabels []string
+	prevAdd := resetAddLabelFunc
+	resetAddLabelFunc = func(id, label string) error {
+		if id != "spi-abc" {
+			t.Errorf("AddLabel id = %q, want spi-abc", id)
+		}
+		stampedLabels = append(stampedLabels, label)
+		return nil
+	}
+	t.Cleanup(func() { resetAddLabelFunc = prevAdd })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", nil)
+	ctx := WithIdentity(req.Context(), ArchmageIdentity{Name: "jb", Email: "jb@example.com"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	wantLabels := map[string]bool{"archmage:jb": false, "archmage-email:jb@example.com": false}
+	for _, l := range stampedLabels {
+		if _, ok := wantLabels[l]; ok {
+			wantLabels[l] = true
+		}
+	}
+	for label, seen := range wantLabels {
+		if !seen {
+			t.Errorf("expected stamped label %q not seen (got %v)", label, stampedLabels)
+		}
+	}
+
+	// Response body should also reflect the stamped labels so desktop
+	// callers get the post-stamp shape without an extra GET.
+	var got store.Bead
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	hasArchmage := false
+	for _, l := range got.Labels {
+		if l == "archmage:jb" {
+			hasArchmage = true
+		}
+	}
+	if !hasArchmage {
+		t.Errorf("response labels = %v, want to include archmage:jb", got.Labels)
+	}
+}
+
+// TestHandleBeadReset_NoIdentitySkipsStamping verifies the gateway
+// degrades gracefully when no archmage identity is on the request:
+// reset still succeeds, but no audit labels are appended.
+func TestHandleBeadReset_NoIdentitySkipsStamping(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	want := &store.Bead{ID: "spi-abc", Status: "open"}
+	withResetStubs(t, "", nil, want, nil)
+
+	addCalls := 0
+	prevAdd := resetAddLabelFunc
+	resetAddLabelFunc = func(id, label string) error {
+		addCalls++
+		return nil
+	}
+	t.Cleanup(func() { resetAddLabelFunc = prevAdd })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if addCalls != 0 {
+		t.Errorf("AddLabel called %d times without identity; expected 0", addCalls)
+	}
+}
+
+// TestHandleBeadReset_EmptyBodyBackCompat pins the v0.48 contract: an
+// empty body still produces the original soft-reset behaviour. This is a
+// regression test so a future refactor of the request-parsing path can
+// only break with an explicit test fix.
+func TestHandleBeadReset_EmptyBodyBackCompat(t *testing.T) {
+	s := newTestServer(&fakeTrigger{})
+	want := &store.Bead{ID: "spi-abc", Status: "open"}
+	calls := withResetStubs(t, "", nil, want, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads/spi-abc/reset", nil)
+	rec := httptest.NewRecorder()
+	s.handleBeadReset(rec, req, "spi-abc")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if calls.runs != 1 {
+		t.Fatalf("resetBeadFunc invocations = %d, want 1", calls.runs)
+	}
+	// All Opts fields zero — the soft-reset path with no rewind target.
+	if calls.lastOpts.To != "" || calls.lastOpts.Force || calls.lastOpts.Hard || calls.lastOpts.Set != nil {
+		t.Errorf("empty-body opts not zero-valued: %+v", calls.lastOpts)
 	}
 }
 

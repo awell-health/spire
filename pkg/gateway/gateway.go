@@ -1772,11 +1772,14 @@ func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request, id stri
 
 // resetBeadRequest is the optional body for POST /api/v1/beads/{id}/reset.
 // All fields are optional; v1 desktop sends an empty body and gets a default
-// soft reset. The fields mirror the CLI's --to / --force / --set flags.
+// soft reset. The fields mirror the CLI's --to / --force / --set / --hard
+// flags. Hard and To are mutually exclusive (matching CLI behavior); the
+// handler rejects the combination with 400.
 type resetBeadRequest struct {
 	To    string            `json:"to,omitempty"`
 	Force bool              `json:"force,omitempty"`
 	Set   map[string]string `json:"set,omitempty"`
+	Hard  bool              `json:"hard,omitempty"`
 }
 
 // resetBeadFunc is the package-level seam through which handleBeadReset
@@ -1808,26 +1811,44 @@ var resetTowerModeFunc = func() (string, error) {
 	return tc.Mode, nil
 }
 
-// handleBeadReset answers POST /api/v1/beads/{id}/reset — wraps the soft
-// form of `spire reset <id>` so the desktop can unsummon an active wizard
-// or send a ready bead back to open without dropping to the CLI. Mirrors
+// resetAddLabelFunc is the seam handleBeadReset uses to append archmage
+// audit labels to the post-reset bead. Default is store.AddLabel; tests
+// swap it to assert that the right labels were stamped without booting
+// a real Dolt store.
+var resetAddLabelFunc = store.AddLabel
+
+// handleBeadReset answers POST /api/v1/beads/{id}/reset — wraps `spire
+// reset <id>` so the desktop can unsummon an active wizard or rewind a
+// bead to a specific formula step without dropping to the CLI. Mirrors
 // the CLI semantics exactly: SIGTERM the wizard PID (5s grace + SIGKILL),
 // remove the registry entry, strip interrupted:* / needs-human labels,
-// unhook step children, walk the bead back via softResetV3.
+// unhook step children, then walk the bead back via softResetV3 (when
+// To is set) or run the destructive resetV3 path (when Hard is true).
 //
 // Body (all fields optional):
 //
-//	{"to": "<step>", "force": <bool>, "set": {"<step>.outputs.<key>": "<value>"}}
+//	{"to": "<step>", "force": <bool>, "set": {"<step>.outputs.<key>": "<value>"}, "hard": <bool>}
 //
-// Empty body is accepted (and is what v1 desktop sends).
+// Empty body is accepted and yields the original v0.48 soft-reset
+// behaviour. `to` and `hard` are mutually exclusive (`hard` deletes all
+// state; `to` rewinds to a specific step). `force` and `set` require
+// `to`.
+//
+// When the request supplies an X-Archmage-Name (via the identity middleware
+// at gateway.go:174), the post-reset bead is stamped with `archmage:<name>`
+// labels via appendArchmageLabels so the audit trail records who triggered
+// the reset.
 //
 // Responses:
 //
 //	200 ApiBead JSON                — post-reset bead
-//	400 { error }                   — invalid JSON in body
+//	400 { error }                   — invalid JSON, --hard with --to,
+//	                                  invalid step name, invalid --set token
 //	404 { error }                   — bead not found
 //	405                             — non-POST
 //	409 { error }                   — bead in an invalid state for reset
+//	                                  (target step not reached, no graph
+//	                                  state, live wizard owns bead)
 //	500 { error }                   — unexpected reset failure
 //	501 { error }                   — TowerModeGateway (cluster-mode reset
 //	                                  is a follow-up bead; v1 desktop is
@@ -1868,6 +1889,22 @@ func (s *Server) handleBeadReset(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 
+	// Surface the CLI's mutual-exclusion rules at the API boundary so
+	// callers get a 400 with a clear error rather than a deeper failure
+	// from the reset core. CLI emits the same string for parity.
+	if body.Hard && body.To != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "cannot use --hard and --to together: --hard deletes all state, --to rewinds to a specific step",
+		})
+		return
+	}
+	if (body.Force || len(body.Set) > 0) && body.To == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "--force and --set require --to <step>",
+		})
+		return
+	}
+
 	if err := resetStoreEnsureFunc(s.effectiveDataDir()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1878,11 +1915,37 @@ func (s *Server) handleBeadReset(w http.ResponseWriter, r *http.Request, id stri
 		To:     body.To,
 		Force:  body.Force,
 		Set:    body.Set,
+		Hard:   body.Hard,
 	})
 	if err != nil {
 		writeJSON(w, statusForResetError(err), map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Stamp the calling archmage onto the post-reset bead's labels so
+	// `bd show` and the roster can attribute the reset back to whoever
+	// triggered it. Reuses the createBead pattern at gateway.go:386.
+	// Reset strips interrupted:*/needs-human labels but leaves archmage
+	// labels untouched, so re-stamping here is idempotent on repeat
+	// resets and only adds a label when the calling identity differs
+	// from the original creator.
+	if ident, ok := IdentityFromContext(r.Context()); ok && ident.Name != "" && bead != nil {
+		stamped := appendArchmageLabels(bead.Labels, ident)
+		for _, l := range stamped {
+			if !containsLabel(bead.Labels, l) {
+				if err := resetAddLabelFunc(bead.ID, l); err != nil {
+					// Non-fatal: the reset itself succeeded. Log + continue
+					// rather than returning an error — the audit trail is
+					// best-effort and a partial-stamp shouldn't undo a good
+					// reset.
+					log.Printf("[gateway] reset audit label %s on %s: %v", l, bead.ID, err)
+					continue
+				}
+				bead.Labels = append(bead.Labels, l)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, bead)
 }
 
@@ -1950,15 +2013,36 @@ func statusForCloseError(err error) int {
 	return http.StatusInternalServerError
 }
 
-// statusForResetError maps a soft-reset error to the HTTP status the
-// gateway should return. "Not found" becomes 404; recognised
-// invalid-state errors (cannot rewind, target not reached, no graph
-// state) become 409; anything else becomes 500.
+// statusForResetError maps a reset error to the HTTP status the gateway
+// should return. Validation failures (invalid step, invalid --set) map to
+// 400; bead-not-found maps to 404; invalid-state failures (target not
+// reached, no graph state, live wizard owns bead) map to 409; anything
+// else maps to 500.
+//
+// Sentinel matching takes precedence over substring matching so wrapping
+// a sentinel inside a more descriptive message keeps the right status.
+// The substring fallback covers errors from store/recovery layers that
+// don't yet wrap reset sentinels.
 func statusForResetError(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
+	if errors.Is(err, reset.ErrInvalidStep) || errors.Is(err, reset.ErrSetSyntax) {
+		return http.StatusBadRequest
+	}
+	if errors.Is(err, reset.ErrTargetNotReached) ||
+		errors.Is(err, reset.ErrNoGraphState) ||
+		errors.Is(err, reset.ErrConflict) {
+		return http.StatusConflict
+	}
 	msg := err.Error()
+	// "not found in formula" must not collide with the bead-not-found
+	// 404 mapping — it's a step-validation error → 400. The sentinel
+	// check above already covers freshly-wrapped errors; this guards
+	// older messages and double-wrapped strings.
+	if strings.Contains(msg, "not found in formula") {
+		return http.StatusBadRequest
+	}
 	if strings.Contains(msg, "not found") {
 		return http.StatusNotFound
 	}

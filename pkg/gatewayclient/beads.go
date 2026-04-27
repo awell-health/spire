@@ -111,3 +111,34 @@ func (c *Client) UpdateBead(ctx context.Context, id string, updates map[string]a
 func (c *Client) CloseBead(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodPost, "/api/v1/beads/"+id+"/close", nil, nil)
 }
+
+// ResetBeadOpts mirrors the gateway's resetBeadRequest body and the CLI's
+// `spire reset` flag set. All fields are optional; the zero value means
+// "soft reset, no target step" (the default v0.48 behaviour). To and
+// Hard are mutually exclusive — the gateway rejects the combination
+// with 400, matching the CLI. Force/Set require To.
+type ResetBeadOpts struct {
+	To    string            `json:"to,omitempty"`
+	Force bool              `json:"force,omitempty"`
+	Set   map[string]string `json:"set,omitempty"`
+	Hard  bool              `json:"hard,omitempty"`
+}
+
+// ResetBead calls POST /api/v1/beads/{id}/reset with the given options
+// and returns the post-reset bead so callers can re-render without a
+// follow-up GET. Mirrors `spire reset <id> [--to ...] [--force]
+// [--set ...] [--hard]` exactly. Returns ErrNotFound on 404; non-2xx
+// statuses (400 for validation errors, 409 for state conflicts, 501 for
+// cluster mode) surface as *HTTPError with the gateway's error message
+// in the body so callers can pattern-match on the canonical strings.
+func (c *Client) ResetBead(ctx context.Context, id string, opts ResetBeadOpts) (BeadRecord, error) {
+	var out BeadRecord
+	// Always send a body so the gateway parses the typed fields, even
+	// when all fields are zero-valued — keeps the wire shape uniform
+	// across CLI and desktop callers and simplifies server-side
+	// observability (no "empty body" branch to special-case).
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/beads/"+id+"/reset", opts, &out); err != nil {
+		return BeadRecord{}, err
+	}
+	return out, nil
+}

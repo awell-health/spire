@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -212,6 +213,105 @@ func TestUpdateBead_Unauthorized(t *testing.T) {
 	err := c.UpdateBead(context.Background(), "spi-a3f8", map[string]any{"status": "closed"})
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestResetBead_PostsBodyAndReturnsBead(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody ResetBeadOpts
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(BeadRecord{
+			ID: "spi-a3f8", Status: "open", Labels: []string{"archmage:jb"},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	got, err := c.ResetBead(context.Background(), "spi-a3f8", ResetBeadOpts{
+		To:    "review",
+		Force: true,
+		Set:   map[string]string{"implement.outputs.outcome": "verified"},
+	})
+	if err != nil {
+		t.Fatalf("ResetBead: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/v1/beads/spi-a3f8/reset" {
+		t.Errorf("path = %q, want /api/v1/beads/spi-a3f8/reset", gotPath)
+	}
+	if gotBody.To != "review" || !gotBody.Force {
+		t.Errorf("body = %+v, want To=review Force=true", gotBody)
+	}
+	if got.ID != "spi-a3f8" || got.Status != "open" {
+		t.Errorf("response = %+v, want spi-a3f8/open", got)
+	}
+}
+
+func TestResetBead_HardFlag(t *testing.T) {
+	var gotBody ResetBeadOpts
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(BeadRecord{ID: "spi-a3f8", Status: "open"})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	if _, err := c.ResetBead(context.Background(), "spi-a3f8", ResetBeadOpts{Hard: true}); err != nil {
+		t.Fatalf("ResetBead: %v", err)
+	}
+	if !gotBody.Hard {
+		t.Errorf("body.Hard = false, want true")
+	}
+}
+
+func TestResetBead_NotFoundErrorMaps(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"bead spi-missing: not found"}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	_, err := c.ResetBead(context.Background(), "spi-missing", ResetBeadOpts{})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResetBead_ConflictReturnsHTTPError pins the desktop's path for
+// surfacing the canonical 409 / 400 messages: a gateway HTTPError keeps
+// the body text intact so the UI can render it verbatim instead of a
+// generic "reset failed" toast.
+func TestResetBead_ConflictReturnsHTTPError(t *testing.T) {
+	const want = `{"error":"cannot rewind spi-a3f8 to \"review\": step has not been reached yet (pass --force to advance anyway)"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, want)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	_, err := c.ResetBead(context.Background(), "spi-a3f8", ResetBeadOpts{To: "review"})
+	if err == nil {
+		t.Fatal("ResetBead: nil error, want HTTPError")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err = %v, want *HTTPError", err)
+	}
+	if httpErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", httpErr.Status)
+	}
+	if !strings.Contains(httpErr.Body, "step has not been reached") {
+		t.Errorf("body = %q, want canonical 409 message", httpErr.Body)
 	}
 }
 
