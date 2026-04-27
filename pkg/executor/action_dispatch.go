@@ -502,7 +502,7 @@ func (e *Executor) runDispatchWave(
 				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: spawnErr}
 				return
 			}
-			waitErr := h.Wait()
+			waitErr := e.waitHandleWithHeartbeat(h)
 			e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, waitErr,
 				withParentRun(e.currentRunID))
 			if waitErr != nil {
@@ -668,7 +668,7 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 				withParentRun(e.currentRunID))
 			return allResults, fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
 		}
-		waitErr := handle.Wait()
+		waitErr := e.waitHandleWithHeartbeat(handle)
 		e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, waitErr,
 			withParentRun(e.currentRunID))
 
@@ -795,7 +795,7 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 		return fmt.Errorf("spawn apprentice: %w", err)
 	}
 
-	waitErr := handle.Wait()
+	waitErr := e.waitHandleWithHeartbeat(handle)
 	e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, waitErr,
 		withParentRun(e.currentRunID))
 	if waitErr != nil {

@@ -60,8 +60,9 @@ type RecoveryActionCtx struct {
 
 	// Optional hooks for test injection. When nil, the defaults call the real
 	// store.GetBead and an in-process dispatch via Spawner.
-	GetBeadFn  func(id string) (store.Bead, error)
-	DispatchFn func(cfg agent.SpawnConfig) (agent.Handle, error)
+	GetBeadFn     func(id string) (store.Bead, error)
+	DispatchFn    func(cfg agent.SpawnConfig) (agent.Handle, error)
+	WaitForHandle func(agent.Handle) error
 }
 
 // logf is a nil-safe log helper so callers can skip wiring Log without
@@ -110,12 +111,12 @@ type mechanicalAction func(ctx *RecoveryActionCtx, plan recovery.RepairPlan, ws 
 // decide/execute-vocabulary mismatch and surfaces as an error — we
 // never fall back to "unknown action" silently.
 var mechanicalActions = map[string]mechanicalAction{
-	"rebase-onto-base":         mechanicalRebaseOntoBase,
-	"cherry-pick":              mechanicalCherryPick,
-	"rebuild":                  mechanicalRebuild,
-	"reset-to-step":            mechanicalResetToStep,
-	"retry-merge":              mechanicalRetryMerge,
-	"cleanup-stale-worktrees":  mechanicalCleanupStaleWorktrees,
+	"rebase-onto-base":        mechanicalRebaseOntoBase,
+	"cherry-pick":             mechanicalCherryPick,
+	"rebuild":                 mechanicalRebuild,
+	"reset-to-step":           mechanicalResetToStep,
+	"retry-merge":             mechanicalRetryMerge,
+	"cleanup-stale-worktrees": mechanicalCleanupStaleWorktrees,
 }
 
 // mechanicalRebaseOntoBase fetches origin/<base> and rebases the

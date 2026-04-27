@@ -718,7 +718,7 @@ func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, st
 		return ActionResult{Error: fmt.Errorf("spawn %s: %w", stepName, err)}
 	}
 
-	waitErr := handle.Wait()
+	waitErr := e.waitHandleWithHeartbeat(handle)
 
 	// Read result.json for outputs. If the child wrote result.json, trust
 	// its declared output as the node's terminal value — regardless of

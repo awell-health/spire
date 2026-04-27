@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/awell-health/spire/pkg/config"
@@ -47,13 +48,13 @@ type State struct {
 
 // Executor drives a bead through its formula's step graph.
 type Executor struct {
-	beadID    string
-	agentName string
-	graph     *FormulaStepGraph  // v3 step graph
+	beadID     string
+	agentName  string
+	graph      *FormulaStepGraph // v3 step graph
 	graphState *GraphState       // v3 state
-	state     *State
-	deps      *Deps
-	log       func(string, ...interface{})
+	state      *State
+	deps       *Deps
+	log        func(string, ...interface{})
 
 	// sessionID is a unique ID for this particular execution run. Generated
 	// once per NewGraph() call via UUID and stamped on the attempt bead.
@@ -80,6 +81,13 @@ type Executor struct {
 	// lastHeartbeat tracks when the last heartbeat was sent. Used to rate-limit
 	// heartbeat writes to at most once per 30 seconds.
 	lastHeartbeat time.Time
+
+	// heartbeatMu serializes parent-attempt heartbeat writes across the main
+	// graph loop and any concurrent child waiters (wave dispatch, repair
+	// workers). Without this, multiple blocked wait paths can all decide the
+	// heartbeat is due and stamp redundant writes.
+	heartbeatMu       sync.Mutex
+	heartbeatInFlight bool
 
 	// lastMessageCollect tracks when collectMessages last queried the store.
 	// Rate-limited to the same 30s cadence as heartbeats.
@@ -282,4 +290,3 @@ func (e *Executor) resolveStepProvider(step StepConfig) string {
 	}
 	return repoconfig.ResolveProvider(step.Provider, formulaProvider, e.repoProvider())
 }
-

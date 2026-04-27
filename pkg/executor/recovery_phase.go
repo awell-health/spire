@@ -605,7 +605,7 @@ func doTriage(e *Executor, req recovery.RecoveryActionRequest) recovery.Recovery
 		return failResult(req.Kind, fmt.Sprintf("spawn triage agent: %v", spawnErr))
 	}
 
-	waitErr := handle.Wait()
+	waitErr := e.waitHandleWithHeartbeat(handle)
 
 	// Read result.json from the triage agent.
 	var agentResult string
@@ -1558,20 +1558,21 @@ func (e *Executor) buildRecoveryActionCtx(sourceBeadID string, plan recovery.Rep
 	}
 
 	actionCtx := &RecoveryActionCtx{
-		DB:              db,
-		RepoPath:        repoPath,
-		BaseBranch:      baseBranch,
-		Worktree:        wc,
-		RecoveryBeadID:  e.beadID,
-		TargetBeadID:    sourceBeadID,
-		Params:          params,
-		Log:             func(msg string) { e.log("recovery: %s", msg) },
-		Spawner:         e.deps.Spawner,
-		RecordAgentRun:  e.deps.RecordAgentRun,
-		AgentResultDir:  e.deps.AgentResultDir,
+		DB:             db,
+		RepoPath:       repoPath,
+		BaseBranch:     baseBranch,
+		Worktree:       wc,
+		RecoveryBeadID: e.beadID,
+		TargetBeadID:   sourceBeadID,
+		Params:         params,
+		Log:            func(msg string) { e.log("recovery: %s", msg) },
+		Spawner:        e.deps.Spawner,
+		RecordAgentRun: e.deps.RecordAgentRun,
+		AgentResultDir: e.deps.AgentResultDir,
 		LogBaseDir:     dolt.GlobalDir(),
 		ParentRunID:    e.currentRunID,
 		AgentNamespace: "cleric-repair",
+		WaitForHandle:  e.waitHandleWithHeartbeat,
 		BuildRuntimeContract: func(cfg agent.SpawnConfig, step, workspaceName string, handle WorkspaceHandle, mode HandoffMode) (agent.SpawnConfig, error) {
 			return e.withRuntimeContract(cfg, e.runtimeTowerName(), repoPath, baseBranch, step, workspaceName, &handle, mode)
 		},
@@ -2072,4 +2073,3 @@ func mergeLearnings(metaLearnings []store.RecoveryLearning, sqlRows []store.Reco
 
 	return merged
 }
-

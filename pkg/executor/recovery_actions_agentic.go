@@ -170,7 +170,12 @@ func spawnGenericRepairWorker(ctx *RecoveryActionCtx, plan recovery.RepairPlan, 
 		return RepairWorkerResult{WorkerAttemptID: spawnName}, fmt.Errorf("spawn %s apprentice: %w", plan.Action, spawnErr)
 	}
 
-	waitErr := handle.Wait()
+	var waitErr error
+	if ctx != nil && ctx.WaitForHandle != nil {
+		waitErr = ctx.WaitForHandle(handle)
+	} else {
+		waitErr = handle.Wait()
+	}
 	result := "success"
 	if waitErr != nil {
 		result = "error"
@@ -287,7 +292,12 @@ func dispatchConflictApprentice(ctx *RecoveryActionCtx, bundle conflictBundle, w
 		return spawnName, fmt.Errorf("spawn: %w", spawnErr)
 	}
 
-	waitErr := handle.Wait()
+	var waitErr error
+	if ctx != nil && ctx.WaitForHandle != nil {
+		waitErr = ctx.WaitForHandle(handle)
+	} else {
+		waitErr = handle.Wait()
+	}
 	result := "success"
 	if waitErr != nil {
 		result = "error"
