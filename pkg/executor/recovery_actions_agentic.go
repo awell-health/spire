@@ -11,6 +11,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/promptctx"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
@@ -423,6 +424,16 @@ func renderGenericRepairPrompt(ctx *RecoveryActionCtx, plan recovery.RepairPlan)
 	}
 
 	sb.WriteString("Diagnose and fix the failure now.\n")
+
+	// Inline graph-context floor + stop-criterion (with cleric extra
+	// line). Same shape and caps as the wizard / apprentice / sage /
+	// arbiter prompts so a recovery apprentice sees the load-bearing
+	// neighborhood the original work read.
+	if ctx.TargetBeadID != "" {
+		sb.WriteString("\n")
+		sb.WriteString(promptctx.BuildPromptSuffix(ctx.TargetBeadID, promptctx.StoreDeps(), true))
+	}
+
 	return sb.String()
 }
 

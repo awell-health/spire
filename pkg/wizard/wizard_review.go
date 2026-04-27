@@ -17,6 +17,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/promptctx"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
@@ -177,7 +178,7 @@ func CmdWizardReview(args []string, deps *Deps) error {
 
 	// 8. Run Opus review
 	log("running Opus review")
-	review, reviewMetrics, err := ReviewRunOpus(bead.Title, bead.Description, diff, testOutput, round)
+	review, reviewMetrics, err := ReviewRunOpus(bead.Title, bead.ID, bead.Description, diff, testOutput, round)
 	if err != nil {
 		// Close review bead on failure
 		if reviewBeadID != "" {
@@ -335,7 +336,13 @@ func ReviewGetRound(beadID string, deps *Deps) int {
 
 // ReviewRunOpus runs an Opus-model code review on the given diff.
 // Returns the parsed review, token usage metrics, and any error.
-func ReviewRunOpus(title, spec, diff, testOutput string, round int, model ...string) (*Review, ClaudeMetrics, error) {
+//
+// beadID is used to fetch the inline graph-context floor (closed
+// neighbors via discovered-from / related / caused-by) so the sage sees
+// the same load-bearing context the apprentice did. An empty beadID
+// disables inline-floor expansion — convenient for unit-test fixtures
+// that don't need it.
+func ReviewRunOpus(title, beadID, spec, diff, testOutput string, round int, model ...string) (*Review, ClaudeMetrics, error) {
 	reviewModel := repoconfig.DefaultReviewModel
 	if len(model) > 0 && model[0] != "" {
 		reviewModel = model[0]
@@ -397,6 +404,14 @@ Verdicts:
 
 	if round > 1 {
 		userPrompt.WriteString(fmt.Sprintf("## Review Context\nThis is review round %d. Focus on whether previously flagged issues have been addressed.\n", round))
+	}
+
+	// Inline graph-context floor + stop-criterion block. Same shape and
+	// caps as wizard/apprentice/cleric prompts so the sage's framing
+	// check at item 7 above lands against identical context.
+	if beadID != "" {
+		userPrompt.WriteString("\n")
+		userPrompt.WriteString(promptctx.BuildPromptSuffix(beadID, promptctx.StoreDeps(), false))
 	}
 
 	// Build full prompt for claude CLI
@@ -809,6 +824,8 @@ func ReviewEscalateToArbiter(beadID, reviewerName string, lastReview *Review, po
 		}
 	}
 
+	graphSuffix := promptctx.BuildPromptSuffix(beadID, promptctx.StoreDeps(), false)
+
 	prompt := fmt.Sprintf(`You are an arbiter — a senior technical decision-maker.
 
 A code review has gone through %d rounds without resolution. You must make a final call.
@@ -836,7 +853,8 @@ Decision meanings:
 - "merge": Force-approve. The implementation is good enough. Minor remaining issues are acceptable.
 - "discard": Close as wontfix. The approach is fundamentally wrong or the task is no longer needed.
 - "split": The remaining issues are real but independent. Create child beads for each and close this bead.
-`, policy.MaxRounds, bead.Title, bead.Description, lastReview.Summary, reviewHistory.String())
+
+%s`, policy.MaxRounds, bead.Title, bead.Description, lastReview.Summary, reviewHistory.String(), graphSuffix)
 
 	// Run arbiter via claude CLI — auth-aware so a 429 on subscription
 	// promotes to api-key and retries once (spi-mdxtww).

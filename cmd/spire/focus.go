@@ -13,6 +13,7 @@ import (
 	"github.com/awell-health/spire/pkg/focus"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/awell-health/spire/pkg/promptctx"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
@@ -236,6 +237,13 @@ func focusTail(target Bead, id string) {
 			fmt.Printf("Description: %s\n", dep.Description)
 		}
 		fmt.Println()
+	}
+
+	// Inline graph-context floor — surfaces the closed-neighbor body +
+	// comment expansion that role prompts get, so humans auditing
+	// `spire focus` see the same context an agent would.
+	if floor := promptctx.BuildInlineFloor(id, promptctx.StoreDeps()); floor != "" {
+		fmt.Println(floor)
 	}
 
 	// Messages referencing this bead

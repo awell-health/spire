@@ -22,6 +22,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/promptctx"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/store"
@@ -1258,6 +1259,8 @@ func WizardBuildDesignPrompt(wizardName, beadID string, cfg *repoconfig.RepoConf
 		fmt.Fprintf(&contextBlock, "- %s\n", p)
 	}
 
+	graphSuffix := promptctx.BuildPromptSuffix(beadID, promptctx.StoreDeps(), false)
+
 	return fmt.Sprintf(`You are Spire autonomous wizard %s — DESIGN PHASE.
 
 Task: bead %s
@@ -1278,7 +1281,8 @@ Focus context:
 
 Bead JSON:
 %s
-`, wizardName, beadID, contextBlock.String(), focusContext, beadJSON)
+
+%s`, wizardName, beadID, contextBlock.String(), focusContext, beadJSON, graphSuffix)
 }
 
 // WizardBuildImplementPrompt builds the implement phase prompt for the wizard.
@@ -1309,6 +1313,8 @@ func WizardBuildImplementPrompt(wizardName, beadID, branchName, baseBranch, mode
 	if reviewFeedback != "" {
 		fmt.Fprintf(&extra, "\nAddress the following review feedback:\n%s\n", reviewFeedback)
 	}
+
+	graphSuffix := promptctx.BuildPromptSuffix(beadID, promptctx.StoreDeps(), false)
 
 	return fmt.Sprintf(`You are Spire apprentice %s — IMPLEMENT PHASE.
 
@@ -1352,14 +1358,15 @@ You are working in an isolated git worktree. Other agents may be working on rela
 
 ## Bead JSON
 %s
-`, wizardName, beadID, baseBranch, branchName, model, maxTurns, timeout,
+
+%s`, wizardName, beadID, baseBranch, branchName, model, maxTurns, timeout,
 		contextBlock.String(),
 		optionalCmd(cfg.Runtime.Install),
 		optionalCmd(cfg.Runtime.Lint),
 		optionalCmd(cfg.Runtime.Build),
 		optionalCmd(cfg.Runtime.Test),
 		extra.String(),
-		focusContext, beadJSON)
+		focusContext, beadJSON, graphSuffix)
 }
 
 // WizardBuildCustomPrompt builds a prompt for a wizard.run step that uses an
