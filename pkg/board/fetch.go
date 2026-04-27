@@ -23,7 +23,20 @@ type BoardResult struct {
 // checkDoltConflicts detects unresolved Dolt conflicts and returns a warning
 // string if any exist. Returns "", nil when there are no conflicts or when the
 // database name cannot be resolved (non-fatal).
+//
+// Skipped on cluster-native towers because the cluster's Dolt is the
+// single writer — there is no remote to merge from, so unresolved
+// conflicts cannot exist. Running the check anyway means every
+// FetchBoard call (e.g. every /api/v1/board request from Spire Desktop)
+// fork-execs `dolt sql` to count conflicts, adding ~100-200ms latency
+// per request and accumulating zombie subprocesses inside the gateway
+// pod. See docs/k8s-v1-punchlist.md item #6.
 func checkDoltConflicts() (string, error) {
+	if t, err := config.ResolveTowerConfig(); err == nil && t != nil &&
+		t.EffectiveDeploymentMode() == config.DeploymentModeClusterNative {
+		return "", nil
+	}
+
 	dbName, err := config.DetectDBName()
 	if err != nil || dbName == "" {
 		return "", nil // can't check — not an error
