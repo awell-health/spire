@@ -7,6 +7,15 @@ This document separates two choices that were getting mixed together:
 2. **Client deployment** — how a local CLI/Desktop instance connects to
    that tower.
 
+> **Cluster-native is the server deployment family; cluster-as-truth is
+> one operating mode within that family.** A cluster-native tower can
+> be operated as cluster-as-truth (single-writer, gateway-attached
+> clients only) *or* in a direct-Dolt configuration where laptops keep
+> writable local mirrors and reach the cluster's Dolt over remotesapi.
+> The two are different operating policies under the same server
+> deployment family — not different server families. Pick the operating
+> policy explicitly; client topology follows from it.
+
 Use this as the operator-facing source of truth when you need to answer
 "what is running where?" or "should this client sync, or just act as a
 frontend?"
@@ -32,16 +41,24 @@ flowchart LR
 ```mermaid
 flowchart LR
     choose[Choose a client deployment]
-    choose --> direct[Local + server-remote<br/>local mirror + sync]
-    choose --> gateway[Local + cluster-attach<br/>frontend only]
+    choose --> direct[Local + server-remote<br/>direct-Dolt via remotesapi]
+    choose --> gateway[Local + cluster-attach<br/>gateway, frontend only]
 ```
 
-- **Local + server-remote** keeps a local Dolt mirror and uses
-  `push` / `pull` / `sync` against a remote Dolt server, typically over
-  `remotesapi`.
-- **Local + cluster-attach** does not keep a writable local mirror for
-  the tower. The client talks to the gateway over HTTP and acts as a
-  frontend only.
+> "Cluster-attach" in this document always means **gateway attach**.
+> A laptop talking to a cluster's Dolt over `remotesapi` is in the
+> `server-remote` topology, not `cluster-attach`. The naming is the
+> bright line between the two operating modes a cluster-native server
+> deployment can run in.
+
+- **Local + server-remote (direct-Dolt via remotesapi)** keeps a local
+  Dolt mirror and uses `push` / `pull` / `sync` against a remote Dolt
+  server. The transport is typically `remotesapi`, but it could also
+  be DoltHub.
+- **Local + cluster-attach (gateway)** does not keep a writable local
+  mirror for the tower. The client talks to the gateway over HTTP and
+  acts as a frontend only. Used when the server deployment is
+  cluster-native operated as cluster-as-truth.
 
 ## Canonical topologies
 
@@ -97,10 +114,11 @@ Rules:
 - The remote server may be used mainly for storage, auth, and shared
   state.
 
-### C. Cluster-native + cluster-attach
+### C. Cluster-native (cluster-as-truth) + cluster-attach (gateway)
 
-This is the cluster-as-truth path. The cluster owns the tower and the
-local machine is only a frontend.
+This is the cluster-as-truth operating mode of cluster-native. The
+cluster owns the tower as a single writer and the local machine is
+only a frontend.
 
 ```mermaid
 flowchart LR
@@ -162,8 +180,8 @@ cluster topology, every client attaches via remotesapi as
 | Topology | Authoritative tower | Local Dolt mirror | Client sync | Local Dolt server needed |
 |----------|---------------------|-------------------|-------------|--------------------------|
 | Local-native | Laptop | Yes | Optional | Usually yes |
-| Local + server-remote | Remote Dolt server | Yes | Yes | Often yes |
-| Cluster-native + cluster-attach | Cluster | No | No | No |
+| Local + server-remote (direct-Dolt via remotesapi or DoltHub) | Remote Dolt server | Yes | Yes | Often yes |
+| Cluster-native (cluster-as-truth) + cluster-attach (gateway) | Cluster | No | No | No |
 
 ## Current code terms
 

@@ -61,9 +61,20 @@ This command:
 2. Saves tower config to `~/.config/spire/towers/my-team.json`
 3. Optionally pushes to DoltHub if you've configured DoltHub credentials (skip this for a fully local tower)
 
-You only do this once. Other developers can join:
-- **Via DoltHub** — `spire tower attach <dolthub-url>` clones from the hosted remote
-- **Via remotesapi** — `spire tower attach-cluster <dolt://host:port/db>` connects directly to a cluster's dolt server
+You only do this once. Other developers can join one of three ways
+(see [deployment-modes.md](deployment-modes.md) for the topology
+matrix):
+
+- **Via DoltHub** — `spire tower attach <dolthub-url>` clones from the
+  hosted remote.
+- **Via remotesapi (direct-Dolt / server-remote, cluster-native)** —
+  `spire tower attach-cluster <dolt://host:port/db>` connects directly
+  to a cluster's dolt server. The laptop keeps a writable local mirror
+  and uses `push` / `pull` / `sync`.
+- **Via gateway (cluster-attach, cluster-as-truth cluster-native)** —
+  `spire tower attach-cluster --tower <name> --url https://<gateway>
+  --token <bearer>`. The laptop is a frontend only; the cluster Dolt
+  is the single writer.
 
 See [multiplayer setup](#multiplayer-setup) below.
 

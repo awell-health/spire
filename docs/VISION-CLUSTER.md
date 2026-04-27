@@ -5,10 +5,17 @@
 Cluster-native is how Spire scales from "one laptop's worth of agents"
 to "a team's worth of persistent capacity." The steward, the operator,
 the dolt database, and the agent pods all live in a Kubernetes cluster.
-In the cluster-as-truth path, local clients attach through the gateway
-and act as frontends; they do not sync a local Dolt mirror into the
-tower. See [deployment-modes.md](deployment-modes.md) for the
-server/client matrix.
+
+> **Cluster-native is the server deployment family; cluster-as-truth
+> is one operating mode within that family.** A cluster-native tower
+> can be operated as cluster-as-truth (single-writer, gateway-attached
+> clients only) *or* in a direct-Dolt configuration where laptops keep
+> writable local mirrors and reach the cluster's Dolt over remotesapi.
+> Most of this document describes patterns that hold for either
+> operating mode; the "How laptops participate" section below
+> distinguishes them. See
+> [deployment-modes.md](deployment-modes.md) for the server/client
+> matrix.
 
 ## What runs
 
