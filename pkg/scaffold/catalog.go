@@ -17,6 +17,11 @@ var CommonCommands = []Command{
 		Description: "Deep focus that also pulls live integration context (e.g., Linear).",
 	},
 	{
+		Name:        "graph",
+		Args:        "<bead> [--depth N] [--rel ...] [--with-changes] [--with-diffs]",
+		Description: "Walk the bead graph and render neighbors' bodies + comments (and optionally commits + diffs).",
+	},
+	{
 		Name:        "send",
 		Args:        `<agent> "msg" --ref <bead>`,
 		Description: "Send a message to another agent, optionally referencing a bead.",

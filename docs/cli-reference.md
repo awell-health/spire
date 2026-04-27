@@ -380,6 +380,41 @@ spire grok <bead-id>
 Like `spire focus` but also fetches the linked Linear issue (requires
 Linear integration).
 
+### `spire graph <bead> [flags]`
+
+Walk the bead graph and render neighbors' bodies + comments (and
+optionally commits + diffs).
+
+```bash
+spire graph <bead-id> \
+  [--types design,task,bug,feature,chore] \
+  [--rel discovered-from,related,caused-by] \
+  [--depth N] \
+  [--with-changes] [--with-diffs] \
+  [--format text|json] \
+  [--max-bytes-per-bead 4096] \
+  [--max-bytes-total 32768]
+```
+
+Replaces the "open `bd show` for each link" workflow with a single
+round-trip that pulls everything an agent needs to understand why a
+bead exists. Defaults to depth=1 and the semantic dep types
+(`discovered-from`, `related`, `caused-by`) — `parent-child` /
+`blocks` / `blocked-by` / `conditional-blocks` are excluded since they
+are scheduling, not semantic, and `parent-child` is already
+special-cased by `spire focus`.
+
+`--with-changes` adds, for every closed bead in the walk, the commit
+subject + file list + `+N -M` line counts sourced from
+`bead.metadata.commits[]` (with a `git log --grep <bead-id>` fallback
+when the original SHAs aren't reachable post-squash). `--with-diffs`
+additionally includes the diff hunks, capped per bead by
+`--max-bytes-per-bead`.
+
+`--format=json` emits a stable schema (currently EXPERIMENTAL — fields
+may change before the prompt-integration consumer lands) suitable for
+shell-out from agents.
+
 ### `spire send <agent> "msg" --ref <bead>`
 
 Send a message to another agent, optionally referencing a bead.

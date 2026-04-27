@@ -186,7 +186,7 @@ func TestCatalog_RoleFieldMatchesMapKey(t *testing.T) {
 }
 
 func TestCommonCommands_HasExpectedVerbs(t *testing.T) {
-	want := []string{"focus", "grok", "send", "collect", "read"}
+	want := []string{"focus", "grok", "graph", "send", "collect", "read"}
 	got := commandNames(CommonCommands)
 	if len(got) != len(want) {
 		t.Fatalf("len(CommonCommands) = %d, want %d (got %v)", len(got), len(want), got)
