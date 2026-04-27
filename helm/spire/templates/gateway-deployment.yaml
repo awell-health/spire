@@ -92,6 +92,7 @@ spec:
             - "--api-port={{ .Values.gateway.apiPort }}"
           env:
             {{- include "spire.stewardCommonEnv" . | nindent 12 }}
+            {{- include "spire.olapEnv" . | nindent 12 }}
             {{- if .Values.gateway.apiToken }}
             - name: SPIRE_API_TOKEN
               valueFrom:

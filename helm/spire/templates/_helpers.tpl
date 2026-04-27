@@ -213,11 +213,14 @@ ClickHouse is disabled so local-native installs keep their DuckDB
 defaults (and steward/operator pods don't carry an env that would
 force a connect to a service that isn't there).
 
-Consumed by steward.yaml, operator.yaml, and any other Spire-owned
-Deployment that opens OLAP. The operator also projects the same two
-vars onto every wizard pod it builds (see
-`pkg/agent/pod_builder.go` and `operator/controllers/agent_monitor.go`)
-so apprentice/sage subprocesses route their OLAP writes the same way.
+Consumed by steward.yaml, operator.yaml, gateway-deployment.yaml, and
+any other Spire-owned Deployment that opens OLAP. The gateway needs it
+because GET /api/v1/metrics opens the OLAP backend; without these env
+vars it falls back to the duckdb default and serves 503 from a
+CGO-off agent image. The operator also projects the same two vars
+onto every wizard pod it builds (see `pkg/agent/pod_builder.go` and
+`operator/controllers/agent_monitor.go`) so apprentice/sage
+subprocesses route their OLAP writes the same way.
 
 The emitted block starts at column 0; callers indent with `nindent 12`
 under the container's `env:` key.
