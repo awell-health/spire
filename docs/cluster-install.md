@@ -13,14 +13,17 @@ Dolt database accessed through the gateway is the canonical bead-graph
 host. DoltHub serves as seed-only on first install and as a one-way
 archive; it is not an active writable mirror. Desktop/laptop clients
 attach via the gateway and route mutations through `/api/v1/*` over
-HTTP. GCS backup is the required disaster-recovery path.
+HTTP. GCS backup is the required disaster-recovery path; the operator
+runbook for restoring a tower from GCS lives at
+[runbooks/gcs-restore.md](runbooks/gcs-restore.md).
 
 Spire has three deployment modes: **local-native** (single-machine,
 local filesystem), **cluster-native** (multi-user cluster,
 gateway-fronted Dolt), and **attached-reserved** (reserved; not
 implemented). Within cluster-native, individual clients attach in
 **gateway mode** — this is `TowerConfig.Mode` / client routing, not a
-fourth `DeploymentMode`.
+fourth `DeploymentMode`. See [deployment-modes.md](deployment-modes.md)
+for the server/client matrix.
 
 ## Table of contents
 

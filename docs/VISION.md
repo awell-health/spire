@@ -118,10 +118,13 @@ The formula maker. The artificer crafts and maintains spells (formulas) — the 
 
 ## Deployment Modes
 
-Spire supports three deployment modes. Each is explicit and selected by tower config, and each composes the same seams in a different place.
+Spire supports three deployment modes. Each is explicit and selected by
+tower config, and each composes the same seams in a different place.
+The operator-facing matrix that separates **server deployment** from
+**client deployment** lives in [deployment-modes.md](deployment-modes.md).
 
 - **Local-native** — the whole coordination plane runs on a laptop. The steward, the dolt database, and the agent processes all live on one machine. Best for solo developers, small teams, and anyone who wants a zero-infrastructure starting point. See [VISION-LOCAL.md](VISION-LOCAL.md).
-- **Cluster-native** — the coordination plane runs in a Kubernetes cluster. The steward and operator are pods. The dolt database is a stateful pod with remotesapi enabled. Apprentices and sages are ephemeral pods dispatched through the operator's intent reconciler. Laptops attach to the cluster's dolt via remotesapi to monitor, file work, and interact with the graph. See [VISION-CLUSTER.md](VISION-CLUSTER.md).
+- **Cluster-native** — the coordination plane runs in a Kubernetes cluster. The steward and operator are pods. The dolt database is a stateful pod inside the cluster, and the operator owns worker dispatch. In the cluster-as-truth path, local clients attach through the gateway instead of syncing a local Dolt mirror. See [VISION-CLUSTER.md](VISION-CLUSTER.md).
 - **Attached (reserved)** — a laptop runs the control plane while execution happens on a remote cluster. The local scheduler publishes a canonical intent; a remote consumer reconciles it into pods. Reserved today, not implemented, but the seams exist and are held to strict invariants. See [VISION-ATTACHED.md](VISION-ATTACHED.md).
 
 ## Sync Model
@@ -129,10 +132,13 @@ Spire supports three deployment modes. Each is explicit and selected by tower co
 A tower's state is a Dolt database. Multiple machines can read and write it, and the database handles merge semantics. Three transports move state between machines:
 
 - **Local filesystem** — the default when one laptop owns a tower. No network required.
-- **Remotesapi** — a direct network protocol to a dolt server, typically a cluster's. Laptops use this to attach to a cluster-hosted tower; cluster components use it internally.
+- **Remotesapi** — a direct network protocol to a dolt server. It powers direct-Dolt topologies such as `server-remote`, and it is also used for internal cluster traffic.
 - **DoltHub** — the public hosted remote. Used when laptops and clusters have no direct connectivity, or when a team wants a durable intermediary.
 
-All three are first-class. A tower can use any combination. `spire push` / `spire pull` move state explicitly; a background daemon automates them on an interval as opt-in convenience.
+All three are first-class in direct-Dolt topologies. Gateway-attached
+cluster-as-truth clients are different: they route reads and writes
+through the gateway instead of syncing a local Dolt mirror. See
+[deployment-modes.md](deployment-modes.md).
 
 ### Merge Semantics
 

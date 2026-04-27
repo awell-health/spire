@@ -33,7 +33,7 @@ There is no Kubernetes, no remote control plane, no intent queue on the wire. Th
 
 Local-native is the reference implementation. Every seam that cluster-native and attached use — the intent publisher/consumer, the canonical runtime contract, the workspace ownership model — is exercised in local-native first, then composed differently in the other modes. If a cluster pod behaves differently from a local process, the cluster pod is wrong.
 
-A local-native tower can sync to a DoltHub remote for team coordination, pull from a cluster-hosted dolt via remotesapi for cluster-attach, or stay fully local with filesystem transport only. All three are supported and can be changed without touching the work graph.
+A local-native tower can sync to a DoltHub remote for team coordination, attach as a `server-remote` direct-Dolt client to a cluster-hosted Dolt via remotesapi, or stay fully local with filesystem transport only. All three are supported and can be changed without touching the work graph. Cluster-as-truth gateway-attach is a separate topology and is described in [VISION-CLUSTER.md](VISION-CLUSTER.md) and [deployment-modes.md](deployment-modes.md).
 
 ## What it does not do
 

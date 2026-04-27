@@ -256,9 +256,34 @@ spire config set dolthub-password dolt_...
 spire up
 ```
 
-### Via cluster remotesapi
+### Cluster-attach via gateway (cluster-as-truth)
 
-Use this when your team runs a cluster-native tower and developers attach directly to the cluster's dolt via remotesapi.
+Use this when your team's cluster-native tower is the single writer and
+you want a frontend-only client. The laptop talks to the cluster's
+HTTPS gateway and never keeps a writable local mirror. See
+[deployment-modes.md](deployment-modes.md) for the topology contract.
+
+```bash
+spire tower attach-cluster \
+  --tower <name> \
+  --url https://<gateway-host> \
+  --token <bearer>
+
+# Configure credentials (no DoltHub needed)
+spire config set anthropic-key sk-ant-...
+spire config set github-token ghp_...
+```
+
+There is no `spire up` step here — the cluster runs the steward and
+operator. `spire push` / `spire pull` are not used in this topology
+because the cluster Dolt is the single writer.
+
+### Direct-Dolt attach via remotesapi (server-remote topology)
+
+Use this only when the operator has explicitly chosen a direct-Dolt
+`server-remote` topology — *not* the cluster-as-truth gateway path. In
+this mode the laptop keeps a local Dolt mirror and syncs over
+remotesapi.
 
 ```bash
 spire tower attach-cluster dolt://dolt.my-cluster.example:50051/my-team

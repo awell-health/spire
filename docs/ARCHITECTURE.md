@@ -1,8 +1,8 @@
 # Spire Architecture
 
 Spire is an AI agent coordination system. It manages a shared work graph
-(beads), routes work to autonomous agents, and synchronizes state across
-local machines and Kubernetes clusters via DoltHub.
+(beads), routes work to autonomous agents, and can run with either a
+local authoritative tower or a cluster-hosted authoritative tower.
 
 > **Living document.** Updated 2026-04-03. Where the current implementation
 > differs from the target, inline callouts note the gap.
@@ -13,8 +13,9 @@ Spire's control-plane topology is selected by an explicit, three-valued
 contract owned by `pkg/config/deployment_mode.go`. Every scheduling /
 dispatch entry point reads the tower's effective mode and branches on it.
 The mode is deliberately orthogonal to **worker backend** (process /
-docker / k8s) and to **sync transport** (syncer / remotesapi / DoltHub) —
-see [Non-goals](#non-goals) below.
+docker / k8s). The operator-facing matrix that separates **server
+deployment** from **client deployment** lives in
+[deployment-modes.md](deployment-modes.md).
 
 | Mode | Wire value | Child dispatch | What runs where |
 |------|------------|----------------|-----------------|
@@ -22,10 +23,11 @@ see [Non-goals](#non-goals) below.
 | Cluster-native | `cluster-native` | Operator materializes pods from intents emitted by the steward / executor / wizard. **No code path calls `Spawner.Spawn`.** | Steward runs in a pod, emits bead-level `pkg/steward/intent.WorkloadIntent` without pre-creating an attempt bead, and the operator reconciles those intents into wizard pods. Per-phase intents (review, review-fix, hooked-step resume, cleric) are emitted through the same publisher seam. The archmage's machine is a client of the cluster control plane. |
 | Attached-reserved | `attached-reserved` | Operator-owned, per [VISION-ATTACHED.md](VISION-ATTACHED.md). | A local control plane targeting a remote cluster execution surface through the same `WorkloadIntent` seam. **Reserved — not implemented.** Selecting it is a declaration of intent; consumers return `attached.ErrAttachedNotImplemented`. See [docs/attached-mode.md](attached-mode.md) for the full reservation. |
 
-The shared work graph still flows over Dolt + DoltHub regardless of which
-mode is in effect: local-native pushes locally, cluster-native syncs via
-the syncer pod, and an attached-mode tower would do whatever its sync
-transport selection dictates. Sync is not the mode switch.
+Client attach and direct-Dolt sync are documented in
+[deployment-modes.md](deployment-modes.md). Local-native and other
+direct-Dolt topologies may sync a local mirror. Cluster-as-truth
+deployments pair cluster-native with gateway-attached clients instead of
+client-side sync.
 
 ```
   Local-native                  Cluster-native                          Attached-reserved
@@ -108,13 +110,13 @@ collapsed an orthogonal dimension into the mode switch.
   [docs/attached-mode.md](attached-mode.md) for the reservation, the
   seams it will reuse, and the contract a future implementation MUST NOT
   perturb.
-- **Sync transport is orthogonal to deployment mode.** A local-native
-  tower may sync over DoltHub; a cluster-native tower may sync over
-  remotesapi or a syncer pod. Choosing `cluster-native` does not imply
-  any particular transport, and choosing a particular transport does not
-  imply a particular deployment mode. Code that branches on transport to
-  decide topology — or vice versa — violates the contract documented on
-  `pkg/config.DeploymentMode`.
+- **Deployment mode and client attach mode are distinct.** Direct-Dolt
+  topologies can still compose with local filesystem, `remotesapi`, or
+  DoltHub. Cluster-as-truth is different: cluster-native server
+  deployment pairs with gateway-attached clients rather than with
+  client-side sync. Use [deployment-modes.md](deployment-modes.md) for
+  the operator-facing matrix instead of inferring attach semantics from
+  `DeploymentMode` alone.
 - **`LocalBindings` are local-only workspace state.** The `LocalBindings`
   map on the tower config records per-machine workspace facts (bind
   state, local clone path) that have no meaning across cluster replicas.

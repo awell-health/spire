@@ -38,7 +38,7 @@ Before setting up Spire, you'll need:
 | `claude` CLI | Runs agent sessions | Install via `npm install -g @anthropic-ai/claude-code` |
 | Anthropic API key | Powers agent LLM calls | [console.anthropic.com](https://console.anthropic.com) |
 | GitHub token (PAT or SSH key) | Repo operations (clone, branch, push) | GitHub → Settings → Developer settings |
-| DoltHub account (free) | Remote sync of bead state | [dolthub.com](https://www.dolthub.com) |
+| DoltHub account (free) | Optional — used by direct-Dolt topologies (local-native sync, `server-remote` attach) and as a first-install seed / one-way archive for cluster-as-truth deployments. Not required for clients attaching to a cluster-as-truth tower via the gateway. See [docs/deployment-modes.md](docs/deployment-modes.md). | [dolthub.com](https://www.dolthub.com) |
 
 ## Quick start
 
@@ -262,6 +262,7 @@ kubectl apply -f k8s/steward.yaml
 ```
 
 Running on GKE? See [docs/cluster-install.md](docs/cluster-install.md) for the end-to-end install runbook.
+Need the server/client deployment matrix? See [docs/deployment-modes.md](docs/deployment-modes.md).
 
 See [docs/k8s-architecture.md](docs/k8s-architecture.md) for the full deployment guide.
 

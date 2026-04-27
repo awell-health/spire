@@ -9,7 +9,9 @@ cluster-native production towers the cluster Dolt + gateway own writes;
 local clients route mutations over the gateway; DoltHub is
 seed-only/archive-only on first install. Local-native and
 attached-reserved are out of scope here — see
-[cluster-install.md](cluster-install.md) for full GKE detail.
+[cluster-install.md](cluster-install.md) for full GKE detail and
+[deployment-modes.md](deployment-modes.md) for the server/client
+topology matrix.
 
 ## Prerequisites
 

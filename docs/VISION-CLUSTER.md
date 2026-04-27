@@ -2,7 +2,13 @@
 
 > The coordination plane runs in Kubernetes.
 
-Cluster-native is how Spire scales from "one laptop's worth of agents" to "a team's worth of persistent capacity." The steward, the operator, the dolt database, and the agent pods all live in a Kubernetes cluster. Laptops attach to the cluster's dolt via remotesapi to monitor, file work, and interact with the graph — but coordination and execution happen in the cluster, not on a developer's machine.
+Cluster-native is how Spire scales from "one laptop's worth of agents"
+to "a team's worth of persistent capacity." The steward, the operator,
+the dolt database, and the agent pods all live in a Kubernetes cluster.
+In the cluster-as-truth path, local clients attach through the gateway
+and act as frontends; they do not sync a local Dolt mirror into the
+tower. See [deployment-modes.md](deployment-modes.md) for the
+server/client matrix.
 
 ## What runs
 
@@ -10,11 +16,11 @@ In a cluster-native deployment:
 
 - **Steward pod** — the coordinator loop, same code as the local-native steward, running as a Deployment
 - **Operator pod** — watches `WizardGuild` custom resources and reconciles workload intent into wizard pods
-- **Dolt StatefulSet** — the tower's database, with remotesapi enabled for laptop attach and for internal cluster traffic
+- **Dolt StatefulSet** — the tower's database, with remotesapi enabled for internal cluster traffic and any direct-Dolt attach topologies
 - **Wizard pods** — ephemeral, one per in-flight bead, built from the canonical pod spec. A wizard pod is the unit of dispatch: apprentices, sages, and arbiters run as child processes of the wizard inside the pod, the same way they do on a laptop. Each wizard pod has a per-wizard PVC for its staging worktree.
 - **Cleric pods** — ephemeral, dispatched separately by the steward when a bead gets hooked. A cleric mounts the failing wizard's PVC to resume its staging worktree in place.
 - **ClickHouse** — OLAP backend for agent_runs and bead_lifecycle analytics
-- **Optional syncer** — if the cluster also pushes to DoltHub for backup or cross-cluster sync
+- **Optional archive/syncer** — if the operator wants a one-way archive export or other replication path outside the cluster
 
 The entire stack — steward, operator, dolt, OLAP, guild caches — is deployed via a Helm chart. A tower lives in the cluster as a dolt database; repos register through `WizardGuild` CRs, either directly or derived from the tower's repos table.
 
@@ -266,13 +272,47 @@ inherits the cluster-native pattern on the remote execution surface.
 
 ## How laptops participate
 
-A laptop talks to a cluster-native tower through `spire tower attach-cluster <dolt://.../db>`. This points the laptop's CLI at the cluster's dolt via remotesapi. From there, the laptop can:
+There are two distinct laptop-side topologies for a cluster-native
+tower. They are not interchangeable. See
+[deployment-modes.md](deployment-modes.md) for the full matrix.
 
-- `spire file` to create beads
-- `spire focus` / `spire board` to read and watch
-- `spire push` / `spire pull` to sync any local-authored state
+### Cluster-attach via gateway (the cluster-as-truth path)
 
-The laptop does **not** run a steward in this topology — the cluster's steward owns dispatch. A laptop that wants to drive remote execution from a local control plane is in attached mode, not cluster-native (see [VISION-ATTACHED.md](VISION-ATTACHED.md)).
+The recommended path for cluster-native production towers. The laptop
+attaches to the cluster's HTTPS gateway with a bearer token; every
+mutation tunnels over `/api/v1/*` to the cluster Dolt, which is the
+single writer.
+
+```bash
+spire tower attach-cluster --tower <name> --url https://<gateway-host> --token <bearer>
+```
+
+In this topology:
+
+- The laptop has **no local Dolt mirror** for the tower.
+- `spire push` / `spire pull` are **not used** — there is nothing to
+  sync into.
+- `spire file`, `spire focus`, and the desktop UI all route through the
+  gateway.
+- The cluster's steward owns dispatch; the laptop is a frontend.
+
+### Direct-Dolt attach via remotesapi (server-remote topology)
+
+A laptop may also attach by pointing its local Dolt mirror at the
+cluster's remotesapi endpoint, treating the cluster as a remote Dolt
+server in a `server-remote` topology. This is the historical path and
+remains valid for towers that are *not* operating as cluster-as-truth —
+see [deployment-modes.md](deployment-modes.md). It is **not** the
+cluster-as-truth path: the laptop keeps a writable local mirror and
+participates in `push` / `pull` / `sync`. Pick this only when the
+operator has explicitly chosen a direct-Dolt topology over a
+gateway-attached one.
+
+The laptop never runs its own steward against a cluster-native tower in
+either topology — the cluster's steward owns dispatch. A laptop that
+wants to drive *remote execution* from a local control plane is in
+attached mode, not cluster-native (see
+[VISION-ATTACHED.md](VISION-ATTACHED.md)).
 
 ## How it connects to the other modes
 
