@@ -4,7 +4,7 @@
 
 ---
 
-## Current State (v0.39.0, 2026-04-15)
+## Current State (v0.48.0, 2026-04-26)
 
 Spire is a working local-first coordination hub for AI engineering agents.
 The v3 graph executor is the only execution engine. V2 code is fully
@@ -195,7 +195,7 @@ multi-tower attach, observability / SLO tooling, backup/restore drill.
 
 Cutover from existing DoltHub-backed towers to cluster-as-truth gateway-mode: see [docs/runbooks/cluster-as-truth-cutover.md](runbooks/cluster-as-truth-cutover.md).
 
-- [ ] spi-sn7o3 -- WizardGuild repo-cache; materializes workspaces with `Origin=guild-cache` for faster cold-pod start. Ships when spi-xplwy parity is green (it is) and cluster-image bootstrap (above) is stable enough to attach a cache PVC.
+- [x] spi-sn7o3 -- WizardGuild repo-cache; materializes workspaces with `Origin=guild-cache` for faster cold-pod start. Shipped in v0.47.
 
 ### 4. Workshop Skill
 

@@ -141,10 +141,10 @@ type WorkloadIntent struct {
 	// FormulaPhase is the legacy bead-/step-/review-level phase string
 	// that pre-dated the explicit Role/Phase/Runtime contract. The
 	// operator no longer routes on FormulaPhase; producers may continue
-	// to set it for log/metric continuity until spi-5bzu9r.5 retires
-	// the field.
+	// to set it for log/metric continuity until spi-sb9yob retires
+	// the field as part of the steward producer migration.
 	//
-	// deprecated: routing now uses Role/Phase; .5 will retire this.
+	// deprecated: routing now uses Role/Phase; spi-sb9yob will retire this.
 	FormulaPhase string
 	Resources    Resources
 	HandoffMode  string

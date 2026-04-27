@@ -31,7 +31,7 @@ In a cluster-native deployment:
 
 The entire stack — steward, operator, dolt, OLAP, guild caches — is deployed via a Helm chart. A tower lives in the cluster as a dolt database; repos register through `WizardGuild` CRs, either directly or derived from the tower's repos table.
 
-Future work (spi-sj18k) will move apprentice execution out of the wizard pod into dedicated apprentice pods dispatched through the operator's intent reconciler. The canonical `BuildApprenticePod` exists today and is exercised by parity tests, but cluster-native dispatch still runs apprentice work in-wizard — matching the local-native shape.
+The canonical `BuildApprenticePod` is the contract today, and cluster-native dispatch routes apprentice work through the operator's intent reconciler keyed on `(Role=Apprentice, Phase={Implement,Fix,ReviewFix})` — see [`pkg/steward/intent/contract.go`](../pkg/steward/intent/contract.go). The remaining gap is the steward-side producer (spi-sb9yob): steward-initiated dispatch (recovery, hooked-step resume) does not yet populate `Role`, `Phase`, or `Runtime.Image`, so those intents are dropped by `intent.Validate`. Executor- and wizard-driven dispatch populates the triple and works end-to-end. See `pkg/steward/cluster_dispatch.go` (KNOWN GAP comment) for the canonical statement.
 
 ## Operator-owned dispatch (cluster-native invariant)
 

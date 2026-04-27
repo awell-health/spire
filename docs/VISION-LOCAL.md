@@ -37,7 +37,7 @@ A local-native tower can sync to a DoltHub remote for team coordination, attach 
 
 ## What it does not do
 
-- **No autoscaling** — concurrency is capped by your machine and a `max_concurrent` tower setting
+- **No autoscaling** — concurrency is capped by your machine and a `max_concurrent` tower setting. As of v0.48, `spire up` starts the local steward by default, which enforces the per-tower cap; local-native is not a fully hands-off process model.
 - **No multi-tenant isolation** — one tower, one set of credentials, one filesystem
 - **No persistent background execution** — when you close the laptop, the daemon stops; work resumes when you start it again
 - **No managed ops** — you are the SRE
