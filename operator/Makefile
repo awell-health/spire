@@ -15,7 +15,12 @@
 # and is a separate step in the validation pipeline.
 
 CONTROLLER_GEN ?= controller-gen
-CONTROLLER_GEN_VERSION ?= v0.13.0
+# Keep in sync with operator/go.mod's sigs.k8s.io/controller-tools version
+# so `make verify-rbac` (this Makefile) and `go generate ./api/...` (which
+# resolves controller-gen via operator/go.mod) emit byte-identical output.
+# v0.13.0 transitively pulled x/tools v0.12.0 which fails to compile on
+# Go 1.26+ ("invalid array length -delta * delta"); bumping unblocks CI.
+CONTROLLER_GEN_VERSION ?= v0.20.1
 
 # manifests regenerates config/rbac/role.yaml from the
 # +kubebuilder:rbac markers in controllers/*.go. Idempotent: re-running
