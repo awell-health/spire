@@ -35,17 +35,17 @@ func TestProcessBackend_TerminateBead_ReapsDetachedChild(t *testing.T) {
 	// backgrounded sleep inherits the shell's PGID (jobctl is off in
 	// non-interactive sh). After the shell exits, the sleep is the only
 	// surviving member of the group — exactly the spi-w65pr1 shape.
-	cmd := exec.Command("sh", "-c", "sleep 30 & echo $! ; exit 0")
+	cmd := exec.Command("sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $! ; exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("spawn shell: %v", err)
 	}
 	parentPID := cmd.Process.Pid
-	pgid, err := syscall.Getpgid(parentPID)
-	if err != nil {
-		t.Fatalf("Getpgid(parent=%d): %v", parentPID, err)
-	}
+	// Setpgid=true creates a new process group whose ID is the leader PID.
+	// cmd.Output waits and reaps the shell before returning, so asking the
+	// kernel for the parent PGID here races with normal parent exit.
+	pgid := parentPID
 	childPID, err := strconv.Atoi(strings.TrimSpace(string(out)))
 	if err != nil || childPID <= 0 {
 		t.Fatalf("parse child PID from %q: %v", out, err)
