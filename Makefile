@@ -3,14 +3,24 @@
 NAMESPACE ?= spire
 
 # --- Build ---
+#
+# SPIRE_VERSION is injected via -ldflags "-X main.version=..." inside
+# the Dockerfiles. Without it the binary stays at "dev" and
+# decideVersionAction in cmd/spire/version_check.go re-runs every
+# migration on every restart instead of memoising stored == binary.
+# Defaults to the most recent git tag (or short SHA when there are no
+# tags) so dev `make build` produces something that decides as a real
+# release. Override via `make build SPIRE_VERSION=v0.49.0-rc1`.
+
+SPIRE_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 build: build-steward build-agent
 
 build-steward:
-	docker build -f Dockerfile.steward -t spire-steward:dev .
+	docker build --build-arg SPIRE_VERSION=$(SPIRE_VERSION) -f Dockerfile.steward -t spire-steward:dev .
 
 build-agent:
-	docker build -f Dockerfile.agent -t spire-agent:dev .
+	docker build --build-arg SPIRE_VERSION=$(SPIRE_VERSION) -f Dockerfile.agent -t spire-agent:dev .
 
 # --- Deploy ---
 

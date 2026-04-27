@@ -202,8 +202,13 @@ jobs:
         shell: bash
         run: |
           eval "$(minikube -p minikube docker-env)"
-          docker build -f Dockerfile.steward -t spire-steward:dev .
-          docker build -f Dockerfile.agent   -t spire-agent:dev   .
+          # Bake the version into the spire binary so decideVersionAction
+          # memoises stored == binary across restarts. Falls back to the
+          # short SHA when no tag is present (CI usually runs against
+          # untagged branches).
+          SPIRE_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+          docker build --build-arg SPIRE_VERSION="$SPIRE_VERSION" -f Dockerfile.steward -t spire-steward:dev .
+          docker build --build-arg SPIRE_VERSION="$SPIRE_VERSION" -f Dockerfile.agent   -t spire-agent:dev   .
       - name: Apply namespace + CRDs
         run: |
           kubectl apply -f k8s/namespace.yaml

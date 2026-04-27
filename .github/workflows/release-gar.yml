@@ -44,6 +44,12 @@ jobs:
           context: .
           file: Dockerfile.steward
           push: true
+          # Bake the release tag into the spire binary's `var version`
+          # via Dockerfile's SPIRE_VERSION arg + -ldflags. Without this
+          # the binary stays at "dev" and decideVersionAction re-runs
+          # every migration on every restart.
+          build-args: |
+            SPIRE_VERSION=${{ github.ref_name }}
           tags: |
             ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/steward:${{ github.ref_name }}
             ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/steward:latest
@@ -54,6 +60,9 @@ jobs:
           context: .
           file: Dockerfile.agent
           push: true
+          # Same SPIRE_VERSION ldflag plumbing as the steward build above.
+          build-args: |
+            SPIRE_VERSION=${{ github.ref_name }}
           tags: |
             ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/agent:${{ github.ref_name }}
             ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/spire/agent:latest
