@@ -29,6 +29,14 @@ spec:
       labels:
         app.kubernetes.io/name: spire-gateway
     spec:
+      # /api/v1/roster needs to list pods + WizardGuilds via the
+      # in-cluster k8s client (see pkg/board/roster.go's
+      # newRealRosterClusterClient). Reusing spire-operator's KSA gives
+      # the gateway pod the read access it needs without standing up a
+      # second SA + RoleBindings; the operator already has list/watch
+      # on pods and wizardguilds. Without this the pod runs as `default`
+      # and roster requests 500 with a Forbidden.
+      serviceAccountName: spire-operator
       initContainers:
         # Mirrors steward.yaml's tower-attach init, against an emptyDir
         # instead of the PVC. attach-cluster --bootstrap-if-blank is
