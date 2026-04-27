@@ -39,10 +39,19 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "spire.labels" . | nindent 4 }}
-  {{- if or $ingress.managedCert.enabled $ingress.annotations }}
+  {{- if or $ingress.managedCert.enabled $ingress.className $ingress.annotations }}
   annotations:
     {{- if $ingress.managedCert.enabled }}
     networking.gke.io/managed-certificates: {{ $ingress.managedCert.name | default (printf "%s-gateway-cert" $fullname) | quote }}
+    {{- end }}
+    {{- with $ingress.className }}
+    # Legacy ingress-class annotation alongside spec.ingressClassName.
+    # Required by GKE Autopilot's GLBC: Autopilot does not pre-populate an
+    # IngressClass CR for the legacy `gce` name, so without this annotation
+    # the controller silently ignores the resource (no events, no LB, no
+    # NEGs). Harmless on classic GKE / nginx / traefik — controllers that
+    # use IngressClass CRs ignore the annotation when it doesn't match.
+    kubernetes.io/ingress.class: {{ . | quote }}
     {{- end }}
     {{- with $ingress.annotations }}
     {{- toYaml . | nindent 4 }}
@@ -51,6 +60,19 @@ metadata:
 spec:
   {{- with $ingress.className }}
   ingressClassName: {{ . }}
+  {{- end }}
+  {{- if $ingress.defaultBackend.enabled }}
+  # Explicit defaultBackend pointing at the gateway Service. Required on
+  # fresh GKE Autopilot clusters: GLBC fails to sync when the cluster's
+  # `kube-system/default-http-backend` NEG is missing (Autopilot does not
+  # create one), and an Ingress without a defaultBackend never produces
+  # forwarding rules. Pointing the default backend at the gateway makes
+  # the Ingress self-contained on every cluster.
+  defaultBackend:
+    service:
+      name: {{ $serviceName }}
+      port:
+        name: api
   {{- end }}
   rules:
     - host: {{ $host | quote }}

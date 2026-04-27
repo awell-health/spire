@@ -171,6 +171,71 @@ scope for v1; use a separate Ingress or host if you need that.
 
 ---
 
+## GKE Autopilot first-install gotchas
+
+A fresh GKE Autopilot cluster needs two extra Ingress fields that classic
+GKE does not. The chart now emits both unconditionally; this section
+documents what they fix and the manual workarounds for older chart
+versions.
+
+### Legacy `kubernetes.io/ingress.class` annotation
+
+**Symptom:** the Ingress sits with an empty `status.loadBalancer`,
+no GCP forwarding rules or NEGs are created, and `kubectl describe
+ingress` shows no events at all (not even sync attempts).
+
+**Cause:** Autopilot does not pre-populate an `IngressClass` CR for the
+legacy `gce` name (`kubectl get ingressclass` returns empty). Without an
+IngressClass CR, the GLBC controller relies on the legacy
+`kubernetes.io/ingress.class` annotation. `spec.ingressClassName: gce`
+alone is not enough.
+
+**Fix:** the chart emits both APIs side-by-side whenever
+`gateway.ingress.className` is set. Setting both is harmless on classic
+GKE and on other ingress controllers (nginx / traefik) — controllers
+that use IngressClass CRs ignore the annotation when it doesn't match.
+
+**Workaround for older chart versions:**
+
+```bash
+kubectl annotate ingress spire-gateway -n spire \
+  kubernetes.io/ingress.class=gce
+```
+
+### Explicit `spec.defaultBackend`
+
+**Symptom:** even after the legacy annotation is in place, the Ingress
+still does not provision a load balancer. `kubectl describe ingress`
+eventually surfaces a controller error referencing a missing
+`k8s1-...kube-system-default-http-backend-80-...` NEG.
+
+**Cause:** Autopilot does not create the
+`kube-system/default-http-backend` Service or its NEG. GLBC looks for
+that NEG when no `spec.defaultBackend` is set on the Ingress, and the
+sync stalls when it cannot find one.
+
+**Fix:** the chart emits `spec.defaultBackend` pointing at the gateway
+Service unconditionally (gated on `gateway.ingress.defaultBackend.enabled`,
+default `true`). The gateway already serves `/healthz` on the named
+port the LB hits, so this is harmless on classic GKE / nginx /
+minikube.
+
+**Workaround for older chart versions:**
+
+```bash
+kubectl patch ingress spire-gateway -n spire --type=merge -p \
+  '{"spec":{"defaultBackend":{"service":{"name":"spire-gateway","port":{"name":"api"}}}}}'
+```
+
+**Upgrade note:** if you previously hand-patched a different
+`spec.defaultBackend` onto the Ingress, `helm upgrade` to the chart
+version that includes this fix will overwrite it. Disable the
+chart-emitted default backend with
+`--set gateway.ingress.defaultBackend.enabled=false` and re-apply your
+patch if needed.
+
+---
+
 ## Troubleshooting
 
 ### ManagedCertificate stuck in `Provisioning`

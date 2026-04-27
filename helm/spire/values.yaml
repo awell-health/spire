@@ -271,6 +271,7 @@ steward:
 ## @param gateway.ingress.backendConfig.enabled Render a `cloud.google.com/v1` BackendConfig and annotate the Service to use it. GKE-only; used to control the load-balancer health check and backend protocol.
 ## @param gateway.ingress.backendConfig.healthCheckPath HTTP path the GKE health check probes against the gateway pods.
 ## @param gateway.ingress.backendConfig.http2 When true, annotate the Service with `cloud.google.com/app-protocols='{"http":"HTTP2"}'` so the GCLB talks HTTP/2 to the gateway.
+## @param gateway.ingress.defaultBackend.enabled Emit `spec.defaultBackend` on the Ingress pointing at the gateway Service. Required on fresh GKE Autopilot clusters (no kube-system default-http-backend NEG exists, so GLBC stalls without an explicit default backend); harmless elsewhere because the gateway already serves /healthz on the named port. Default true.
 gateway:
   enabled: false
   replicas: 1
@@ -302,6 +303,15 @@ gateway:
       enabled: false       # GKE BackendConfig (healthcheck / HTTP2)
       healthCheckPath: /healthz
       http2: false
+    defaultBackend:
+      # Emit spec.defaultBackend pointing at the gateway Service.
+      # Required on fresh GKE Autopilot clusters — Autopilot does not
+      # create the kube-system default-http-backend NEG that GLBC looks
+      # for, and an Ingress with no defaultBackend stalls indefinitely
+      # (no forwarding rules, no events). Harmless on classic GKE /
+      # nginx / minikube because the gateway already serves /healthz on
+      # the named port the LB hits. Default true.
+      enabled: true
 
 ## @section Operator configuration
 
