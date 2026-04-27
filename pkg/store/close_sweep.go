@@ -120,6 +120,15 @@ func runCloseSweep(beadID, prefix string) {
 		return
 	}
 
+	// Sanity-check the registered path is actually a git work tree
+	// before invoking git log; otherwise the user gets a "fatal: not
+	// a git repository" line in the daemon log on every close, and
+	// the sweep would silently produce no commits anyway.
+	if err := ensureRepoOK(repoPath); err != nil {
+		log.Printf("[store] close-sweep: skipped %s (%s not a git work tree: %v)", beadID, repoPath, err)
+		return
+	}
+
 	out, err := closeSweepCommand(repoPath, beadID)
 	if err != nil {
 		log.Printf("[store] close-sweep: git log for %s failed (best-effort, skipping): %v", beadID, err)
@@ -219,7 +228,9 @@ func firePostCloseSweepIfTransitioned(beadID, priorStatus string) {
 // repoPath actually points at a git repository before we run git
 // commands inside it. Avoids spamming logs with "fatal: not a git
 // repository" on towers that happen to register a non-git path.
-func ensureRepoOK(repoPath string) error {
+// Function-shaped so tests can stub it out the same way the other
+// close-sweep seams do.
+var ensureRepoOK = func(repoPath string) error {
 	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--is-inside-work-tree").Output()
 	if err != nil {
 		return fmt.Errorf("git rev-parse: %w", err)

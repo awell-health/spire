@@ -8,7 +8,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/awell-health/spire/pkg/observability"
@@ -88,10 +90,10 @@ func cmdAttemptShow(attemptID string, page, pageSize, argWidth int, asJSON bool)
 // renderAttemptToolCalls writes a compact, monospaced table of tool
 // calls suitable for the terminal. Each row gets one header line
 // (timestamp, tool, status, duration) and one or more attribute
-// lines showing the lifted args/results. Long values are truncateAttemptValued
+// lines showing the lifted args/results. Long values are truncated
 // to argWidth (default 200) — the full value is always available
 // via --json.
-func renderAttemptToolCalls(w *os.File, attemptID string, rows []olap.ToolCallRecord, argWidth int) {
+func renderAttemptToolCalls(w io.Writer, attemptID string, rows []olap.ToolCallRecord, argWidth int) {
 	if argWidth <= 0 {
 		argWidth = attemptShowDefaultArgWidth
 	}
@@ -198,30 +200,26 @@ func orderedAttrKeys(args map[string]string) []string {
 			rest = append(rest, k)
 		}
 	}
-	sortStrings(rest)
+	sort.Strings(rest)
 	return append(out, rest...)
 }
 
-// truncateAttemptValue clamps s to at most n runes and appends an ellipsis when
-// trimming. Newlines are replaced with " | " so the table stays one
-// line per attribute even for multi-line Bash commands.
+// truncateAttemptValue clamps s to at most n runes and appends an ellipsis
+// when trimming. Newlines are replaced with " | " so the table stays one
+// line per attribute even for multi-line Bash commands. Rune-based slicing
+// keeps multi-byte UTF-8 content (emoji, non-Latin scripts) intact when
+// the cap lands inside a multi-byte sequence.
 func truncateAttemptValue(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " | ")
-	if n <= 0 || len(s) <= n {
+	if n <= 0 {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) <= n {
 		return s
 	}
 	if n <= 3 {
-		return s[:n]
+		return string(rs[:n])
 	}
-	return s[:n-3] + "..."
-}
-
-// sortStrings is a tiny dependency-free sort to avoid pulling sort
-// into this command file just for one call.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	return string(rs[:n-3]) + "..."
 }

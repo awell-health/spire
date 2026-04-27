@@ -78,6 +78,10 @@ func TestRunCloseSweep_GitFailureSwallowed(t *testing.T) {
 	repoPathLookupFunc = func(string) string { return "/some/path" }
 	t.Cleanup(func() { repoPathLookupFunc = origLookup })
 
+	origCheck := ensureRepoOK
+	ensureRepoOK = func(string) error { return nil }
+	t.Cleanup(func() { ensureRepoOK = origCheck })
+
 	origCmd := closeSweepCommand
 	closeSweepCommand = func(string, string) (string, error) {
 		return "", errors.New("simulated git failure")
@@ -86,6 +90,34 @@ func TestRunCloseSweep_GitFailureSwallowed(t *testing.T) {
 
 	// Should not panic / not raise.
 	runCloseSweep("spi-x", "spi")
+}
+
+// TestRunCloseSweep_NotAGitRepoSkipped: when the registered repo path
+// isn't actually a git work tree (mis-registered tower path), the sweep
+// stops before the git log invocation rather than letting git print
+// "fatal: not a git repository" into the daemon log on every close.
+func TestRunCloseSweep_NotAGitRepoSkipped(t *testing.T) {
+	origLookup := repoPathLookupFunc
+	repoPathLookupFunc = func(string) string { return "/not-a-repo" }
+	t.Cleanup(func() { repoPathLookupFunc = origLookup })
+
+	origCheck := ensureRepoOK
+	ensureRepoOK = func(string) error { return errors.New("not a git work tree") }
+	t.Cleanup(func() { ensureRepoOK = origCheck })
+
+	gitCalled := false
+	origCmd := closeSweepCommand
+	closeSweepCommand = func(string, string) (string, error) {
+		gitCalled = true
+		return "", nil
+	}
+	t.Cleanup(func() { closeSweepCommand = origCmd })
+
+	runCloseSweep("spi-x", "spi")
+
+	if gitCalled {
+		t.Error("git log should not be invoked when ensureRepoOK fails")
+	}
 }
 
 // TestFirePostCloseSweepIfTransitioned_SkipsReClose: when prior status
@@ -111,6 +143,10 @@ func TestFirePostCloseSweepIfTransitioned_FiresOnRealTransition(t *testing.T) {
 	repoPathLookupFunc = func(string) string { return "/repo" }
 	t.Cleanup(func() { repoPathLookupFunc = origLookup })
 
+	origCheck := ensureRepoOK
+	ensureRepoOK = func(string) error { return nil }
+	t.Cleanup(func() { ensureRepoOK = origCheck })
+
 	called := false
 	origCmd := closeSweepCommand
 	closeSweepCommand = func(string, string) (string, error) {
@@ -135,6 +171,10 @@ func TestRunCloseSweep_AppendsNovelShas(t *testing.T) {
 	origLookup := repoPathLookupFunc
 	repoPathLookupFunc = func(string) string { return "/repo" }
 	t.Cleanup(func() { repoPathLookupFunc = origLookup })
+
+	origCheck := ensureRepoOK
+	ensureRepoOK = func(string) error { return nil }
+	t.Cleanup(func() { ensureRepoOK = origCheck })
 
 	origCmd := closeSweepCommand
 	closeSweepCommand = func(string, string) (string, error) {

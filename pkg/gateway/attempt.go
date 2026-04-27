@@ -80,6 +80,13 @@ func (s *Server) getAttemptToolCalls(w http.ResponseWriter, r *http.Request, att
 			pageSize = n
 		}
 	}
+	// Clamp once here so the value passed to the store, the value echoed
+	// back to the client, and the value the store sees are all the same.
+	// (ListAttemptToolCalls clamps defensively too, but routing both
+	// values through one clamp keeps this handler the source of truth.)
+	if pageSize > observability.MaxToolCallPageSize {
+		pageSize = observability.MaxToolCallPageSize
+	}
 
 	rows, err := listAttemptToolCallsFunc(attemptID, page, pageSize)
 	if err != nil {
@@ -88,12 +95,6 @@ func (s *Server) getAttemptToolCalls(w http.ResponseWriter, r *http.Request, att
 	}
 	if rows == nil {
 		rows = []olap.ToolCallRecord{}
-	}
-
-	// Echo back the *clamped* page_size so clients can detect when
-	// they've been throttled to MaxToolCallPageSize.
-	if pageSize > observability.MaxToolCallPageSize {
-		pageSize = observability.MaxToolCallPageSize
 	}
 
 	writeJSON(w, http.StatusOK, AttemptToolCallsResponse{
