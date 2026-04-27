@@ -433,3 +433,18 @@ func loadRawFormula(name string) ([]byte, string, error) {
 
 	return nil, "", fmt.Errorf("formula %q not found", name)
 }
+
+// LoadRawFormula is the exported variant of loadRawFormula. Returns the raw
+// TOML bytes, source label ("embedded" or "custom"), and any error from the
+// resolution. Used by the gateway's /api/v1/workshop/formulas/{name}/source
+// endpoint to render the unmodified file contents to the desktop.
+func LoadRawFormula(name string) ([]byte, string, error) {
+	return loadRawFormula(name)
+}
+
+// RenderWhenPredicate exports renderWhenPredicate so callers outside the
+// package (notably the gateway's edge materializer) can render a structured
+// when condition into the same human-readable form the show command uses.
+func RenderWhenPredicate(when *formula.StructuredCondition) string {
+	return renderWhenPredicate(when)
+}
