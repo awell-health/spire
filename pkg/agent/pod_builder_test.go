@@ -933,6 +933,136 @@ func TestBuildApprenticePod_AuthEnv_Override(t *testing.T) {
 	}
 }
 
+// TestBuildApprenticePod_LogStoreEnv covers the four log-store branching
+// states in pod_builder.go's buildEnv: empty backend (no env emitted),
+// backend=local (only LOGSTORE_BACKEND), backend=gcs with all fields
+// (all four env vars), and backend=gcs with empty bucket/retention
+// (bucket and retention omitted, prefix always emitted).
+//
+// The substrate-side keys (LOGSTORE_GCS_BUCKET, LOGSTORE_GCS_RETENTION_DAYS)
+// are guarded so an in-flight chart override that clears one of them
+// doesn't ship a misleading empty env to the in-pod worker. The prefix
+// is always emitted under backend=gcs because the substrate composes
+// object keys against it and an explicit empty value is a meaningful
+// "no prefix" signal (helm's default is `spire/agent-logs`).
+func TestBuildApprenticePod_LogStoreEnv(t *testing.T) {
+	cases := []struct {
+		name                    string
+		backend                 string
+		bucket                  string
+		prefix                  string
+		retentionDays           string
+		wantBackend             string // "" means env must be absent
+		wantBucket              string // "" means env must be absent
+		wantPrefix              string // empty + wantPrefixPresent=true asserts presence with empty value
+		wantPrefixPresent       bool
+		wantRetentionDays       string // "" means env must be absent
+	}{
+		{
+			name:    "empty backend emits no LOGSTORE_* env",
+			backend: "",
+		},
+		{
+			name:        "backend=local emits only LOGSTORE_BACKEND",
+			backend:     "local",
+			wantBackend: "local",
+		},
+		{
+			name:              "backend=gcs with all fields emits all four env vars",
+			backend:           "gcs",
+			bucket:            "spire-logs-prod",
+			prefix:            "spire/agent-logs",
+			retentionDays:     "30",
+			wantBackend:       "gcs",
+			wantBucket:        "spire-logs-prod",
+			wantPrefix:        "spire/agent-logs",
+			wantPrefixPresent: true,
+			wantRetentionDays: "30",
+		},
+		{
+			name:              "backend=gcs with empty bucket/retention omits both, prefix still emitted",
+			backend:           "gcs",
+			bucket:            "",
+			prefix:            "",
+			retentionDays:     "",
+			wantBackend:       "gcs",
+			wantBucket:        "",
+			wantPrefix:        "",
+			wantPrefixPresent: true,
+			wantRetentionDays: "",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			spec := canonicalPodSpec()
+			spec.LogStoreBackend = tc.backend
+			spec.LogStoreGCSBucket = tc.bucket
+			spec.LogStoreGCSPrefix = tc.prefix
+			spec.LogStoreRetentionDays = tc.retentionDays
+
+			pod, err := BuildApprenticePod(spec)
+			if err != nil {
+				t.Fatalf("BuildApprenticePod: %v", err)
+			}
+			env := envByName(pod.Spec.Containers[0].Env)
+
+			gotBackend, hasBackend := env["LOGSTORE_BACKEND"]
+			if tc.wantBackend == "" {
+				if hasBackend {
+					t.Errorf("LOGSTORE_BACKEND = %q, want absent", gotBackend.Value)
+				}
+			} else {
+				if !hasBackend {
+					t.Errorf("LOGSTORE_BACKEND missing, want %q", tc.wantBackend)
+				} else if gotBackend.Value != tc.wantBackend {
+					t.Errorf("LOGSTORE_BACKEND = %q, want %q", gotBackend.Value, tc.wantBackend)
+				}
+			}
+
+			gotBucket, hasBucket := env["LOGSTORE_GCS_BUCKET"]
+			if tc.wantBucket == "" {
+				if hasBucket {
+					t.Errorf("LOGSTORE_GCS_BUCKET = %q, want absent", gotBucket.Value)
+				}
+			} else {
+				if !hasBucket {
+					t.Errorf("LOGSTORE_GCS_BUCKET missing, want %q", tc.wantBucket)
+				} else if gotBucket.Value != tc.wantBucket {
+					t.Errorf("LOGSTORE_GCS_BUCKET = %q, want %q", gotBucket.Value, tc.wantBucket)
+				}
+			}
+
+			gotPrefix, hasPrefix := env["LOGSTORE_GCS_PREFIX"]
+			if !tc.wantPrefixPresent {
+				if hasPrefix {
+					t.Errorf("LOGSTORE_GCS_PREFIX = %q, want absent", gotPrefix.Value)
+				}
+			} else {
+				if !hasPrefix {
+					t.Errorf("LOGSTORE_GCS_PREFIX missing, want present with value %q", tc.wantPrefix)
+				} else if gotPrefix.Value != tc.wantPrefix {
+					t.Errorf("LOGSTORE_GCS_PREFIX = %q, want %q", gotPrefix.Value, tc.wantPrefix)
+				}
+			}
+
+			gotRetention, hasRetention := env["LOGSTORE_RETENTION_DAYS"]
+			if tc.wantRetentionDays == "" {
+				if hasRetention {
+					t.Errorf("LOGSTORE_RETENTION_DAYS = %q, want absent", gotRetention.Value)
+				}
+			} else {
+				if !hasRetention {
+					t.Errorf("LOGSTORE_RETENTION_DAYS missing, want %q", tc.wantRetentionDays)
+				} else if gotRetention.Value != tc.wantRetentionDays {
+					t.Errorf("LOGSTORE_RETENTION_DAYS = %q, want %q", gotRetention.Value, tc.wantRetentionDays)
+				}
+			}
+		})
+	}
+}
+
 // --- helpers ------------------------------------------------------------
 
 func envByName(list []corev1.EnvVar) map[string]corev1.EnvVar {
