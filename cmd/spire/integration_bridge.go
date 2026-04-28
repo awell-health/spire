@@ -153,6 +153,7 @@ func cmdServe(args []string) error {
 		dataDir := os.Getenv("BEADS_DIR")
 		apiAddr := ":" + apiPort
 		log.Printf("spire serve: API gateway listening on %s", apiAddr)
+		wireGatewayLogArtifactReader(ctx)
 		go func() {
 			srv := gateway.NewServer(apiAddr, nil, log.Default(), dataDir, apiToken)
 			if err := srv.Run(ctx); err != nil && err != context.Canceled {

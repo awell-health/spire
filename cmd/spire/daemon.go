@@ -84,6 +84,7 @@ func runDaemon(interval, debounce time.Duration, once bool, database, remote, br
 	// Start gateway if --serve was set. Runs in the same process so it can
 	// call d.Trigger directly (no RPC boundary needed here).
 	if serve != "" {
+		wireGatewayLogArtifactReader(ctx)
 		go func() {
 			srv := gateway.NewServer(serve, d, nil, "", "")
 			if err := srv.Run(ctx); err != nil {
