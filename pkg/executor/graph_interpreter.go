@@ -343,6 +343,13 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				e.log("warning: set parent bead hooked: %s", err)
 			}
 
+			// Promotion/demotion learning loop (spi-kl8x5y): a step failure
+			// after a cleric.execute means the action did NOT recover the
+			// wizard. Finalize any pending cleric_outcomes rows targeting
+			// this step with success=false so the next IsPromoted check
+			// sees the streak break.
+			e.finalizeClericOutcomesForStep(stepName, false)
+
 			// Escalate to archmage with node-scoped context so the parent bead
 			// gets needs-human + interrupted:* labels and an alert bead.
 			EscalateGraphStepFailure(e.beadID, e.agentName, "step-failure",

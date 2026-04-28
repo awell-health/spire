@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/awell-health/spire/pkg/cleric"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // TestStepFailure_HooksSourceAndFilesRecoveryBead pins the cleric-foundation
@@ -167,5 +170,96 @@ func TestMostRecentPeerRecovery_NoStore(t *testing.T) {
 	got := mostRecentPeerRecovery("spi-source", "spi-self")
 	if got != "" {
 		t.Errorf("mostRecentPeerRecovery with no active store = %q, want empty", got)
+	}
+}
+
+// TestStepFailure_FinalizesPendingClericOutcomesAsFailure pins the
+// promotion/demotion learning loop's failure-path wiring (spi-kl8x5y).
+// When a step fails and gets hooked, any pending cleric_outcomes row
+// targeting that step MUST be finalized with success=false so the next
+// IsPromoted check sees the streak break. The success-path counterpart
+// at line 402 of graph_interpreter.go finalizes with success=true on
+// step completion.
+func TestStepFailure_FinalizesPendingClericOutcomesAsFailure(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	// Stub UpdateBead/CreateBead/AddDepTyped so the failure path runs to
+	// completion without hitting the unwired test deps.
+	deps.UpdateBead = func(id string, u map[string]interface{}) error { return nil }
+	createCounter := 0
+	deps.CreateBead = func(opts CreateOpts) (string, error) {
+		createCounter++
+		return fmt.Sprintf("spi-create-%d", createCounter), nil
+	}
+	deps.AddDepTyped = func(from, to, typ string) error { return nil }
+
+	// Swap the global observer for a recording fake so we can assert
+	// FinalizePendingOutcomes was called with success=false.
+	type finalizeCall struct {
+		ID      string
+		Success bool
+	}
+	var calls []finalizeCall
+	origObserver := cleric.DefaultObserver
+	cleric.DefaultObserver = cleric.ObserverDeps{
+		PendingForSourceBead: func(sourceID string) ([]store.ClericOutcome, error) {
+			return []store.ClericOutcome{
+				{ID: "co-pending", TargetStep: "implement"},
+			}, nil
+		},
+		Finalize: func(id string, success bool, _ time.Time) error {
+			calls = append(calls, finalizeCall{ID: id, Success: success})
+			return nil
+		},
+	}
+	defer func() { cleric.DefaultObserver = origObserver }()
+
+	// Override the action registry so the implement step fails
+	// deterministically.
+	origRegistry := make(map[string]ActionHandler)
+	for k, v := range actionRegistry {
+		origRegistry[k] = v
+	}
+	defer func() {
+		for k := range actionRegistry {
+			delete(actionRegistry, k)
+		}
+		for k, v := range origRegistry {
+			actionRegistry[k] = v
+		}
+	}()
+	actionRegistry["test.fail"] = func(e *Executor, stepName string, step StepConfig, state *GraphState) ActionResult {
+		return ActionResult{Error: fmt.Errorf("test step failure")}
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-step-fail-finalizes-cleric-outcomes",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"implement": {
+				Action: "test.fail",
+				Flow:   "implement",
+			},
+			"done": {
+				Action:   "noop",
+				Needs:    []string{"implement"},
+				Terminal: true,
+			},
+		},
+	}
+
+	exec := NewGraphForTest("spi-source-task", "wizard-source-task", graph, nil, deps)
+	if err := exec.RunGraph(graph, exec.graphState); err != nil {
+		t.Fatalf("RunGraph returned unexpected error: %v", err)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 Finalize call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].ID != "co-pending" {
+		t.Errorf("Finalize ID = %q, want co-pending", calls[0].ID)
+	}
+	if calls[0].Success {
+		t.Errorf("Finalize success = true, want false (step failed; cleric action did not recover)")
 	}
 }
