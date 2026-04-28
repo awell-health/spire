@@ -400,10 +400,11 @@ func SetLogArtifactRedaction(ctx context.Context, db *sql.DB, id string, version
 // LogArtifactCompactionPolicy bounds the work CompactLogArtifacts does
 // in one pass. The two axes — older-than (a hard age cap) and per-bead
 // keep (a recency floor) — are evaluated independently and combined
-// with AND: a row is pruned only when both conditions agree it should
-// go. This keeps the policy from accidentally pruning the only manifest
-// row a long-running bead has, and from accidentally retaining stale
-// rows for a churning bead that never crosses the recency floor.
+// with OR (set-union): a row is pruned when EITHER condition flags it
+// for deletion. The age cap bounds total table age; the recency floor
+// bounds per-bead row count for churning beads that never cross the age
+// cap. Together they keep the table size bounded without requiring both
+// rules to agree on every row.
 type LogArtifactCompactionPolicy struct {
 	// OlderThan prunes rows whose updated_at is more than this duration
 	// ago. Zero disables the age cap.
