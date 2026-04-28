@@ -104,6 +104,7 @@ var spireExtensionTables = []struct {
 	{"repos", ReposTableSQL},
 	{"agent_runs", AgentRunsTableSQL},
 	{"bead_lifecycle", store.BeadLifecycleTableSQL},
+	{"agent_log_artifacts", store.AgentLogArtifactsTableSQL},
 }
 
 // ApplySpireExtensions layers Spire's schema extensions on top of bd's core

@@ -359,6 +359,17 @@ var nonDispatchableAPIs = []string{
 	"ListExperiments",
 	"CompareVariants",
 
+	// log_artifacts.go — direct *sql.DB takers; manifest backs
+	// pkg/logartifact's local and GCS artifact backends.
+	"EnsureAgentLogArtifactsTable",
+	"InsertLogArtifact",
+	"GetLogArtifact",
+	"GetLogArtifactByIdentity",
+	"ListLogArtifactsForBead",
+	"ListLogArtifactsForAttempt",
+	"UpdateLogArtifactStatus",
+	"FinalizeLogArtifact",
+
 	// testing.go — test-only scaffolding.
 	"SetTestStorage",
 

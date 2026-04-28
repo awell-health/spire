@@ -489,6 +489,13 @@ func migrateSpireTables(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.WorkloadIntentsTableSQL)); err != nil {
 		return fmt.Errorf("create workload_intents: %w", err)
 	}
+	// agent_log_artifacts is the manifest/index for log artifacts whose
+	// bytes live in pkg/logartifact's local filesystem or GCS backends.
+	// Idempotent DDL; costs nothing for local-native towers that never
+	// need the manifest until cluster log export lands.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.AgentLogArtifactsTableSQL)); err != nil {
+		return fmt.Errorf("create agent_log_artifacts: %w", err)
+	}
 
 	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.
 	for _, m := range spireMigrations {

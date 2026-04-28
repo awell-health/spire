@@ -54,11 +54,11 @@ func TestAgentRunsTableSQL(t *testing.T) {
 	}
 }
 
-// TestApplySpireExtensions_CreatesAllThreeTables verifies the helper
+// TestApplySpireExtensions_CreatesAllExtensionTables verifies the helper
 // issues one CREATE TABLE statement per Spire extension table, in order,
 // scoped to the caller's database via `USE`. This is the contract both
 // `spire tower create` and `attach-cluster --bootstrap-if-blank` depend on.
-func TestApplySpireExtensions_CreatesAllThreeTables(t *testing.T) {
+func TestApplySpireExtensions_CreatesAllExtensionTables(t *testing.T) {
 	var calls []string
 	exec := func(q string) (string, error) {
 		calls = append(calls, q)
@@ -67,9 +67,6 @@ func TestApplySpireExtensions_CreatesAllThreeTables(t *testing.T) {
 	if err := ApplySpireExtensions(exec, "smoke"); err != nil {
 		t.Fatalf("ApplySpireExtensions: %v", err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("want 3 CREATE statements, got %d", len(calls))
-	}
 	wantOrdered := []struct {
 		name string
 		ddl  string
@@ -77,6 +74,10 @@ func TestApplySpireExtensions_CreatesAllThreeTables(t *testing.T) {
 		{"repos", ReposTableSQL},
 		{"agent_runs", AgentRunsTableSQL},
 		{"bead_lifecycle", store.BeadLifecycleTableSQL},
+		{"agent_log_artifacts", store.AgentLogArtifactsTableSQL},
+	}
+	if len(calls) != len(wantOrdered) {
+		t.Fatalf("want %d CREATE statements, got %d", len(wantOrdered), len(calls))
 	}
 	for i, want := range wantOrdered {
 		if !strings.Contains(calls[i], "USE `smoke`") {
@@ -101,6 +102,7 @@ func TestApplySpireExtensions_ErrorAttribution(t *testing.T) {
 		{"fail on repos", 1, "repos"},
 		{"fail on agent_runs", 2, "agent_runs"},
 		{"fail on bead_lifecycle", 3, "bead_lifecycle"},
+		{"fail on agent_log_artifacts", 4, "agent_log_artifacts"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
