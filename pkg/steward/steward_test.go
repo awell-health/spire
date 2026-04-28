@@ -1849,8 +1849,8 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 	if sc.BeadID != "spi-recovery1" {
 		t.Errorf("spawn bead = %q, want spi-recovery1", sc.BeadID)
 	}
-	if sc.Role != agent.RoleExecutor {
-		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleExecutor)
+	if sc.Role != agent.RoleCleric {
+		t.Errorf("spawn role = %q, want %q", sc.Role, agent.RoleCleric)
 	}
 }
 
