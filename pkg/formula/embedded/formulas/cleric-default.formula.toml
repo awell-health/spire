@@ -64,14 +64,16 @@ title = "Execute approved recovery action"
 [steps.execute.when]
 all = [{ left = "steps.wait_for_gate.outputs.gate", op = "eq", right = "approve" }]
 
-# Step 4b: Reject path — noop step that resets the prior three steps so a
-# fresh cleric round runs.
+# Step 4b: Reject path — record outcome for promotion/demotion tally
+# (spi-kl8x5y) and reset the prior three steps so a fresh cleric round
+# runs. cleric.reject replaces the prior noop action so reject outcomes
+# are visible to the learning store.
 [steps.requeue_after_reject]
 kind = "op"
-action = "noop"
+action = "cleric.reject"
 needs = ["wait_for_gate"]
 resets = ["decide", "publish", "wait_for_gate"]
-title = "Requeue cleric after rejection"
+title = "Record reject outcome and requeue cleric"
 [steps.requeue_after_reject.when]
 all = [{ left = "steps.wait_for_gate.outputs.gate", op = "eq", right = "reject" }]
 

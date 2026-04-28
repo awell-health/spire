@@ -33,11 +33,15 @@ const (
 	// write it to the recovery bead, and transition to awaiting_review.
 	// execute: run the approved action via the gateway. takeover: mark
 	// source bead needs-manual and close the recovery. finish: record
-	// outcome for the promotion/demotion tally.
+	// outcome for the promotion/demotion tally. reject: record a
+	// rejection outcome on the recovery bead so the promotion/demotion
+	// learning loop (spi-kl8x5y) sees the signal; replaces the legacy
+	// noop on requeue_after_reject.
 	OpcodeClericPublish  = "cleric.publish"
 	OpcodeClericExecute  = "cleric.execute"
 	OpcodeClericTakeover = "cleric.takeover"
 	OpcodeClericFinish   = "cleric.finish"
+	OpcodeClericReject   = "cleric.reject"
 )
 
 // ValidOpcodes is the set of recognized executor opcodes.
@@ -56,6 +60,7 @@ var ValidOpcodes = map[string]bool{
 	OpcodeClericExecute:        true,
 	OpcodeClericTakeover:       true,
 	OpcodeClericFinish:         true,
+	OpcodeClericReject:         true,
 }
 
 // ValidOpcode returns true if the opcode is in the recognized set.

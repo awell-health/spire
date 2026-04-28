@@ -395,6 +395,12 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		ss.CompletedCount++
 		state.Steps[stepName] = ss
 
+		// 5a. Promotion/demotion learning loop (spi-kl8x5y): finalize any
+		// pending cleric_outcomes rows for this bead whose target_step
+		// matches. Best-effort — failures are silent so a degraded
+		// learning store can't take the wizard down.
+		e.finalizeClericOutcomesForStep(stepName, true)
+
 		// 5b. Emit dispatcher-level pseudo-phase recordings.
 		//   - human.approve resolving after a previous hook → waitForHuman row.
 		//   - review sub-graph step completing → wizard-level review row with

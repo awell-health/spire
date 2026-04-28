@@ -2,6 +2,7 @@ package cleric
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -337,6 +338,230 @@ func TestHasOpenRecovery_IgnoresNonRecoveryCausedBy(t *testing.T) {
 	}
 	if has {
 		t.Error("non-recovery caused-by edges should not block summon")
+	}
+}
+
+// --- Auto-approve fast-path (spi-kl8x5y) ---
+
+// stubLearningStore returns the configured promoted/demoted answers for
+// any (failure_class, action) lookup. Tests inject this into Deps.Learning
+// to exercise the auto-approve fast-path without touching SQL.
+type stubLearningStore struct {
+	promoted bool
+	demoted  []store.DemotedClericPair
+}
+
+func (s stubLearningStore) LastNFinalizedOutcomes(_, _ string, _ int) ([]store.ClericOutcome, error) {
+	if !s.promoted {
+		return nil, nil
+	}
+	tru := true
+	row := store.ClericOutcome{
+		Gate:                    "approve",
+		WizardPostActionSuccess: sql.NullBool{Bool: tru, Valid: true},
+		Finalized:               true,
+	}
+	return []store.ClericOutcome{row, row, row}, nil
+}
+
+func (s stubLearningStore) ListDemotedPairs(_ int) ([]store.DemotedClericPair, error) {
+	return s.demoted, nil
+}
+
+func TestPublish_AutoApprovedSkipsAwaitingReview(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	deps := fs.toDeps()
+	deps.Learning = stubLearningStore{promoted: true}
+
+	stdout := `{"verb":"resummon","reasoning":"transient","failure_class":"build-error"}`
+	res := Publish("spi-rec", stdout, deps)
+	if res.Err != nil {
+		t.Fatalf("publish err: %v", res.Err)
+	}
+	if got := res.Outputs["status"]; got != "auto_approved" {
+		t.Errorf("status = %q, want auto_approved", got)
+	}
+	if got := res.Outputs["auto_approved"]; got != "true" {
+		t.Errorf("auto_approved = %q, want true", got)
+	}
+	if got := res.Outputs["gate"]; got != GateApprove {
+		t.Errorf("gate = %q, want %q", got, GateApprove)
+	}
+	if got := res.Outputs["rejection_comment"]; got == "" {
+		t.Error("rejection_comment must be non-empty so wait_for_gate's produces clears")
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if rec.Status == StatusAwaitingReview {
+		t.Error("auto-approved recovery bead must NOT enter awaiting_review")
+	}
+	if !containsString(rec.Labels, LabelAutoApproved) {
+		t.Errorf("recovery labels = %v, want %s", rec.Labels, LabelAutoApproved)
+	}
+}
+
+func TestPublish_NotPromotedFollowsNormalPath(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	deps := fs.toDeps()
+	deps.Learning = stubLearningStore{promoted: false}
+
+	stdout := `{"verb":"resummon","reasoning":"transient","failure_class":"build-error"}`
+	res := Publish("spi-rec", stdout, deps)
+	if res.Err != nil {
+		t.Fatalf("publish err: %v", res.Err)
+	}
+	if got := res.Outputs["status"]; got != "awaiting_review" {
+		t.Errorf("status = %q, want awaiting_review (not promoted)", got)
+	}
+	if got := res.Outputs["auto_approved"]; got != "" {
+		t.Errorf("auto_approved = %q, want empty on normal path", got)
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if rec.Status != StatusAwaitingReview {
+		t.Errorf("recovery status = %q, want %s", rec.Status, StatusAwaitingReview)
+	}
+	if containsString(rec.Labels, LabelAutoApproved) {
+		t.Errorf("normal-path recovery should not carry %s label", LabelAutoApproved)
+	}
+}
+
+// --- Outcome recording (spi-kl8x5y) ---
+
+func TestFinish_RecordsPendingOutcome(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID: "spi-rec",
+		Metadata: map[string]string{
+			"cleric_proposal_verb":          "resummon",
+			"cleric_proposal_failure_class": "step-failure:implement",
+			MetadataKeyExecuteResult:        "applied",
+			MetadataKeyProposal:             `{"verb":"resummon","reasoning":"r","failure_class":"step-failure:implement"}`,
+			"source_step":                   "implement",
+		},
+	}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	var recorded []store.ClericOutcome
+	deps := fs.toDeps()
+	deps.RecordOutcome = func(o store.ClericOutcome) error {
+		recorded = append(recorded, o)
+		return nil
+	}
+
+	res := Finish("spi-rec", deps)
+	if res.Err != nil {
+		t.Fatalf("finish err: %v", res.Err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("recorded outcomes = %d, want 1", len(recorded))
+	}
+	got := recorded[0]
+	if got.RecoveryBeadID != "spi-rec" {
+		t.Errorf("recovery_bead_id = %q, want spi-rec", got.RecoveryBeadID)
+	}
+	if got.SourceBeadID != "spi-src" {
+		t.Errorf("source_bead_id = %q, want spi-src", got.SourceBeadID)
+	}
+	if got.FailureClass != "step-failure:implement" {
+		t.Errorf("failure_class = %q", got.FailureClass)
+	}
+	if got.Action != "resummon" {
+		t.Errorf("action = %q, want resummon", got.Action)
+	}
+	if got.Gate != GateApprove {
+		t.Errorf("gate = %q, want approve", got.Gate)
+	}
+	if got.TargetStep != "implement" {
+		t.Errorf("target_step = %q, want implement (from source_step metadata)", got.TargetStep)
+	}
+	if got.Finalized {
+		t.Error("approve outcome must be Finalized=false (wizard observer fills success later)")
+	}
+}
+
+func TestTakeover_RecordsFinalizedOutcome(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID: "spi-rec", Status: StatusAwaitingReview,
+		Metadata: map[string]string{
+			"cleric_proposal_verb":          "resummon",
+			"cleric_proposal_failure_class": "step-failure:implement",
+		},
+	}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	var recorded []store.ClericOutcome
+	deps := fs.toDeps()
+	deps.RecordOutcome = func(o store.ClericOutcome) error {
+		recorded = append(recorded, o)
+		return nil
+	}
+
+	res := Takeover("spi-rec", deps)
+	if res.Err != nil {
+		t.Fatalf("takeover err: %v", res.Err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("recorded outcomes = %d, want 1", len(recorded))
+	}
+	got := recorded[0]
+	if got.Gate != GateTakeover {
+		t.Errorf("gate = %q, want takeover", got.Gate)
+	}
+	if !got.Finalized {
+		t.Error("takeover outcome must be Finalized=true")
+	}
+}
+
+func TestReject_RecordsFinalizedRejectOutcome(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID: "spi-rec", Status: StatusAwaitingReview,
+		Metadata: map[string]string{
+			"cleric_proposal_verb":          "resummon",
+			"cleric_proposal_failure_class": "step-failure:implement",
+		},
+	}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	var recorded []store.ClericOutcome
+	deps := fs.toDeps()
+	deps.RecordOutcome = func(o store.ClericOutcome) error {
+		recorded = append(recorded, o)
+		return nil
+	}
+
+	res := Reject("spi-rec", deps)
+	if res.Err != nil {
+		t.Fatalf("reject err: %v", res.Err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("recorded outcomes = %d, want 1", len(recorded))
+	}
+	got := recorded[0]
+	if got.Gate != GateReject {
+		t.Errorf("gate = %q, want reject", got.Gate)
+	}
+	if !got.Finalized {
+		t.Error("reject outcome must be Finalized=true")
+	}
+	if got.RecoveryBeadID != "spi-rec" || got.SourceBeadID != "spi-src" {
+		t.Errorf("recovery=%q source=%q", got.RecoveryBeadID, got.SourceBeadID)
+	}
+	// Reject must NOT close the bead — the formula's resets directive
+	// drives the requeue.
+	if rec := fs.beadsByID["spi-rec"]; rec.Status == StatusClosed {
+		t.Error("cleric.reject must not close the recovery bead — formula handles requeue")
 	}
 }
 

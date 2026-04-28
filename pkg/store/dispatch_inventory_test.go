@@ -189,6 +189,13 @@ var dispatchedAPIs = []string{
 	"UpdateLearningOutcomeAuto",
 	"GetPromotionSnapshotAuto",
 	"DemotePromotedRowsAuto",
+
+	// cleric_outcomes.go (sidecar SQL via getDB → getStore) — spi-kl8x5y.
+	"RecordClericOutcomeAuto",
+	"FinalizeClericOutcomeAuto",
+	"LastNFinalizedClericOutcomesAuto",
+	"PendingClericOutcomesForSourceBeadAuto",
+	"ListDemotedClericPairsAuto",
 }
 
 // nonDispatchableAPIs lists every public pkg/store function that does NOT
@@ -337,6 +344,14 @@ var nonDispatchableAPIs = []string{
 	"UpdateLearningOutcome",
 	"GetPromotionSnapshot",
 	"DemotePromotedRows",
+
+	// cleric_outcomes.go — direct *sql.DB takers; *Auto wrappers are dispatched.
+	"EnsureClericOutcomesTable",
+	"RecordClericOutcome",
+	"FinalizeClericOutcome",
+	"LastNFinalizedClericOutcomes",
+	"PendingClericOutcomesForSourceBead",
+	"ListDemotedClericPairs",
 
 	// trust.go — direct *sql.DB takers.
 	"TrustLevelName",

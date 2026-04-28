@@ -62,6 +62,18 @@ type Deps struct {
 	// Production callers wire a real client; tests pass stubs.
 	Gateway GatewayClient
 
+	// Learning is the promotion/demotion policy the auto-approve
+	// fast-path consults during cleric.publish. Production wiring uses
+	// StoreLearning{}; tests inject a fake. Nil disables the fast-path.
+	Learning LearningStore
+
+	// RecordOutcome persists a per-round outcome row for the
+	// promotion/demotion learning loop. Production wires this to
+	// store.RecordClericOutcomeAuto. Nil disables outcome recording —
+	// handlers do not error in that case so legacy tests don't have to
+	// wire it up.
+	RecordOutcome func(o store.ClericOutcome) error
+
 	// Now returns the current wall-clock time. Tests inject a fixed
 	// clock; production callers leave it nil and the package falls back
 	// to time.Now.
@@ -93,9 +105,19 @@ type HandlerResult struct {
 // against the ProposedAction schema, persists it on the recovery bead's
 // metadata, and transitions the bead to awaiting_review.
 //
-// Returns Outputs.status="awaiting_review" on success. On parse / validation
-// failure, returns Err so the formula engine parks the step (the recovery
-// bead becomes its own failure case; per the design, recursive recoveries
+// Auto-approve fast-path (spi-kl8x5y): if deps.Learning reports the
+// (failure_class, action) pair is promoted, Publish skips
+// awaiting_review entirely. The recovery bead is labeled
+// auto-approved:promoted and the result outputs carry an
+// auto_approved="true" flag plus the gate values the formula's
+// wait_for_gate step would otherwise wait for; the executor adapter
+// pre-writes those into wait_for_gate's outputs so the formula advances
+// to cleric.execute synchronously.
+//
+// Returns Outputs.status="awaiting_review" on the normal path,
+// "auto_approved" on the fast path. On parse / validation failure,
+// returns Err so the formula engine parks the step (the recovery bead
+// becomes its own failure case; per the design, recursive recoveries
 // are out of scope for v1).
 func Publish(recoveryBeadID, decideStdout string, deps Deps) HandlerResult {
 	if err := requireSeams(deps, "Publish",
@@ -118,15 +140,51 @@ func Publish(recoveryBeadID, decideStdout string, deps Deps) HandlerResult {
 	now := deps.now().Format(time.RFC3339)
 
 	if err := deps.SetBeadMetadata(recoveryBeadID, map[string]string{
-		MetadataKeyProposal:           string(encoded),
-		"cleric_proposal_published_at": now,
-		"cleric_proposal_verb":         pa.Verb,
+		MetadataKeyProposal:            string(encoded),
+		"cleric_proposal_published_at":  now,
+		"cleric_proposal_verb":          pa.Verb,
 		"cleric_proposal_failure_class": pa.FailureClass,
 	}); err != nil {
 		return HandlerResult{Err: fmt.Errorf("cleric.publish: persist proposal: %w", err)}
 	}
 
-	// Transition recovery bead to awaiting_review.
+	autoApproved := IsPromoted(deps.Learning, pa.FailureClass, pa.Verb)
+	if autoApproved {
+		// Fast-path: transition straight to closed-pending-execute. The
+		// formula's wait_for_gate step will see gate=approve in its
+		// outputs (pre-written by the executor adapter) and advance
+		// without parking.
+		if deps.AddLabel != nil {
+			_ = deps.AddLabel(recoveryBeadID, LabelAutoApproved)
+		}
+		summary := fmt.Sprintf(
+			"cleric proposes: %s — %s [auto-approved: %s/%s promoted on prior outcomes]",
+			pa.Verb, truncate(pa.Reasoning, 200), pa.FailureClass, pa.Verb)
+		if cerr := deps.AddComment(recoveryBeadID, summary); cerr != nil {
+			// Non-fatal: persistence already succeeded.
+			return HandlerResult{
+				Outputs: map[string]string{
+					"status":            "auto_approved",
+					"verb":              pa.Verb,
+					"auto_approved":     "true",
+					"gate":              GateApprove,
+					"rejection_comment": "auto-approved",
+					"comment_warning":   cerr.Error(),
+				},
+			}
+		}
+		return HandlerResult{
+			Outputs: map[string]string{
+				"status":            "auto_approved",
+				"verb":              pa.Verb,
+				"auto_approved":     "true",
+				"gate":              GateApprove,
+				"rejection_comment": "auto-approved",
+			},
+		}
+	}
+
+	// Normal path: transition recovery bead to awaiting_review.
 	if err := deps.UpdateBead(recoveryBeadID, map[string]interface{}{
 		"status": StatusAwaitingReview,
 	}); err != nil {
@@ -236,6 +294,11 @@ func Execute(recoveryBeadID string, deps Deps) HandlerResult {
 // label so the human and dashboards know the bead is awaiting manual
 // repair. The recovery bead transitions to closed with an audit comment
 // documenting the takeover.
+//
+// Records a takeover outcome row (spi-kl8x5y) — finalized=true since
+// the wizard never resumes after a takeover, so there's nothing for the
+// observer to fill. Takeover rows break BOTH the promotion and the
+// demotion streak (they're neither approve+success nor reject).
 func Takeover(recoveryBeadID string, deps Deps) HandlerResult {
 	if err := requireSeams(deps, "Takeover",
 		deps.GetBead, deps.GetDepsWithMeta, deps.AddLabel, deps.CloseBead); err != nil {
@@ -252,6 +315,22 @@ func Takeover(recoveryBeadID string, deps Deps) HandlerResult {
 
 	if err := deps.AddLabel(sourceID, LabelNeedsManual); err != nil {
 		return HandlerResult{Err: fmt.Errorf("cleric.takeover: label source %s: %w", sourceID, err)}
+	}
+
+	// Record outcome before closing the recovery bead so a downstream
+	// learning consumer can find the row even if close-time hooks run
+	// asynchronously.
+	if deps.RecordOutcome != nil {
+		bead, _ := deps.GetBead(recoveryBeadID)
+		_ = deps.RecordOutcome(store.ClericOutcome{
+			RecoveryBeadID: recoveryBeadID,
+			SourceBeadID:   sourceID,
+			FailureClass:   bead.Meta("cleric_proposal_failure_class"),
+			Action:         bead.Meta("cleric_proposal_verb"),
+			Gate:           GateTakeover,
+			Finalized:      true,
+			CreatedAt:      deps.now(),
+		})
 	}
 
 	if deps.AddComment != nil {
@@ -273,16 +352,62 @@ func Takeover(recoveryBeadID string, deps Deps) HandlerResult {
 	}
 }
 
-// Finish records the final outcome of a recovery cycle for the
-// promotion/demotion learning loop (separate feature spi-kl8x5y) and
-// closes the recovery bead. The outcome record carries the
-// (failure_class, verb, gate_result) triple so the future learning
-// consumer can compute consecutive-N tallies.
+// Reject records a reject outcome row (spi-kl8x5y) for the
+// promotion/demotion learning loop. Replaces the legacy noop-action
+// requeue_after_reject step in the cleric formula so reject outcomes
+// are visible to the learning store. The reject is always finalized=true
+// — there's no wizard observation downstream of a rejection.
 //
-// `wizard_post_action_success` cannot be evaluated here — it depends on
-// whether the wizard run after this completes succeeds. The learning
-// feature observes the source bead's subsequent transitions to fill
-// that field. We just persist what we know now.
+// Reject does NOT close the recovery bead. The cleric formula's reset
+// directive on requeue_after_reject sends decide / publish / wait_for_gate
+// back to pending, so the next wizard run spawns a fresh cleric round
+// against the rejection comment.
+func Reject(recoveryBeadID string, deps Deps) HandlerResult {
+	if err := requireSeams(deps, "Reject", deps.GetBead); err != nil {
+		return HandlerResult{Err: err}
+	}
+	bead, err := deps.GetBead(recoveryBeadID)
+	if err != nil {
+		return HandlerResult{Err: fmt.Errorf("cleric.reject: load bead: %w", err)}
+	}
+	verb := bead.Meta("cleric_proposal_verb")
+	failureClass := bead.Meta("cleric_proposal_failure_class")
+	if deps.RecordOutcome != nil && verb != "" && failureClass != "" {
+		sourceID, _ := SourceBeadID(recoveryBeadID, deps)
+		_ = deps.RecordOutcome(store.ClericOutcome{
+			RecoveryBeadID: recoveryBeadID,
+			SourceBeadID:   sourceID,
+			FailureClass:   failureClass,
+			Action:         verb,
+			Gate:           GateReject,
+			Finalized:      true,
+			CreatedAt:      deps.now(),
+		})
+	}
+	if deps.AddComment != nil {
+		_ = deps.AddComment(recoveryBeadID,
+			fmt.Sprintf("cleric.reject: recording outcome verb=%s failure_class=%s for promotion/demotion tally", verb, failureClass))
+	}
+	return HandlerResult{
+		Outputs: map[string]string{
+			"status": "rejected",
+			"verb":   verb,
+		},
+	}
+}
+
+// Finish records the final outcome of a recovery cycle for the
+// promotion/demotion learning loop and closes the recovery bead.
+//
+// Two writes:
+//   - Bead metadata (existing): a redundant cleric_outcome key that's
+//     visible to anyone reading the recovery bead via the standard API.
+//   - cleric_outcomes table (spi-kl8x5y): a queryable row keyed by
+//     (failure_class, action) that drives IsPromoted / IsDemoted /
+//     ListDemotedClericPairs. The row is inserted with finalized=false
+//     because the wizard's post-action success isn't known yet — the
+//     wizard observer fills that in when the source bead's next-step
+//     transition fires.
 func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 	if err := requireSeams(deps, "Finish",
 		deps.GetBead, deps.SetBeadMetadata, deps.CloseBead); err != nil {
@@ -300,14 +425,33 @@ func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 	now := deps.now().Format(time.RFC3339)
 
 	outcome := map[string]string{
-		MetadataKeyOutcome:       "approve+executed",
-		"cleric_outcome_verb":    verb,
-		"cleric_outcome_failure_class": failureClass,
+		MetadataKeyOutcome:              "approve+executed",
+		"cleric_outcome_verb":           verb,
+		"cleric_outcome_failure_class":  failureClass,
 		"cleric_outcome_execute_result": executeResult,
-		"cleric_outcome_recorded_at": now,
+		"cleric_outcome_recorded_at":    now,
 	}
 	if err := deps.SetBeadMetadata(recoveryBeadID, outcome); err != nil {
 		return HandlerResult{Err: fmt.Errorf("cleric.finish: persist outcome: %w", err)}
+	}
+
+	// Record a pending outcome row for the learning loop. The wizard
+	// observer finalizes wizard_post_action_success when the source
+	// bead's next step transitions.
+	if deps.RecordOutcome != nil && verb != "" && failureClass != "" {
+		sourceID, _ := SourceBeadID(recoveryBeadID, deps)
+		targetStep := proposalTargetStep(bead, verb)
+		// Best-effort: don't fail the handler on outcome-write errors.
+		_ = deps.RecordOutcome(store.ClericOutcome{
+			RecoveryBeadID: recoveryBeadID,
+			SourceBeadID:   sourceID,
+			FailureClass:   failureClass,
+			Action:         verb,
+			Gate:           GateApprove,
+			TargetStep:     targetStep,
+			Finalized:      false,
+			CreatedAt:      deps.now(),
+		})
 	}
 
 	if deps.AddComment != nil {
@@ -326,6 +470,36 @@ func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 			"failure_class": failureClass,
 		},
 	}
+}
+
+// proposalTargetStep extracts the step name an action targets, when the
+// action is a step-targeted verb. Used by the wizard observer to match
+// a pending outcome to a specific source-bead step transition.
+//
+// Returns:
+//   - For "reset --to <step>": the step arg if present in the proposal,
+//     else empty.
+//   - For "resummon": the source step the wizard last failed on, read
+//     from the recovery bead's source_step / source_flow metadata when
+//     present.
+//   - For all other verbs: empty (the observer treats empty target_step
+//     as "any next-step success counts").
+func proposalTargetStep(bead store.Bead, verb string) string {
+	switch verb {
+	case "reset --to <step>":
+		raw := bead.Meta(MetadataKeyProposal)
+		if raw == "" {
+			return ""
+		}
+		pa, err := ParseProposedAction([]byte(raw))
+		if err != nil {
+			return ""
+		}
+		return pa.Args["step"]
+	case "resummon":
+		return bead.Meta("source_step")
+	}
+	return ""
 }
 
 // SourceBeadID resolves the source (top-level) bead the recovery is

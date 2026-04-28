@@ -496,6 +496,14 @@ func migrateSpireTables(database string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.AgentLogArtifactsTableSQL)); err != nil {
 		return fmt.Errorf("create agent_log_artifacts: %w", err)
 	}
+	// cleric_outcomes is the per-round outcome ledger backing the
+	// promotion/demotion learning loop (spi-kl8x5y). Pending rows track
+	// approve-path outcomes whose wizard_post_action_success has not yet
+	// been observed; the wizard observer finalizes them on next-step
+	// transitions.
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.ClericOutcomesTableSQL)); err != nil {
+		return fmt.Errorf("create cleric_outcomes: %w", err)
+	}
 
 	// Run column migrations — each entry checks SHOW COLUMNS and adds if missing.
 	for _, m := range spireMigrations {

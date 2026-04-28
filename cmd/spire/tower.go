@@ -862,6 +862,9 @@ func cmdTowerCreate(args []string) error {
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.AgentLogArtifactsTableSQL)); err != nil {
 		return fmt.Errorf("create agent_log_artifacts table: %w", err)
 	}
+	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, store.ClericOutcomesTableSQL)); err != nil {
+		return fmt.Errorf("create cleric_outcomes table: %w", err)
+	}
 
 	// bd init wrote issue_prefix to the embedded dolt's config table, but spire's
 	// server has its own working set. Ensure issue_prefix exists on the server so

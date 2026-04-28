@@ -187,6 +187,19 @@ Failure description:
 		b.WriteString("\n")
 	}
 
+	// Demoted pairs — guidance from the promotion/demotion learning loop
+	// (spi-kl8x5y). The human has rejected each listed (failure_class,
+	// action) at least three consecutive times; cleric should prefer
+	// alternatives. Down-weight only — the cleric is NOT blocked from
+	// proposing a demoted pair if the situation truly warrants it.
+	demoted := cleric.ListDemoted(cleric.DefaultLearning)
+	if len(demoted) > 0 {
+		b.WriteString("\n## Patterns the human has consistently rejected\n")
+		for _, p := range demoted {
+			fmt.Fprintf(&b, "- (failure_class=%s, action=%s) — rejected 3+ times in a row; prefer alternatives.\n", p.FailureClass, p.Action)
+		}
+	}
+
 	// Task framing + JSON shape.
 	b.WriteString(`
 ## Task framing

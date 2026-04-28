@@ -29,7 +29,7 @@ func TestClericDefaultFormula_Loads(t *testing.T) {
 		"publish":              {kind: "op", action: "cleric.publish"},
 		"wait_for_gate":        {kind: "wait"},
 		"execute":              {kind: "op", action: "cleric.execute"},
-		"requeue_after_reject": {kind: "op", action: "noop"},
+		"requeue_after_reject": {kind: "op", action: "cleric.reject"},
 		"handle_takeover":      {kind: "op", action: "cleric.takeover", terminal: true},
 		"finish":               {kind: "op", action: "cleric.finish", terminal: true},
 	}
@@ -73,11 +73,11 @@ func TestRecoveryFormulaMapping(t *testing.T) {
 	}
 }
 
-// TestClericOpcodes pins the four mechanical cleric.* opcodes are
-// recognized by the formula validator. Adding a new opcode is fine;
-// removing or renaming any of these breaks the embedded formula.
+// TestClericOpcodes pins the cleric.* opcodes are recognized by the
+// formula validator. Adding a new opcode is fine; removing or renaming
+// any of these breaks the embedded formula.
 func TestClericOpcodes(t *testing.T) {
-	for _, op := range []string{"cleric.publish", "cleric.execute", "cleric.takeover", "cleric.finish"} {
+	for _, op := range []string{"cleric.publish", "cleric.execute", "cleric.takeover", "cleric.finish", "cleric.reject"} {
 		if !ValidOpcode(op) {
 			t.Errorf("opcode %q not valid", op)
 		}
