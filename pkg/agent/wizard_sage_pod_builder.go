@@ -146,5 +146,7 @@ func buildRolePodFromSpec(spec PodSpec, args []string) (*corev1.Pod, error) {
 		},
 	}
 
+	spec.maybeInjectLogExporter(pod, env, logsMount)
+
 	return pod, nil
 }

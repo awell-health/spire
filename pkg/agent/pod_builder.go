@@ -149,6 +149,24 @@ const LogsVolumeName = "spire-logs"
 // design (spi-7wzwk2).
 const LogsMountPath = "/var/spire/logs"
 
+// LogExporterContainerName is the canonical container name for the
+// passive log-exporter sidecar from spi-k1cnof. The pod-builder uses
+// the same name across wizard / apprentice / sage / cleric / arbiter
+// pods so cluster operators have one selector to grep for.
+const LogExporterContainerName = "spire-log-exporter"
+
+// LogExporterCommand is the binary the sidecar container invokes.
+// The binary lives in the agent image alongside `spire`; the chart's
+// values plumb the same image into both containers.
+const LogExporterCommand = "spire-log-exporter"
+
+// LogExporterDefaultTerminationGrace is the default
+// TerminationGracePeriodSeconds applied to pods with the exporter
+// sidecar enabled. It must exceed the exporter's drain deadline (25s
+// by default) so SIGTERM → Flush has headroom to finalize open
+// artifacts before the kubelet kills the container.
+const LogExporterDefaultTerminationGrace int64 = 30
+
 // PodSpec is the explicit, apprentice-scoped input to
 // BuildApprenticePod. Every field is intentional and the struct has no
 // opaque maps — this keeps dispatch sites honest about what they plumb
@@ -336,6 +354,37 @@ type PodSpec struct {
 	// leaves the env unset.
 	LogStoreRetentionDays string
 
+	// LogExporterEnabled, when true, injects a passive `spire-log-exporter`
+	// sidecar container alongside the agent container. The sidecar shares
+	// the spire-logs emptyDir mount and tails files the agent produces
+	// under SPIRE_LOG_ROOT. Plumbed from the helm chart's
+	// `logExporter.enabled` value (see spi-k1cnof + spi-hzeyz9). Defaults
+	// to false; cluster-as-truth installs flip it to true alongside
+	// LogStoreBackend=gcs.
+	LogExporterEnabled bool
+
+	// LogExporterImage is the container image reference for the
+	// spire-log-exporter sidecar. When empty the sidecar reuses
+	// PodSpec.Image — the sidecar binary ships in the same agent image
+	// as the `spire` CLI so single-image installs do not need to set
+	// this. Operators that want to pin the sidecar at a different
+	// version (e.g. running a fix forward) override here.
+	LogExporterImage string
+
+	// LogExporterResources is the sidecar container's resource
+	// requests/limits. Empty defaults to LogExporterDefaultResources
+	// (10m CPU request, 64Mi memory request, 200m CPU limit, 256Mi
+	// memory limit) — the sidecar is mostly idle (tails files +
+	// occasional GCS upload).
+	LogExporterResources corev1.ResourceRequirements
+
+	// LogExporterTerminationGrace, when set on the pod, exceeds the
+	// exporter's drain deadline so SIGTERM → Flush has time to finalize
+	// open artifacts before the kubelet kills the container. Defaults to
+	// LogExporterDefaultTerminationGrace (30s, paired with the exporter's
+	// 25s default drain).
+	LogExporterTerminationGrace int64
+
 	// OTLPEndpoint is the destination for OTEL traces/logs
 	// (e.g. "http://spire-steward.spire.svc:4317"). Empty disables the
 	// OTLP env block so local test fixtures do not emit OTLP.
@@ -455,7 +504,98 @@ func BuildApprenticePod(spec PodSpec) (*corev1.Pod, error) {
 		},
 	}
 
+	spec.maybeInjectLogExporter(pod, env, logsMount)
+
 	return pod, nil
+}
+
+// maybeInjectLogExporter adds the passive log-exporter sidecar to pod
+// when LogExporterEnabled is set. The sidecar shares LogsVolumeName +
+// the relevant credential mount with the agent container so it can
+// tail files the agent produces and write artifacts/manifests through
+// the substrate. No-op when the feature is disabled — pod shape stays
+// byte-for-byte identical with the pre-spi-k1cnof contract.
+//
+// agentEnv is the same env list the agent container carries; the
+// sidecar reuses the substrate-relevant subset (SPIRE_LOG_ROOT,
+// SPIRE_TOWER, BEADS_DOLT_*, LOGSTORE_*, GOOGLE_APPLICATION_CREDENTIALS)
+// so a single chart Secret/ConfigMap projection is enough — no parallel
+// configuration surface for the sidecar.
+func (s PodSpec) maybeInjectLogExporter(pod *corev1.Pod, agentEnv []corev1.EnvVar, logsMount corev1.VolumeMount) {
+	if !s.LogExporterEnabled {
+		return
+	}
+	pod.Spec.Containers = append(pod.Spec.Containers, s.buildLogExporterContainer(agentEnv, logsMount))
+
+	grace := s.LogExporterTerminationGrace
+	if grace <= 0 {
+		grace = LogExporterDefaultTerminationGrace
+	}
+	pod.Spec.TerminationGracePeriodSeconds = &grace
+}
+
+// buildLogExporterContainer renders the sidecar container spec. Kept
+// in one place so wizard / apprentice / sage / cleric / arbiter pod
+// shapes stay aligned — a config drift between BuildApprenticePod and
+// buildRolePodFromSpec would surface as bead-scoped log gaps that
+// only show up when one role is dispatched and another isn't.
+func (s PodSpec) buildLogExporterContainer(agentEnv []corev1.EnvVar, logsMount corev1.VolumeMount) corev1.Container {
+	image := s.LogExporterImage
+	if image == "" {
+		image = s.Image
+	}
+
+	mounts := []corev1.VolumeMount{logsMount}
+	if s.GCSSecretName != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "gcp-sa",
+			MountPath: s.GCSMountPath,
+			ReadOnly:  true,
+		})
+	}
+
+	return corev1.Container{
+		Name:         LogExporterContainerName,
+		Image:        image,
+		Command:      []string{LogExporterCommand},
+		Env:          logExporterEnv(agentEnv),
+		Resources:    s.LogExporterResources,
+		VolumeMounts: mounts,
+	}
+}
+
+// logExporterEnv filters the agent's env list down to the variables the
+// sidecar binary actually consumes. We forward the full set rather than
+// hand-pick because the sidecar's env contract is documented in
+// pkg/logexport/config.go's `Env*` constants — keeping the env block
+// identical removes the dual-source-of-truth risk that the operator
+// configures one container's secret reference but not the other's.
+//
+// The credential SecretKeyRefs are intentionally not forwarded here:
+// the sidecar binary does not need ANTHROPIC_API_KEY or GITHUB_TOKEN.
+// Secret refs land on the agent container only; the sidecar reads
+// LOGSTORE_* and the tower/dolt env which are plain string values.
+func logExporterEnv(agentEnv []corev1.EnvVar) []corev1.EnvVar {
+	wanted := map[string]struct{}{
+		"SPIRE_LOG_ROOT":                 {},
+		"SPIRE_TOWER":                    {},
+		"BEADS_DATABASE":                 {},
+		"BEADS_DOLT_SERVER_HOST":         {},
+		"BEADS_DOLT_SERVER_PORT":         {},
+		"DOLT_URL":                       {},
+		"LOGSTORE_BACKEND":               {},
+		"LOGSTORE_GCS_BUCKET":            {},
+		"LOGSTORE_GCS_PREFIX":            {},
+		"LOGSTORE_RETENTION_DAYS":        {},
+		"GOOGLE_APPLICATION_CREDENTIALS": {},
+	}
+	out := make([]corev1.EnvVar, 0, len(wanted))
+	for _, e := range agentEnv {
+		if _, ok := wanted[e.Name]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // validate returns a typed error for the first missing required field.
