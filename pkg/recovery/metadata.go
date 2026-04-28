@@ -218,11 +218,17 @@ func PeerRecoveries(sourceBeadID string) (peers []store.Bead, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// Filter to type=recovery beads and sort by CreatedAt desc. ListBeadsByMetadata
-	// returns *all* beads with the matching metadata key, including non-recovery
-	// beads that happened to inherit the metadata via some future code path.
+	return filterAndSortRecoveryPeers(peers), nil
+}
+
+// filterAndSortRecoveryPeers narrows a metadata-keyed bead list to the
+// type=recovery rows and orders them most-recent-first by UpdatedAt. Equal
+// timestamps fall back to lexical ID compare (descending) so the ordering is
+// deterministic across test runs. Extracted for unit testing — store-backed
+// callers go through PeerRecoveries.
+func filterAndSortRecoveryPeers(beads []store.Bead) []store.Bead {
 	var out []store.Bead
-	for _, b := range peers {
+	for _, b := range beads {
 		if b.Type != "recovery" {
 			continue
 		}
@@ -231,8 +237,7 @@ func PeerRecoveries(sourceBeadID string) (peers []store.Bead, err error) {
 	sort.Slice(out, func(i, j int) bool {
 		// store.Bead exposes UpdatedAt but not CreatedAt; for freshly-filed
 		// recovery beads (the common case for peer-linking) UpdatedAt ≈
-		// CreatedAt. Falling back to lexical compare on equal timestamps
-		// keeps the ordering deterministic across test runs.
+		// CreatedAt.
 		ti, _ := time.Parse(time.RFC3339, out[i].UpdatedAt)
 		tj, _ := time.Parse(time.RFC3339, out[j].UpdatedAt)
 		if ti.Equal(tj) {
@@ -240,7 +245,7 @@ func PeerRecoveries(sourceBeadID string) (peers []store.Bead, err error) {
 		}
 		return ti.After(tj)
 	})
-	return out, nil
+	return out
 }
 
 // FindMatchingLearning returns the most recent closed recovery bead for

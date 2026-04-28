@@ -1015,8 +1015,10 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 // maxStepLoopCount caps how many times a single step can loop_to back to an
 // earlier step before the executor escalates. Cleric foundation (spi-h2d7yn)
 // hoists this constant out of the deleted recovery_dispatch.go so the
-// loop-safety valve in RunGraph still has a bound.
-const maxStepLoopCount = 25
+// loop-safety valve in RunGraph still has a bound. Value preserved from the
+// original recovery-era constant: a step requesting >5 re-runs from an
+// earlier step is treated as runaway.
+const maxStepLoopCount = 5
 
 // findBaseBranchInParentChain walks up the bead's parent chain looking for a
 // base-branch: label. Returns the branch name from the first bead that has one,

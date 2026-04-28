@@ -109,3 +109,99 @@ func TestRecoveryMetadataFromBead_NilMetadata(t *testing.T) {
 		t.Errorf("expected zero RecoveryMetadata from nil metadata, got %+v", got)
 	}
 }
+
+// TestFilterAndSortRecoveryPeers_TypeFilter pins the type-filter behavior:
+// only beads with Type == "recovery" survive. Cleric foundation
+// (spi-h2d7yn) — peer linkage must only chain across recovery beads.
+func TestFilterAndSortRecoveryPeers_TypeFilter(t *testing.T) {
+	in := []store.Bead{
+		{ID: "spi-1", Type: "recovery", UpdatedAt: "2026-04-28T10:00:00Z"},
+		{ID: "spi-2", Type: "task", UpdatedAt: "2026-04-28T11:00:00Z"},
+		{ID: "spi-3", Type: "recovery", UpdatedAt: "2026-04-28T09:00:00Z"},
+		{ID: "spi-4", Type: "bug", UpdatedAt: "2026-04-28T08:00:00Z"},
+	}
+	got := filterAndSortRecoveryPeers(in)
+	if len(got) != 2 {
+		t.Fatalf("filterAndSortRecoveryPeers length = %d, want 2 (recovery only)", len(got))
+	}
+	for _, b := range got {
+		if b.Type != "recovery" {
+			t.Errorf("non-recovery bead %s leaked through filter (type=%s)", b.ID, b.Type)
+		}
+	}
+}
+
+// TestFilterAndSortRecoveryPeers_MostRecentFirst pins the sort contract:
+// peers must be ordered by UpdatedAt descending (most-recent first) so
+// mostRecentPeerRecovery's "first non-self peer is the most recent" assertion
+// holds. Cleric foundation (spi-h2d7yn).
+func TestFilterAndSortRecoveryPeers_MostRecentFirst(t *testing.T) {
+	in := []store.Bead{
+		{ID: "spi-old", Type: "recovery", UpdatedAt: "2026-04-25T10:00:00Z"},
+		{ID: "spi-new", Type: "recovery", UpdatedAt: "2026-04-28T10:00:00Z"},
+		{ID: "spi-mid", Type: "recovery", UpdatedAt: "2026-04-26T10:00:00Z"},
+	}
+	got := filterAndSortRecoveryPeers(in)
+	want := []string{"spi-new", "spi-mid", "spi-old"}
+	if len(got) != len(want) {
+		t.Fatalf("filterAndSortRecoveryPeers length = %d, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].ID != w {
+			t.Errorf("position %d: got %s, want %s (full order: %v)", i, got[i].ID, w, idsOf(got))
+		}
+	}
+}
+
+// TestFilterAndSortRecoveryPeers_TieBreakDeterministic pins the deterministic
+// tie-break on equal timestamps: lexical descending on ID. Cleric foundation
+// (spi-h2d7yn) — without a stable tie-break, the most-recent peer is
+// ambiguous when two recoveries are filed in the same second, which would
+// flake the related-dep wiring.
+func TestFilterAndSortRecoveryPeers_TieBreakDeterministic(t *testing.T) {
+	in := []store.Bead{
+		{ID: "spi-aaa", Type: "recovery", UpdatedAt: "2026-04-28T10:00:00Z"},
+		{ID: "spi-ccc", Type: "recovery", UpdatedAt: "2026-04-28T10:00:00Z"},
+		{ID: "spi-bbb", Type: "recovery", UpdatedAt: "2026-04-28T10:00:00Z"},
+	}
+	got := filterAndSortRecoveryPeers(in)
+	want := []string{"spi-ccc", "spi-bbb", "spi-aaa"}
+	for i, w := range want {
+		if got[i].ID != w {
+			t.Errorf("position %d: got %s, want %s (full order: %v)", i, got[i].ID, w, idsOf(got))
+		}
+	}
+}
+
+// TestFilterAndSortRecoveryPeers_Empty handles the edge cases — nil input,
+// no recovery beads, and recovery beads with empty UpdatedAt strings.
+func TestFilterAndSortRecoveryPeers_Empty(t *testing.T) {
+	if got := filterAndSortRecoveryPeers(nil); len(got) != 0 {
+		t.Errorf("nil input should yield empty result, got %d beads", len(got))
+	}
+	noRecovery := []store.Bead{
+		{ID: "spi-1", Type: "task"},
+		{ID: "spi-2", Type: "bug"},
+	}
+	if got := filterAndSortRecoveryPeers(noRecovery); len(got) != 0 {
+		t.Errorf("no recovery beads should yield empty result, got %d beads", len(got))
+	}
+	// Empty UpdatedAt parses to zero-value time.Time; equal-time tie-break
+	// (lexical desc on ID) must kick in so the result is deterministic.
+	emptyTimes := []store.Bead{
+		{ID: "spi-1", Type: "recovery"},
+		{ID: "spi-2", Type: "recovery"},
+	}
+	got := filterAndSortRecoveryPeers(emptyTimes)
+	if len(got) != 2 || got[0].ID != "spi-2" {
+		t.Errorf("empty timestamps: expected [spi-2, spi-1], got %v", idsOf(got))
+	}
+}
+
+func idsOf(beads []store.Bead) []string {
+	out := make([]string, len(beads))
+	for i, b := range beads {
+		out[i] = b.ID
+	}
+	return out
+}
