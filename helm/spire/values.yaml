@@ -682,6 +682,112 @@ backup:
       cpu: 500m
       memory: 512Mi
 
+## @section Log artifact store (cluster log export)
+##
+## Per design spi-7wzwk2 / substrate spi-b986in: cluster-mode wizard,
+## apprentice, and sage pods emit operational logs and provider
+## transcripts. Local-native keeps writing under the wizard data
+## directory (`logStore.backend=local`, the default); cluster-as-truth
+## installs flip to `gcs` so transcripts survive pod eviction and the
+## gateway can serve them through `/api/v1/beads/{id}/logs` after the
+## pod is gone.
+##
+## The bucket configured here is INTENTIONALLY separate from
+## `bundleStore.gcs.bucket` and `backup.gcs.bucket`. The three artifact
+## classes have incompatible lifecycle, storage class, and access rules:
+##
+##   - bundleStore  — Standard storage; bundles are deleted within
+##                    minutes of merge. Reusing the log bucket would
+##                    trigger early-deletion fees on Nearline/Coldline.
+##   - backup       — Nearline/Coldline; daily Dolt DR snapshots with a
+##                    GCS lifecycle rule deleting after retentionDays.
+##                    Reusing for logs would either delete transcripts
+##                    too early or block backup compaction.
+##   - logStore     — Standard or Nearline depending on retention; logs
+##                    have provider-redaction and access-control rules
+##                    that don't apply to bundles or DR snapshots.
+##
+## Helm fails fast at render time when `logStore.backend=gcs` and
+## either `logStore.gcs.bucket` is empty or no GCP auth path is
+## configured (`gcp.serviceAccountJson` inline, or `gcp.secretName`
+## referencing an externally-managed Secret). See
+## `spire.validateLogStore` in _helpers.tpl.
+##
+## Credentials rotation: this block reuses the top-level `gcp.*`
+## credential mechanism — there is no `logStore.gcs.serviceAccountKey`
+## field. The same Secret is mounted into the gateway, the operator
+## (so it can stamp credentials onto worker pods), and every wizard /
+## apprentice / sage pod the operator builds. One
+## `--set-file gcp.serviceAccountJson=<path>` covers every consumer.
+
+## @param logStore.backend One of `local` or `gcs`. Default `local` keeps logs under the wizard data directory (matches today's local-native behavior). Cluster-as-truth installs use `gcs` so the gateway can serve transcripts after pods are gone.
+## @param logStore.gcs.bucket GCS bucket name (without `gs://`). Required when logStore.backend=gcs; the bucket MUST pre-exist. Use a DEDICATED log bucket — reusing bundleStore or backup buckets violates lifecycle/storage-class assumptions documented in the section header.
+## @param logStore.gcs.prefix Optional object-name prefix inside the log bucket. The substrate composes object keys as `<prefix>/<tower>/<bead_id>/<attempt>/<run>/<agent>/<role>/<phase>/<provider>/<stream>.jsonl`; a per-tower prefix is the recommended way to share one bucket across multiple towers.
+## @param logStore.retentionDays Documentation-only retention target for the log bucket. Enforced by a GCS bucket lifecycle rule configured out-of-band (`gsutil lifecycle set lifecycle.json gs://<bucket>`). The chart does NOT manage the lifecycle policy because Helm has no native way to reconcile GCS bucket policies.
+logStore:
+  # `local` keeps logs under the wizard data directory and the local
+  # backend in pkg/logartifact reads them. `gcs` routes writes through
+  # the cloud-native substrate so the gateway can read transcripts after
+  # the pod is gone. Use `gcs` for any cluster-as-truth deployment.
+  backend: local
+  gcs:
+    # Required when logStore.backend=gcs. Empty triggers a render-time
+    # failure from `spire.validateLogStore` rather than silently emitting
+    # an empty bucket reference. Use a DEDICATED log bucket — see the
+    # section header for why bundleStore / backup buckets are not
+    # interchangeable. Example: "awell-spire-logs".
+    bucket: ""
+    # Optional object-name prefix inside the bucket. Useful when one
+    # bucket fronts multiple towers — set per-environment, e.g.
+    # "prod/spi". The substrate appends the canonical
+    # tower/bead/attempt/... key after this prefix.
+    prefix: ""
+  # Documentation-only retention target. Enforced by a GCS bucket
+  # lifecycle rule configured out-of-band:
+  #   gsutil lifecycle set lifecycle.json gs://<bucket>
+  # 90 days is a reasonable default for forensic replay — longer than
+  # backup.retentionDays (30) because transcripts are useful for
+  # debugging long after the work is done.
+  retentionDays: 90
+
+## @section Log exporter (cluster sidecar — passive)
+##
+## Per design spi-7wzwk2: a passive log exporter tails a shared in-pod
+## log directory, emits structured JSON to stdout (Cloud Logging picks
+## it up for live tail/search), uploads completed artifacts to
+## `logStore.gcs.bucket`, and records manifest rows in the tower.
+##
+## **The exporter sidecar container is NOT rendered by this version of
+## the chart** — that wiring lands with bead spi-k1cnof. This values
+## block exists today so operators can pre-configure resources before
+## the sidecar ships, and so the chart's GCS credential plumbing
+## already extends to a future exporter without a second `helm
+## upgrade` round trip.
+##
+## Local-native installs keep `enabled: false` (no sidecar; the local
+## backend writes directly under the wizard data directory).
+## Cluster-as-truth installs that have spi-k1cnof can flip
+## `enabled: true` to start the sidecar.
+
+## @param logExporter.enabled Whether to render the passive log-exporter sidecar on wizard / apprentice / sage pods. Currently a no-op — the sidecar container itself is wired up in spi-k1cnof. The values block exists so operators can stage configuration before that bead lands.
+## @param logExporter.resources.requests.cpu Sidecar CPU request. The sidecar is mostly idle (tails files + occasional GCS upload); 10m is enough.
+## @param logExporter.resources.requests.memory Sidecar memory request.
+## @param logExporter.resources.limits.cpu Sidecar CPU limit.
+## @param logExporter.resources.limits.memory Sidecar memory limit.
+logExporter:
+  # When true, future spi-k1cnof wiring will inject a `spire-log-exporter`
+  # sidecar onto wizard / apprentice / sage pods. False (default) leaves
+  # pod shape unchanged. Today this field has no effect on rendered
+  # output — keep it false until spi-k1cnof ships.
+  enabled: false
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
 ## @section Namespace resource quota
 ##
 ## Optional ResourceQuota + LimitRange for the release namespace. When

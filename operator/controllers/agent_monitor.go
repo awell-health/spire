@@ -113,6 +113,25 @@ type AgentMonitor struct {
 	OLAPBackend string
 	OLAPDSN     string
 
+	// LogStoreBackend + LogStoreGCSBucket + LogStoreGCSPrefix +
+	// LogStoreRetentionDays plumb the cluster log artifact substrate
+	// (design spi-7wzwk2) onto every operator-built wizard pod. The
+	// helm chart sets LOGSTORE_BACKEND/GCS_BUCKET/GCS_PREFIX/RETENTION_DAYS
+	// on the operator container from `.Values.logStore.*`; main.go copies
+	// them here; buildOverlayEnv emits them on every wizard container so
+	// apprentice/sage subprocesses inherit the same log substrate target.
+	// Empty LogStoreBackend leaves wizards on the in-binary default.
+	//
+	// Same emit pattern as OLAP — the wizard pod is produced via
+	// SpawnConfig (BuildPod), not via the apprentice PodSpec path, so the
+	// shared builder cannot emit these env vars on wizard containers
+	// directly. The apprentice path goes through PodSpec.LogStoreBackend
+	// in IntentWorkloadReconciler.
+	LogStoreBackend       string
+	LogStoreGCSBucket     string
+	LogStoreGCSPrefix     string
+	LogStoreRetentionDays string
+
 	// Resolver is the canonical source of cluster repo identity per
 	// spi-njzmg. When wired, buildWorkloadPod treats
 	// WizardGuild.Spec.Repo/RepoBranch/Prefixes as projection-only and
@@ -1021,6 +1040,24 @@ func (m *AgentMonitor) buildOverlayEnv(wg *spirev1.WizardGuild, cfg *spirev1.Spi
 		env = append(env, corev1.EnvVar{Name: "SPIRE_OLAP_BACKEND", Value: m.OLAPBackend})
 		if m.OLAPDSN != "" {
 			env = append(env, corev1.EnvVar{Name: "SPIRE_CLICKHOUSE_DSN", Value: m.OLAPDSN})
+		}
+	}
+
+	// Log artifact substrate selection. Same shape as OLAP above:
+	// emit on every wizard container so apprentice/sage subprocesses
+	// inherit the same target. The GCS-specific keys are only emitted
+	// when LogStoreBackend="gcs" — for "local" or empty the worker
+	// keeps its in-binary default.
+	if m.LogStoreBackend != "" {
+		env = append(env, corev1.EnvVar{Name: "LOGSTORE_BACKEND", Value: m.LogStoreBackend})
+		if m.LogStoreBackend == "gcs" {
+			if m.LogStoreGCSBucket != "" {
+				env = append(env, corev1.EnvVar{Name: "LOGSTORE_GCS_BUCKET", Value: m.LogStoreGCSBucket})
+			}
+			env = append(env, corev1.EnvVar{Name: "LOGSTORE_GCS_PREFIX", Value: m.LogStoreGCSPrefix})
+			if m.LogStoreRetentionDays != "" {
+				env = append(env, corev1.EnvVar{Name: "LOGSTORE_RETENTION_DAYS", Value: m.LogStoreRetentionDays})
+			}
 		}
 	}
 

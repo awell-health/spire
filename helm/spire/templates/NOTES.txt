@@ -4,6 +4,13 @@
      the validator here guarantees the failure surfaces before any
      manifest is applied to the cluster. */ -}}
 {{- include "spire.validateBackup" . -}}
+{{- /* Same fail-fast pattern for logStore.backend=gcs — see
+     spire.validateLogStore in _helpers.tpl. Kept right after the
+     backup validator so a misconfigured cluster install fails the
+     render as early as possible with one actionable message per
+     missing feature, rather than yielding a partially-rendered chart
+     that breaks at runtime. */ -}}
+{{- include "spire.validateLogStore" . -}}
 Spire has been deployed to namespace "{{ .Values.namespace }}".
 
 Next steps:

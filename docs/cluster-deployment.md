@@ -84,7 +84,8 @@ The operator does not yet derive them automatically from the tower's
 - A Kubernetes cluster (minikube, EKS, GKE, etc.)
 - A DoltHub remote (create with `spire tower create`) — used as the **first-install seed** in cluster-as-truth deployments. The dolt-init container clones from it on first boot; the cluster Dolt is the write authority thereafter and DoltHub is not a bidirectional mirror.
 - A **GCS backup bucket** for disaster recovery — see [Backup bucket setup](#backup-bucket-setup) below. `backup.enabled=true` is the chart default; install will fail fast without a bucket.
-- A **GCP service-account JSON** with `roles/storage.objectAdmin` on the backup bucket (and on the bundle bucket if `bundleStore.backend=gcs`), OR a Workload-Identity binding plus an external Secret pinned via `gcp.secretName`. See [GCP auth](#gcp-auth) below.
+- A **GCS log bucket** when running with `logStore.backend=gcs` — see [Log artifact bucket setup](#log-artifact-bucket-setup) below. Separate from the backup and bundle buckets because the lifecycle / storage class / access rules differ.
+- A **GCP service-account JSON** with `roles/storage.objectAdmin` on the backup bucket (and on the bundle bucket if `bundleStore.backend=gcs`, and on the log bucket if `logStore.backend=gcs`), OR a Workload-Identity binding plus an external Secret pinned via `gcp.secretName`. See [GCP auth](#gcp-auth) below.
 
 ---
 
@@ -144,6 +145,86 @@ This is the only documented reason to disable backup. Production installs MUST k
 ### Production readiness
 
 Backup default-on means the CronJob runs once a day and archives to GCS. **It does not prove the restore path is healthy.** Production cutover is gated on the restore drill (bead `spi-i7k1ag.3`); do not announce DR readiness based on backup-enabled alone.
+
+---
+
+## Log artifact bucket setup
+
+Cluster-as-truth deployments persist agent logs and provider transcripts in a dedicated GCS bucket so the gateway can serve them through `/api/v1/beads/{id}/logs` after the emitting pod is gone (design `spi-7wzwk2`). Local-native installs skip this and keep using the wizard data directory; cluster installs that want gateway-served logs flip `logStore.backend=gcs`.
+
+The bucket is **separate from `bundleStore.gcs.bucket` and `backup.gcs.bucket`** and the three are not interchangeable:
+
+- `bundleStore` — Standard storage class; bundles deleted within minutes of merge. Reusing the log bucket would trigger early-deletion fees on Nearline/Coldline.
+- `backup` — Nearline/Coldline; daily Dolt DR snapshots with a lifecycle rule deleting after `backup.retentionDays`. Reusing for logs would either delete transcripts too early or block backup compaction.
+- `logStore` — Standard or Nearline depending on retention; logs have provider-redaction and access-control rules that don't apply to bundles or DR snapshots.
+
+The chart's `spire.validateLogStore` helper fails the render fast when `logStore.backend=gcs` is set without `logStore.gcs.bucket` or a GCP auth path.
+
+### 1. Create the bucket
+
+```bash
+PROJECT_ID=<your-gcp-project>
+LOG_BUCKET=$PROJECT_ID-spire-logs
+
+gcloud storage buckets create gs://$LOG_BUCKET \
+  --project=$PROJECT_ID \
+  --location=us-central1 \
+  --default-storage-class=STANDARD     # Standard for short retention; Nearline for 30+ days
+```
+
+Do NOT enable object versioning — log artifacts are write-once and versioning would inflate cost without serving any forensic-replay use case.
+
+### 2. Configure IAM
+
+The same Workload Identity GSA already bound to `spire-operator` (see [GCP auth](#gcp-auth) below) needs `roles/storage.objectAdmin` on the **log** bucket:
+
+```bash
+gcloud storage buckets add-iam-policy-binding gs://$LOG_BUCKET \
+  --member "serviceAccount:<gsa>@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role roles/storage.objectAdmin
+```
+
+The gateway needs read access to serve transcripts; the operator-stamped exporter (once `spi-k1cnof` ships) needs write access to upload artifacts. **Do not create a second GSA for log access** — the chart's `gcp.*` block is the single auth path; spi-hzeyz9 deliberately does not introduce a per-store credential field.
+
+### 3. Configure retention
+
+The chart records `logStore.retentionDays` for documentation only. Apply a GCS lifecycle rule out-of-band so old artifacts age out automatically:
+
+```bash
+cat > /tmp/log-lifecycle.json <<EOF
+{ "lifecycle": { "rule": [
+  { "action": { "type": "Delete" },
+    "condition": { "age": 90 } }
+] } }
+EOF
+gsutil lifecycle set /tmp/log-lifecycle.json gs://$LOG_BUCKET
+```
+
+90 days is the chart default — pick what matches your forensic-replay window. Coldline retrieval is not free, so default to Standard or Nearline unless you intend to never read transcripts back through the gateway.
+
+### 4. Wire the bucket into your values overlay
+
+```yaml
+logStore:
+  backend: gcs
+  gcs:
+    bucket: $PROJECT_ID-spire-logs
+    prefix: prod                       # optional per-tower namespace
+  retentionDays: 90                    # doc-only; matches the lifecycle rule above
+```
+
+The same `gcp.*` block configured for backup/bundleStore is reused — no additional credential field is required.
+
+### Opt-out (local-native installs)
+
+Local-native and dev clusters that don't need cluster log export keep the chart default:
+
+```yaml
+logStore:
+  backend: local                       # chart default
+```
+
+Local mode keeps writing under the wizard data directory (`~/.local/share/spire/wizards`); `spire logs` and `spire logs pretty` continue to work unchanged.
 
 ---
 

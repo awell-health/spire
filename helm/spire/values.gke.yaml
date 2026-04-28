@@ -262,12 +262,100 @@ backup:
     bucket: PROJECT_ID-spire-backups
     prefix: prod
 
+## --- Log artifact store (GCS, cluster-attach read surface) ---
+# Per design spi-7wzwk2, cluster-as-truth deployments persist agent
+# logs and provider transcripts in a dedicated GCS bucket so the
+# gateway can serve them through `/api/v1/beads/{id}/logs` after the
+# emitting pod is gone. Set explicitly here so the production
+# expectation is legible at the overlay level rather than relying on
+# the values.yaml default (which is `local`, correct for laptops).
+#
+# Operators MUST also supply `logStore.gcs.bucket` (a separate bucket
+# from `bundleStore.gcs.bucket` and `backup.gcs.bucket` — bundle
+# buckets need Standard storage class and short retention; backup
+# buckets suit Nearline/Coldline; log buckets typically run Standard
+# or Nearline depending on retention preferences and have distinct
+# IAM/redaction rules) and a GCP auth path. The same Workload Identity
+# binding the steward already uses for bundleStore must extend to the
+# log bucket — see "IAM expectations" below.
+#
+# Helm fails the render fast when `logStore.backend=gcs` is left
+# without `logStore.gcs.bucket` or any GCP auth path. Local-native
+# (`logStore.backend: local`) is the only documented opt-out.
+#
+# IAM expectations (must be satisfied for the log bucket):
+#
+#   1. The Workload Identity GSA bound to spire-operator (and via
+#      KSA reuse, spire-gateway) must hold `roles/storage.objectAdmin`
+#      on the log bucket. The gateway needs read access to serve
+#      transcripts; the operator-stamped exporter sidecar (spi-k1cnof)
+#      needs write access to upload artifacts.
+#
+#         gcloud storage buckets add-iam-policy-binding gs://<log-bucket> \
+#           --member "serviceAccount:<gsa>@<project>.iam.gserviceaccount.com" \
+#           --role roles/storage.objectAdmin
+#
+#   2. The same `spire/spire-operator` KSA → GSA workload-identity
+#      binding documented at the top of this file is reused — DO NOT
+#      create a second GSA for log access. The chart's `gcp.*` block
+#      is the single auth path; spi-hzeyz9 deliberately does not add
+#      a per-store credential field.
+#
+# Bucket lifecycle (configured out-of-band, not by Helm):
+#
+#   - Storage class: Standard for ~30 day forensic windows, Nearline
+#     for 30–90 day windows. Coldline only if you intend to never
+#     read transcripts back through the gateway (Coldline retrieval
+#     is not free).
+#   - Lifecycle rule: delete objects older than `logStore.retentionDays`
+#     (default 90 in values.yaml). Configure with:
+#
+#         gsutil lifecycle set lifecycle.json gs://<log-bucket>
+#
+#     where lifecycle.json contains an `Age` rule matching your chosen
+#     retention. The chart does NOT manage this rule — Helm has no
+#     native way to reconcile GCS bucket policies, same as bundleStore
+#     and backup.
+#   - DO NOT enable object versioning. Log artifacts are write-once;
+#     versioning would inflate storage cost without serving any
+#     forensic-replay use case.
+#   - DO NOT reuse `bundleStore.gcs.bucket` or `backup.gcs.bucket`.
+#     Their lifecycle / storage-class assumptions are incompatible.
+logStore:
+  backend: gcs
+  gcs:
+    # Replace PROJECT_ID with your GCP project. The bucket MUST
+    # pre-exist and MUST be a dedicated log bucket — see the section
+    # header above for why bundleStore / backup buckets cannot be
+    # reused. Helm fails fast at render time when this is empty.
+    bucket: PROJECT_ID-spire-logs
+    # Optional per-tower namespace inside the bucket. The substrate
+    # composes the canonical key as
+    #   <prefix>/<tower>/<bead>/<attempt>/<run>/<agent>/<role>/<phase>/<provider>/<stream>.jsonl
+    # Use this when one log bucket fronts multiple Spire towers.
+    prefix: ""
+  # 90 days is doc-only — enforced by a GCS bucket lifecycle rule
+  # configured out-of-band (see "Bucket lifecycle" above). Increase
+  # for longer forensic-replay windows; decrease for cost-sensitive
+  # installs that rely on Cloud Logging for live debugging instead.
+  retentionDays: 90
+
+## --- Log exporter (passive sidecar, cluster-grade) ---
+# The sidecar container itself is wired up by spi-k1cnof; this block
+# exists so operators can pre-configure resources before the wiring
+# lands. Flip `enabled: true` once spi-k1cnof has shipped in your
+# release and you want pod-side log artifact upload.
+logExporter:
+  enabled: false
+
 ## --- GCP credential ---
 # In a Workload-Identity-only world this would be empty. Today the chart
 # enforces a non-empty value whenever bundleStore.backend=gcs (see
 # templates/steward.yaml `required` gate); the placeholder below satisfies
 # that gate so the overlay renders standalone, but it is NOT a usable
-# credential. At install time, EITHER:
+# credential. The same `gcp.*` credential is reused for `logStore.gcs`
+# (spi-hzeyz9 explicitly does not introduce a second GCP auth model).
+# At install time, EITHER:
 #   (a) Override with a real key file:
 #         helm upgrade --set-file gcp.serviceAccountJson=$HOME/.gcp/sa.json
 #       and accept that the SA key now lives in a chart-rendered Secret.

@@ -101,6 +101,18 @@ spec:
           env:
             {{- include "spire.stewardCommonEnv" . | nindent 12 }}
             {{- include "spire.olapEnv" . | nindent 12 }}
+            {{- include "spire.logStoreEnv" . | nindent 12 }}
+            {{- if eq (include "spire.logStoreNeedsGCP" .) "true" }}
+            # ADC path for the gateway's logartifact GCS client. The
+            # gateway reads bead logs from the same GCS bucket the
+            # exporter writes to (design spi-7wzwk2: gateway is the
+            # canonical cluster-attach read surface — clients never
+            # call GCS directly). Mirrors the steward/dolt pattern so
+            # one GOOGLE_APPLICATION_CREDENTIALS value works wherever
+            # the credential is mounted.
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
+            {{- end }}
             {{- if .Values.gateway.apiToken }}
             - name: SPIRE_API_TOKEN
               valueFrom:
@@ -137,7 +149,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.paths.dataRoot }}
+            {{- if eq (include "spire.logStoreNeedsGCP" .) "true" }}
+            - name: gcp-sa
+              mountPath: {{ .Values.gcp.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           emptyDir: {}
+        {{- if eq (include "spire.logStoreNeedsGCP" .) "true" }}
+        - name: gcp-sa
+          secret:
+            secretName: {{ include "spire.gcpSecretName" . }}
+            defaultMode: 0400
+        {{- end }}
 {{- end }}

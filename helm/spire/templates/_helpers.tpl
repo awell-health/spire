@@ -115,6 +115,103 @@ docs/cluster-deployment.md and k8s/DEPLOY.md so users can self-serve.
 {{- end -}}
 
 {{/*
+spire.validateLogStore — fail-fast validation for the cluster log
+artifact store (design spi-7wzwk2). Called from NOTES.txt so it runs
+unconditionally during `helm template` and `helm install`/`helm upgrade`,
+matching the `spire.validateBackup` shape. Fires two checks in sequence
+when `.Values.logStore.backend` is `gcs`:
+
+  1. `.Values.logStore.gcs.bucket` empty → fail. Without a bucket the
+     gateway and exporter would emit object URIs against an empty
+     bucket name, which surfaces as opaque GCS errors at first write.
+  2. No GCP auth path configured → fail. Either `gcp.serviceAccountJson`
+     (inline JSON, materialized into the chart-rendered Secret) or
+     `gcp.secretName` (externally-managed Secret name, used when an
+     ESO/sealed-secrets/Workload-Identity flow injects creds) must be
+     non-empty. The same path is reused for bundleStore and backup —
+     this validator does NOT introduce a second auth model per the
+     spi-hzeyz9 scope.
+
+The default `logStore.backend=local` skips both checks; local-native
+installs render no GCS-related templates and need no GCP auth.
+*/}}
+{{- define "spire.validateLogStore" -}}
+{{- if eq .Values.logStore.backend "gcs" -}}
+  {{- if not .Values.logStore.gcs.bucket -}}
+{{- fail (printf "%s\n  - Set --set logStore.gcs.bucket=<bucket-name> (the bucket MUST pre-exist; use a DEDICATED log bucket separate from bundleStore.gcs.bucket and backup.gcs.bucket).\n  - Or --set logStore.backend=local to keep logs on the wizard data directory (local-native default).\n  See helm/spire/values.yaml (logStore section) and docs/cluster-deployment.md (Log artifact bucket setup)." "logStore.backend=gcs requires logStore.gcs.bucket — cluster log export uses GCS as the durable artifact substrate.") -}}
+  {{- end -}}
+  {{- if not (include "spire.gcpAuthConfigured" .) -}}
+{{- fail (printf "%s\n  - Inline JSON: --set-file gcp.serviceAccountJson=<path-to-sa.json>.\n  - External Secret: --set gcp.secretName=<existing-secret-name> (sealed-secrets, external-secrets-operator, or a Workload-Identity placeholder Secret).\n  - Or --set logStore.backend=local to keep logs on the wizard data directory.\n  The same gcp.* path is reused by bundleStore and backup — there is no separate logStore credential field." "logStore.backend=gcs requires a GCP auth path — neither gcp.serviceAccountJson nor gcp.secretName is set.") -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+spire.logStoreEnv — LOGSTORE_BACKEND + LOGSTORE_GCS_BUCKET +
+LOGSTORE_GCS_PREFIX + LOGSTORE_RETENTION_DAYS env entries for any
+component that consumes the log artifact substrate. The pkg/logartifact
+GCS backend reads these to construct a Store; the local backend reads
+LOGSTORE_BACKEND alone and falls through to its data-directory default.
+
+Emits nothing when `.Values.logStore.backend` is unset/empty so a
+bare-bones install doesn't carry pointer-only env. When the backend is
+`local` we still emit LOGSTORE_BACKEND=local so consumers don't have to
+disambiguate "unset" from "explicitly local"; the GCS-specific keys are
+omitted in that case.
+
+Consumed by the gateway and operator deployments, and propagated onto
+wizard / apprentice / sage pods via SPIRE_LOGSTORE_* env on the operator
+(read by main.go and stamped onto every PodSpec).
+
+The emitted block starts at column 0; callers indent with `nindent 12`
+under the container's `env:` key.
+*/}}
+{{- define "spire.logStoreEnv" -}}
+{{- if .Values.logStore.backend }}
+- name: LOGSTORE_BACKEND
+  value: {{ .Values.logStore.backend | quote }}
+{{- if eq .Values.logStore.backend "gcs" }}
+- name: LOGSTORE_GCS_BUCKET
+  value: {{ .Values.logStore.gcs.bucket | quote }}
+- name: LOGSTORE_GCS_PREFIX
+  value: {{ .Values.logStore.gcs.prefix | quote }}
+- name: LOGSTORE_RETENTION_DAYS
+  value: {{ .Values.logStore.retentionDays | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+spire.logStoreNeedsGCP — returns "true" when the log store backend
+needs the shared GCP credential mounted onto the consumer (gateway,
+operator, or worker pod). Returns empty string otherwise.
+
+Used by deployment templates to gate the GCP volume + mount + ADC env
+without duplicating the `eq .Values.logStore.backend "gcs"` test.
+Decoupled from `bundleStore.backend` because the two features can
+opt-in independently — a tower might run with bundleStore=local and
+logStore=gcs once spi-k1cnof ships local-bundle support.
+*/}}
+{{- define "spire.logStoreNeedsGCP" -}}
+{{- if eq .Values.logStore.backend "gcs" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+spire.gcpNeeded — returns "true" when ANY GCP-consuming feature is
+enabled (bundleStore=gcs OR logStore=gcs). Empty string when none are.
+Used by deployment templates that mount the shared `gcp-sa` Secret
+volume so the volume rendering doesn't have to enumerate every feature
+flag.
+
+This helper composes existing per-feature gates rather than introducing
+a new auth model — the gcp.* credential block is shared, so any one
+GCS-using feature is enough to require the mount.
+*/}}
+{{- define "spire.gcpNeeded" -}}
+{{- if or (eq .Values.bundleStore.backend "gcs") (eq .Values.logStore.backend "gcs") -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 spire.additionalUsersSecretName — name of the chart-managed Secret that
 holds inline passwords (from `entry.password`) for dolt.additionalUsers.
 Kept separate from `spire.secretName` so external-secret setups don't

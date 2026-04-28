@@ -108,6 +108,26 @@ type IntentWorkloadReconciler struct {
 	// mount (the Secret's data key). Plumbed from SPIRE_GCP_KEY_NAME.
 	GCSKeyName string
 
+	// LogStoreBackend, when non-empty, is stamped onto every apprentice
+	// PodSpec so the in-pod log artifact substrate (pkg/logartifact) and
+	// the future passive exporter (spi-k1cnof) pick the right backend.
+	// Plumbed from the operator pod's LOGSTORE_BACKEND env (helm sets it
+	// from .Values.logStore.backend). Empty leaves apprentices on the
+	// compiled default; "local" pins the local filesystem backend; "gcs"
+	// routes writes through the cloud-native substrate so transcripts
+	// survive pod eviction.
+	LogStoreBackend string
+	// LogStoreGCSBucket is the GCS bucket name the log substrate writes
+	// to. Plumbed from LOGSTORE_GCS_BUCKET. Only consulted when
+	// LogStoreBackend="gcs".
+	LogStoreGCSBucket string
+	// LogStoreGCSPrefix is the optional object-name prefix. Plumbed
+	// from LOGSTORE_GCS_PREFIX.
+	LogStoreGCSPrefix string
+	// LogStoreRetentionDays is the documentation-only retention target
+	// for the log bucket. Plumbed from LOGSTORE_RETENTION_DAYS.
+	LogStoreRetentionDays string
+
 	// OLAPBackend, when non-empty, is stamped onto every apprentice
 	// PodSpec as PodSpec.OLAPBackend so the in-pod worker's olap.Config
 	// picks the cluster analytics backend (helm sets
@@ -246,12 +266,16 @@ func (r *IntentWorkloadReconciler) reconcile(ctx context.Context, wi intent.Work
 			RepoURL:    canonical.URL,
 			BaseBranch: canonical.BaseBranch,
 		},
-		GCSSecretName: r.GCSSecretName,
-		GCSMountPath:  r.GCSMountPath,
-		GCSKeyName:    r.GCSKeyName,
-		OLAPBackend:   r.OLAPBackend,
-		OLAPDSN:       r.OLAPDSN,
-		Resources:     podResourcesFromIntent(wi.Resources),
+		GCSSecretName:         r.GCSSecretName,
+		GCSMountPath:          r.GCSMountPath,
+		GCSKeyName:            r.GCSKeyName,
+		LogStoreBackend:       r.LogStoreBackend,
+		LogStoreGCSBucket:     r.LogStoreGCSBucket,
+		LogStoreGCSPrefix:     r.LogStoreGCSPrefix,
+		LogStoreRetentionDays: r.LogStoreRetentionDays,
+		OLAPBackend:           r.OLAPBackend,
+		OLAPDSN:               r.OLAPDSN,
+		Resources:             podResourcesFromIntent(wi.Resources),
 	}
 
 	pod, err := builder(spec)

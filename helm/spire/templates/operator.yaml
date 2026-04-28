@@ -102,15 +102,21 @@ spec:
             - name: SPIRE_CREDENTIALS_SECRET
               value: {{ include "spire.secretName" . | quote }}
             {{- include "spire.olapEnv" . | nindent 12 }}
-            {{- if eq .Values.bundleStore.backend "gcs" }}
-            # When the tower uses the GCS BundleStore, the operator needs
-            # to propagate the Secret-mounted SA onto every wizard /
-            # apprentice pod it builds so they can authenticate against
-            # GCS for bundle Put/Get. The three env vars below are read
-            # by AgentMonitor.applyOperatorOverlay (wizard pods) and by
-            # IntentWorkloadReconciler (apprentice pods built through
-            # agent.BuildApprenticePod). Empty backend leaves them unset
-            # and every built pod stays on the local-backend shape.
+            {{- include "spire.logStoreEnv" . | nindent 12 }}
+            {{- if or (eq .Values.bundleStore.backend "gcs") (eq (include "spire.logStoreNeedsGCP" .) "true") }}
+            # The SPIRE_GCP_* env tells the operator to stamp the shared
+            # gcp-sa Secret + GOOGLE_APPLICATION_CREDENTIALS onto every
+            # wizard / apprentice / sage pod it builds, so any
+            # GCS-touching feature inside those pods (bundleStore put/get,
+            # logartifact substrate writes once spi-k1cnof lands) can
+            # authenticate. Either bundleStore=gcs OR logStore=gcs is
+            # enough to require the propagation — both features share the
+            # same gcp.* credential by spi-hzeyz9 design (no second auth
+            # model). Read by main.go and consumed by
+            # AgentMonitor.applyOperatorOverlay (wizard pods) and by
+            # IntentWorkloadReconciler (apprentice/sage/cleric pods built
+            # through agent.BuildApprenticePod / BuildWizardPod /
+            # BuildSagePod / BuildClericPod).
             - name: SPIRE_GCP_SECRET_NAME
               value: {{ include "spire.gcpSecretName" . | quote }}
             - name: SPIRE_GCP_MOUNT_PATH
@@ -118,9 +124,23 @@ spec:
             - name: SPIRE_GCP_KEY_NAME
               value: {{ .Values.gcp.keyName | quote }}
             {{- end }}
+            {{- if eq (include "spire.logStoreNeedsGCP" .) "true" }}
+            # ADC for the operator's own GCS interactions. The operator
+            # itself does not write log artifacts today, but stamping
+            # the env here matches the steward/gateway pattern so any
+            # future GCS-aware reconciler sees the same auth shape
+            # without a chart change.
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: {{ .Values.gcp.mountPath }}/{{ .Values.gcp.keyName }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.paths.dataRoot }}
+            {{- if eq (include "spire.logStoreNeedsGCP" .) "true" }}
+            - name: gcp-sa
+              mountPath: {{ .Values.gcp.mountPath }}
+              readOnly: true
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.operator.resources.requests.cpu }}
@@ -131,3 +151,9 @@ spec:
       volumes:
         - name: data
           emptyDir: {}
+        {{- if eq (include "spire.logStoreNeedsGCP" .) "true" }}
+        - name: gcp-sa
+          secret:
+            secretName: {{ include "spire.gcpSecretName" . }}
+            defaultMode: 0400
+        {{- end }}

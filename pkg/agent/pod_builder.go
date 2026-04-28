@@ -293,6 +293,34 @@ type PodSpec struct {
 	// GOOGLE_APPLICATION_CREDENTIALS.
 	GCSKeyName string
 
+	// LogStoreBackend, when non-empty, is emitted as LOGSTORE_BACKEND so
+	// the in-pod worker's log artifact substrate (pkg/logartifact) picks
+	// the correct backend. "local" keeps logs on the wizard data
+	// directory; "gcs" routes writes through the cloud-native substrate
+	// so they survive pod eviction. Plumbed from the helm chart's
+	// `logStore.backend` value via the operator's SPIRE_LOGSTORE_BACKEND
+	// env. Empty leaves the env unset; the worker keeps its compiled
+	// default (local).
+	LogStoreBackend string
+
+	// LogStoreGCSBucket is the bucket name the GCS log substrate writes
+	// to. Emitted as LOGSTORE_GCS_BUCKET. Only meaningful when
+	// LogStoreBackend="gcs"; mirrors `logStore.gcs.bucket`.
+	LogStoreGCSBucket string
+
+	// LogStoreGCSPrefix is the optional object-name prefix inside the
+	// log bucket. Emitted as LOGSTORE_GCS_PREFIX. The substrate composes
+	// final keys as `<prefix>/<tower>/<bead>/<attempt>/<run>/<agent>/...`
+	// so a per-tower prefix lets multiple towers share one bucket.
+	LogStoreGCSPrefix string
+
+	// LogStoreRetentionDays is the documentation-only retention target
+	// for the log bucket. Emitted as LOGSTORE_RETENTION_DAYS so future
+	// in-pod consumers can read it; the actual GCS bucket lifecycle rule
+	// is configured out-of-band (the chart does not manage it). Empty
+	// leaves the env unset.
+	LogStoreRetentionDays string
+
 	// OTLPEndpoint is the destination for OTEL traces/logs
 	// (e.g. "http://spire-steward.spire.svc:4317"). Empty disables the
 	// OTLP env block so local test fixtures do not emit OTLP.
@@ -580,6 +608,27 @@ func (s PodSpec) buildEnv() []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_OLAP_BACKEND", Value: s.OLAPBackend})
 		if s.OLAPDSN != "" {
 			env = append(env, corev1.EnvVar{Name: "SPIRE_CLICKHOUSE_DSN", Value: s.OLAPDSN})
+		}
+	}
+
+	// Log artifact substrate selection. LOGSTORE_BACKEND tells the
+	// in-pod worker (and the future passive log exporter sidecar from
+	// spi-k1cnof) which pkg/logartifact backend to use. The GCS-specific
+	// keys are only set when the backend is "gcs"; for "local" or empty
+	// the worker keeps its compiled default. Plumbed from the helm
+	// chart's `logStore.*` block via SPIRE_LOGSTORE_* env on the operator
+	// (read in operator/main.go and stamped onto every PodSpec built by
+	// the IntentWorkloadReconciler / AgentMonitor).
+	if s.LogStoreBackend != "" {
+		env = append(env, corev1.EnvVar{Name: "LOGSTORE_BACKEND", Value: s.LogStoreBackend})
+		if s.LogStoreBackend == "gcs" {
+			if s.LogStoreGCSBucket != "" {
+				env = append(env, corev1.EnvVar{Name: "LOGSTORE_GCS_BUCKET", Value: s.LogStoreGCSBucket})
+			}
+			env = append(env, corev1.EnvVar{Name: "LOGSTORE_GCS_PREFIX", Value: s.LogStoreGCSPrefix})
+			if s.LogStoreRetentionDays != "" {
+				env = append(env, corev1.EnvVar{Name: "LOGSTORE_RETENTION_DAYS", Value: s.LogStoreRetentionDays})
+			}
 		}
 	}
 

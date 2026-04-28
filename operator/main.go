@@ -200,6 +200,19 @@ func main() {
 	olapBackend := os.Getenv("SPIRE_OLAP_BACKEND")
 	olapDSN := os.Getenv("SPIRE_CLICKHOUSE_DSN")
 
+	// Log artifact substrate. Helm sets these on the operator pod from
+	// .Values.logStore.* (spi-hzeyz9). The operator stamps them onto
+	// every wizard/apprentice/sage pod it builds so the in-pod log
+	// substrate (pkg/logartifact) — and the future passive exporter
+	// sidecar from spi-k1cnof — picks the right backend without each
+	// pod-build site having to read process env. Empty backend keeps
+	// pods on the in-binary default; "local" pins the local filesystem
+	// backend; "gcs" routes writes through the cloud-native substrate.
+	logStoreBackend := os.Getenv("LOGSTORE_BACKEND")
+	logStoreGCSBucket := os.Getenv("LOGSTORE_GCS_BUCKET")
+	logStoreGCSPrefix := os.Getenv("LOGSTORE_GCS_PREFIX")
+	logStoreRetentionDays := os.Getenv("LOGSTORE_RETENTION_DAYS")
+
 	// Wizard-liveness boundary (spi-p6unf3). The operator owns the
 	// canonical cluster Registry: a wizardregistry/cluster instance
 	// backed by live k8s pod-phase reads in the operator's namespace.
@@ -221,22 +234,26 @@ func main() {
 	}
 
 	monitor := &controllers.AgentMonitor{
-		Client:         mgr.GetClient(),
-		Log:            log.WithName("agent-monitor"),
-		Namespace:      namespace,
-		Interval:       interval,
-		OfflineTimeout: offlineTimeout,
-		StewardImage:   stewardImage,
-		Database:       database,
-		Prefix:         prefix,
-		DolthubRemote:  dolthubRemote,
-		Resolver:       resolver,
-		Registry:       clusterRegistry,
-		GCSSecretName:  gcpSecretName,
-		GCSMountPath:   gcpMountPath,
-		GCSKeyName:     gcpKeyName,
-		OLAPBackend:    olapBackend,
-		OLAPDSN:        olapDSN,
+		Client:                mgr.GetClient(),
+		Log:                   log.WithName("agent-monitor"),
+		Namespace:             namespace,
+		Interval:              interval,
+		OfflineTimeout:        offlineTimeout,
+		StewardImage:          stewardImage,
+		Database:              database,
+		Prefix:                prefix,
+		DolthubRemote:         dolthubRemote,
+		Resolver:              resolver,
+		Registry:              clusterRegistry,
+		GCSSecretName:         gcpSecretName,
+		GCSMountPath:          gcpMountPath,
+		GCSKeyName:            gcpKeyName,
+		OLAPBackend:           olapBackend,
+		OLAPDSN:               olapDSN,
+		LogStoreBackend:       logStoreBackend,
+		LogStoreGCSBucket:     logStoreGCSBucket,
+		LogStoreGCSPrefix:     logStoreGCSPrefix,
+		LogStoreRetentionDays: logStoreRetentionDays,
 	}
 	if err := mgr.Add(monitor); err != nil {
 		log.Error(err, "unable to add agent monitor")
@@ -297,21 +314,25 @@ func main() {
 	}
 
 	intentReconciler := &controllers.IntentWorkloadReconciler{
-		Client:            mgr.GetClient(),
-		Log:               log.WithName("intent-reconciler"),
-		Namespace:         namespace,
-		Image:             stewardImage,
-		Tower:             database,
-		DolthubRemote:     dolthubRemote,
-		DoltURL:           doltURL,
-		Resolver:          resolver,
-		Consumer:          intentConsumer,
-		CredentialsSecret: credentialsSecret,
-		GCSSecretName:     gcpSecretName,
-		GCSMountPath:      gcpMountPath,
-		GCSKeyName:        gcpKeyName,
-		OLAPBackend:       olapBackend,
-		OLAPDSN:           olapDSN,
+		Client:                mgr.GetClient(),
+		Log:                   log.WithName("intent-reconciler"),
+		Namespace:             namespace,
+		Image:                 stewardImage,
+		Tower:                 database,
+		DolthubRemote:         dolthubRemote,
+		DoltURL:               doltURL,
+		Resolver:              resolver,
+		Consumer:              intentConsumer,
+		CredentialsSecret:     credentialsSecret,
+		GCSSecretName:         gcpSecretName,
+		GCSMountPath:          gcpMountPath,
+		GCSKeyName:            gcpKeyName,
+		LogStoreBackend:       logStoreBackend,
+		LogStoreGCSBucket:     logStoreGCSBucket,
+		LogStoreGCSPrefix:     logStoreGCSPrefix,
+		LogStoreRetentionDays: logStoreRetentionDays,
+		OLAPBackend:           olapBackend,
+		OLAPDSN:               olapDSN,
 	}
 	if err := mgr.Add(intentReconciler); err != nil {
 		log.Error(err, "unable to add intent reconciler")
