@@ -624,14 +624,14 @@ func TestK8sBackend_SpawnWizard_Volumes(t *testing.T) {
 
 	pod := spawnedPod(t, client)
 
-	if len(pod.Spec.Volumes) != 2 {
-		t.Fatalf("len(Volumes) = %d, want 2; got %+v", len(pod.Spec.Volumes), pod.Spec.Volumes)
+	if len(pod.Spec.Volumes) != 3 {
+		t.Fatalf("len(Volumes) = %d, want 3; got %+v", len(pod.Spec.Volumes), pod.Spec.Volumes)
 	}
-	vols := make(map[string]corev1.Volume, 2)
+	vols := make(map[string]corev1.Volume, 3)
 	for _, v := range pod.Spec.Volumes {
 		vols[v.Name] = v
 	}
-	for _, name := range []string{"data", "workspace"} {
+	for _, name := range []string{"data", "workspace", LogsVolumeName} {
 		v, ok := vols[name]
 		if !ok {
 			t.Errorf("missing volume %q", name)
@@ -645,7 +645,7 @@ func TestK8sBackend_SpawnWizard_Volumes(t *testing.T) {
 	if len(pod.Spec.Containers) != 1 {
 		t.Fatalf("len(Containers) = %d, want 1", len(pod.Spec.Containers))
 	}
-	mainMounts := make(map[string]string, 2) // path -> volume name
+	mainMounts := make(map[string]string, 3) // path -> volume name
 	for _, m := range pod.Spec.Containers[0].VolumeMounts {
 		mainMounts[m.MountPath] = m.Name
 	}
@@ -654,6 +654,9 @@ func TestK8sBackend_SpawnWizard_Volumes(t *testing.T) {
 	}
 	if mainMounts["/workspace"] != "workspace" {
 		t.Errorf("main container /workspace mount volume = %q, want %q", mainMounts["/workspace"], "workspace")
+	}
+	if mainMounts[LogsMountPath] != LogsVolumeName {
+		t.Errorf("main container %s mount volume = %q, want %q", LogsMountPath, mainMounts[LogsMountPath], LogsVolumeName)
 	}
 
 	if len(pod.Spec.InitContainers) != 2 {
@@ -1051,7 +1054,7 @@ func TestK8sBackend_BuildRolePod_RoleKindMatrix(t *testing.T) {
 			role:               RoleWizard,
 			workspace:          nil,
 			wantInitContainers: 2,
-			wantVolumes:        2,
+			wantVolumes:        3,
 		},
 		{
 			name: "apprentice with borrowed_worktree → substrate",
@@ -1061,7 +1064,7 @@ func TestK8sBackend_BuildRolePod_RoleKindMatrix(t *testing.T) {
 				Path: "/workspace/spi",
 			},
 			wantInitContainers: 2,
-			wantVolumes:        2,
+			wantVolumes:        3,
 		},
 		{
 			name: "apprentice with owned_worktree → substrate",
@@ -1071,7 +1074,7 @@ func TestK8sBackend_BuildRolePod_RoleKindMatrix(t *testing.T) {
 				Path: "/workspace/spi",
 			},
 			wantInitContainers: 2,
-			wantVolumes:        2,
+			wantVolumes:        3,
 		},
 		{
 			name: "sage with borrowed_worktree → substrate",
@@ -1081,7 +1084,7 @@ func TestK8sBackend_BuildRolePod_RoleKindMatrix(t *testing.T) {
 				Path: "/workspace/spi",
 			},
 			wantInitContainers: 2,
-			wantVolumes:        2,
+			wantVolumes:        3,
 		},
 		{
 			name: "apprentice with kind=repo → flat (no init containers)",

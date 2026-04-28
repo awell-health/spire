@@ -146,6 +146,14 @@ type RunContext struct {
 	AttemptID string
 	// RunID correlates child runs to a parent invocation (high-cardinality — logs only).
 	RunID string
+	// AgentName is the logical agent name for the run (e.g.
+	// "wizard-spi-abc", "apprentice-spi-abc-w1-0"). It is the fifth
+	// identity segment in the log artifact path schema (see design
+	// spi-7wzwk2) and rides on every artifact written by this run so the
+	// exporter (spi-k1cnof) and gateway (spi-j3r694) can join an artifact
+	// back to a specific worker without parsing pod names. High-
+	// cardinality — logs/artifacts only, never on metric labels.
+	AgentName string
 	// Role is the worker role. Reuses SpawnRole from pkg/agent (via the
 	// shared canonical definition here).
 	Role SpawnRole

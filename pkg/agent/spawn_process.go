@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+
+	"github.com/awell-health/spire/pkg/dolt"
 )
 
 // ErrWorkspacePathMissing is returned by the process backend when
@@ -346,6 +348,34 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 	}
 	if cfg.Run.RunID != "" {
 		setEnv(cmd, "SPIRE_RUN_ID", cfg.Run.RunID)
+	}
+
+	// SPIRE_AGENT_NAME — the fifth identity segment in the log artifact
+	// path schema (design spi-7wzwk2). pkg/runctx in the spawned worker
+	// reads this via runtime.RunContextFromEnv() to derive canonical
+	// transcript paths. Falls back to cfg.Name when cfg.Run.AgentName
+	// has not been populated by the executor yet — this matches the
+	// k8s backend's logsEnv() helper so both backends agree on the
+	// resolution order.
+	agentName := cfg.Run.AgentName
+	if agentName == "" {
+		agentName = cfg.Name
+	}
+	if agentName != "" {
+		setEnv(cmd, "SPIRE_AGENT_NAME", agentName)
+	}
+
+	// SPIRE_LOG_ROOT — local-mode workers write canonical artifact
+	// paths under <DoltGlobalDir>/logs (matches runctx.DefaultLocalRoot).
+	// Setting it explicitly keeps the env contract uniform across local
+	// and cluster modes; an in-pod worker would receive the cluster
+	// emptyDir mount path here, while a local subprocess inherits the
+	// data-dir-relative path. Honors a caller-supplied SPIRE_LOG_ROOT
+	// override so tests can redirect to a tempdir.
+	if existing := os.Getenv("SPIRE_LOG_ROOT"); existing != "" {
+		setEnv(cmd, "SPIRE_LOG_ROOT", existing)
+	} else if root := filepath.Join(dolt.GlobalDir(), "logs"); root != "" {
+		setEnv(cmd, "SPIRE_LOG_ROOT", root)
 	}
 
 	// OTLP telemetry. The daemon's OTLP receiver listens on localhost:4317

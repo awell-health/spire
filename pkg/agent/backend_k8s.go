@@ -324,9 +324,11 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, ident runtime.RepoIdentity,
 	}
 
 	env = append(env, substrateEnv(ident)...)
+	env = append(env, logsEnv(cfg)...)
 
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
 	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
+	logsMount := corev1.VolumeMount{Name: LogsVolumeName, MountPath: LogsMountPath}
 
 	// Workspace volume source: emptyDir by default. When the caller opts
 	// in via cfg.SharedWorkspace, back /workspace with a per-wizard PVC
@@ -354,6 +356,10 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, ident runtime.RepoIdentity,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
 		workspaceVol,
+		{
+			Name:         LogsVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
 	}
 
 	initContainers := []corev1.Container{
@@ -380,7 +386,7 @@ func (b *K8sBackend) buildWizardPod(cfg SpawnConfig, ident runtime.RepoIdentity,
 					Command:      append([]string{"spire"}, args...),
 					Env:          env,
 					Resources:    WizardResources(),
-					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
+					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount, logsMount},
 				},
 			},
 		},
@@ -437,9 +443,11 @@ func (b *K8sBackend) buildSubstratePod(cfg SpawnConfig, ident runtime.RepoIdenti
 	}
 
 	env = append(env, substrateEnv(ident)...)
+	env = append(env, logsEnv(cfg)...)
 
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: "/data"}
 	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"}
+	logsMount := corev1.VolumeMount{Name: LogsVolumeName, MountPath: LogsMountPath}
 
 	// Pick the workspace volume source. Default: emptyDir (fresh
 	// per-pod substrate). Shared-PVC: when the gate is on and the kind
@@ -458,6 +466,10 @@ func (b *K8sBackend) buildSubstratePod(cfg SpawnConfig, ident runtime.RepoIdenti
 		{
 			Name:         "workspace",
 			VolumeSource: workspaceVol,
+		},
+		{
+			Name:         LogsVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
 	}
 
@@ -485,7 +497,7 @@ func (b *K8sBackend) buildSubstratePod(cfg SpawnConfig, ident runtime.RepoIdenti
 					Command:      append([]string{"spire"}, args...),
 					Env:          env,
 					Resources:    resourcesForRole(cfg.Role),
-					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount},
+					VolumeMounts: []corev1.VolumeMount{dataMount, workspaceMount, logsMount},
 				},
 			},
 		},
@@ -650,6 +662,29 @@ func (b *K8sBackend) repoBootstrapInit(env []corev1.EnvVar, mounts []corev1.Volu
 		Command:      []string{"sh", "-c", repoBootstrapScript},
 		Env:          env,
 		VolumeMounts: mounts,
+	}
+}
+
+// logsEnv builds the SPIRE_AGENT_NAME / SPIRE_LOG_ROOT env vars that
+// the in-pod log writers (pkg/runctx) read to locate the canonical
+// per-run artifact directory. SPIRE_LOG_ROOT mirrors LogsMountPath —
+// both backend paths emit it the same way so the eventual log
+// exporter (spi-k1cnof) tails the same files regardless of which pod
+// builder produced the pod.
+//
+// SPIRE_AGENT_NAME falls back to cfg.Name when cfg.Run.AgentName is
+// empty. The backend-process path (backend_process.go) uses the same
+// fallback so the canonical RunContext.AgentName resolves to the
+// agent name the executor dispatched against, even on legacy call
+// sites that have not yet populated cfg.Run.AgentName explicitly.
+func logsEnv(cfg SpawnConfig) []corev1.EnvVar {
+	agentName := cfg.Run.AgentName
+	if agentName == "" {
+		agentName = cfg.Name
+	}
+	return []corev1.EnvVar{
+		{Name: "SPIRE_AGENT_NAME", Value: agentName},
+		{Name: "SPIRE_LOG_ROOT", Value: LogsMountPath},
 	}
 }
 
@@ -966,6 +1001,12 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig, ident runtime.RepoIdentity) [
 	if cfg.ApprenticeIdx != "" {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_APPRENTICE_IDX", Value: cfg.ApprenticeIdx})
 	}
+
+	// SPIRE_AGENT_NAME / SPIRE_LOG_ROOT — pkg/runctx in the pod reads
+	// these via runtime.RunContextFromEnv() to derive canonical artifact
+	// paths. SPIRE_AGENT_NAME falls back to cfg.Name when the executor
+	// has not populated cfg.Run.AgentName.
+	env = append(env, logsEnv(cfg)...)
 
 	// Canonical RunContext env (docs/design/spi-xplwy-runtime-contract.md
 	// §1.4). Every canonical log-field value flows into the pod so the

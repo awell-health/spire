@@ -104,8 +104,9 @@ func buildRolePodFromSpec(spec PodSpec, args []string) (*corev1.Pod, error) {
 
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: DataMountPath}
 	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: DefaultWorkspaceMountPath}
+	logsMount := corev1.VolumeMount{Name: LogsVolumeName, MountPath: LogsMountPath}
 
-	mainMounts := []corev1.VolumeMount{dataMount, workspaceMount}
+	mainMounts := []corev1.VolumeMount{dataMount, workspaceMount, logsMount}
 	if spec.CachePVCName != "" {
 		mainMounts = append(mainMounts, corev1.VolumeMount{
 			Name:      "repo-cache",

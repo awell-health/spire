@@ -134,6 +134,21 @@ const DataMountPath = "/data"
 // working byte-for-byte.
 const DefaultWorkspaceMountPath = "/workspace"
 
+// LogsVolumeName is the volume name for the shared spire-logs emptyDir.
+// Wired identically into wizard / apprentice / sage / cleric / arbiter
+// pod builders so the eventual passive log-exporter sidecar (spi-k1cnof)
+// can mount the same volume by a stable name without per-role probing.
+const LogsVolumeName = "spire-logs"
+
+// LogsMountPath is the in-pod mount point for the shared spire-logs
+// emptyDir. Matches runctx.ClusterLogRoot — keeping the literal in two
+// places is intentional: pkg/runctx defines the agent-side contract and
+// pkg/agent defines the pod-shape contract, and a build-time mismatch
+// here surfaces as a runtime path-derivation mismatch that callers
+// would chase across packages. Both constants reference the same
+// design (spi-7wzwk2).
+const LogsMountPath = "/var/spire/logs"
+
 // PodSpec is the explicit, apprentice-scoped input to
 // BuildApprenticePod. Every field is intentional and the struct has no
 // opaque maps — this keeps dispatch sites honest about what they plumb
@@ -398,8 +413,9 @@ func BuildApprenticePod(spec PodSpec) (*corev1.Pod, error) {
 
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: DataMountPath}
 	workspaceMount := corev1.VolumeMount{Name: "workspace", MountPath: DefaultWorkspaceMountPath}
+	logsMount := corev1.VolumeMount{Name: LogsVolumeName, MountPath: LogsMountPath}
 
-	mainMounts := []corev1.VolumeMount{dataMount, workspaceMount}
+	mainMounts := []corev1.VolumeMount{dataMount, workspaceMount, logsMount}
 	if spec.CachePVCName != "" {
 		mainMounts = append(mainMounts, corev1.VolumeMount{
 			Name:      "repo-cache",
@@ -546,6 +562,19 @@ func (s PodSpec) buildEnv() []corev1.EnvVar {
 		corev1.EnvVar{Name: "SPIRE_ROLE", Value: string(s.effectiveRole())},
 		corev1.EnvVar{Name: "SPIRE_BEAD_ID", Value: s.BeadID},
 		corev1.EnvVar{Name: "SPIRE_BACKEND", Value: s.Backend},
+		// Agent name is the fifth identity segment in the log artifact
+		// path schema (design spi-7wzwk2). The in-pod log writers in
+		// pkg/runctx read SPIRE_AGENT_NAME via runtime.RunContextFromEnv,
+		// so the value must be present whenever the pod has a logical
+		// agent identity. We always emit it (falling back to the pod
+		// name) so the runctx Identity validation never trips on an
+		// empty agent_name field.
+		corev1.EnvVar{Name: "SPIRE_AGENT_NAME", Value: s.effectiveAgentName()},
+		// Cluster log root for the in-pod log writer. The shared
+		// spire-logs emptyDir is mounted here on every role pod (see
+		// LogsMountPath); the eventual exporter sidecar (spi-k1cnof)
+		// reads from the same path.
+		corev1.EnvVar{Name: "SPIRE_LOG_ROOT", Value: LogsMountPath},
 	)
 	if s.AttemptID != "" {
 		env = append(env, corev1.EnvVar{Name: "SPIRE_ATTEMPT_ID", Value: s.AttemptID})
@@ -748,6 +777,10 @@ func (s PodSpec) buildVolumes() []corev1.Volume {
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
 		workspaceVol,
+		{
+			Name:         LogsVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
 	}
 
 	if s.CachePVCName != "" {

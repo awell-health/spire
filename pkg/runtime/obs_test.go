@@ -13,6 +13,7 @@ func fullRun() RunContext {
 		BeadID:          "spi-abc",
 		AttemptID:       "spi-attempt-1",
 		RunID:           "run-42",
+		AgentName:       "apprentice-spi-abc-0",
 		Role:            RoleApprentice,
 		FormulaStep:     "implement",
 		Backend:         "process",
@@ -109,6 +110,7 @@ func TestRunContextFromEnv_PopulatesFromCanonicalVars(t *testing.T) {
 	t.Setenv(EnvBeadID, "spi-abc")
 	t.Setenv(EnvAttemptID, "spi-attempt-1")
 	t.Setenv(EnvRunID, "run-42")
+	t.Setenv(EnvAgentName, "apprentice-spi-abc-0")
 	t.Setenv(EnvRole, "apprentice")
 	t.Setenv(EnvFormulaStep, "implement")
 	t.Setenv(EnvBackend, "process")
@@ -132,6 +134,9 @@ func TestRunContextFromEnv_PopulatesFromCanonicalVars(t *testing.T) {
 	}
 	if run.RunID != "run-42" {
 		t.Errorf("RunID = %q, want run-42", run.RunID)
+	}
+	if run.AgentName != "apprentice-spi-abc-0" {
+		t.Errorf("AgentName = %q, want apprentice-spi-abc-0", run.AgentName)
 	}
 	if run.Role != RoleApprentice {
 		t.Errorf("Role = %q, want %q", run.Role, RoleApprentice)
@@ -159,8 +164,8 @@ func TestRunContextFromEnv_PopulatesFromCanonicalVars(t *testing.T) {
 func TestRunContextFromEnv_MissingVarsProduceEmptyStrings(t *testing.T) {
 	// Clear every canonical var.
 	for _, k := range []string{
-		EnvTower, EnvPrefix, EnvBeadID, EnvAttemptID, EnvRunID, EnvRole,
-		EnvFormulaStep, EnvBackend, EnvWorkspaceKind, EnvWorkspaceName,
+		EnvTower, EnvPrefix, EnvBeadID, EnvAttemptID, EnvRunID, EnvAgentName,
+		EnvRole, EnvFormulaStep, EnvBackend, EnvWorkspaceKind, EnvWorkspaceName,
 		EnvWorkspaceOrigin, EnvWorkspacePath, EnvHandoffMode,
 	} {
 		t.Setenv(k, "")

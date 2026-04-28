@@ -33,6 +33,7 @@ const (
 	LogFieldBeadID          = "bead_id"
 	LogFieldAttemptID       = "attempt_id"
 	LogFieldRunID           = "run_id"
+	LogFieldAgentName       = "agent_name"
 	LogFieldRole            = "role"
 	LogFieldFormulaStep     = "formula_step"
 	LogFieldBackend         = "backend"
@@ -50,6 +51,7 @@ var LogFieldOrder = []string{
 	LogFieldBeadID,
 	LogFieldAttemptID,
 	LogFieldRunID,
+	LogFieldAgentName,
 	LogFieldRole,
 	LogFieldFormulaStep,
 	LogFieldBackend,
@@ -163,6 +165,7 @@ func logFieldValues(run RunContext) map[string]string {
 		LogFieldBeadID:          run.BeadID,
 		LogFieldAttemptID:       run.AttemptID,
 		LogFieldRunID:           run.RunID,
+		LogFieldAgentName:       run.AgentName,
 		LogFieldRole:            string(run.Role),
 		LogFieldFormulaStep:     run.FormulaStep,
 		LogFieldBackend:         run.Backend,
@@ -179,19 +182,20 @@ func logFieldValues(run RunContext) map[string]string {
 // vars predate this contract; these constants make the full canonical set
 // a single grep target.
 const (
-	EnvTower            = "SPIRE_TOWER"
-	EnvPrefix           = "SPIRE_REPO_PREFIX"
-	EnvBeadID           = "SPIRE_BEAD_ID"
-	EnvAttemptID        = "SPIRE_ATTEMPT_ID"
-	EnvRunID            = "SPIRE_RUN_ID"
-	EnvRole             = "SPIRE_ROLE"
-	EnvFormulaStep      = "SPIRE_FORMULA_STEP"
-	EnvBackend          = "SPIRE_BACKEND"
-	EnvWorkspaceKind    = "SPIRE_WORKSPACE_KIND"
-	EnvWorkspaceName    = "SPIRE_WORKSPACE_NAME"
-	EnvWorkspaceOrigin  = "SPIRE_WORKSPACE_ORIGIN"
-	EnvWorkspacePath    = "SPIRE_WORKSPACE_PATH"
-	EnvHandoffMode      = "SPIRE_HANDOFF_MODE"
+	EnvTower           = "SPIRE_TOWER"
+	EnvPrefix          = "SPIRE_REPO_PREFIX"
+	EnvBeadID          = "SPIRE_BEAD_ID"
+	EnvAttemptID       = "SPIRE_ATTEMPT_ID"
+	EnvRunID           = "SPIRE_RUN_ID"
+	EnvAgentName       = "SPIRE_AGENT_NAME"
+	EnvRole            = "SPIRE_ROLE"
+	EnvFormulaStep     = "SPIRE_FORMULA_STEP"
+	EnvBackend         = "SPIRE_BACKEND"
+	EnvWorkspaceKind   = "SPIRE_WORKSPACE_KIND"
+	EnvWorkspaceName   = "SPIRE_WORKSPACE_NAME"
+	EnvWorkspaceOrigin = "SPIRE_WORKSPACE_ORIGIN"
+	EnvWorkspacePath   = "SPIRE_WORKSPACE_PATH"
+	EnvHandoffMode     = "SPIRE_HANDOFF_MODE"
 )
 
 // RunContextFromEnv rebuilds a RunContext from the canonical SPIRE_* env
@@ -206,6 +210,7 @@ func RunContextFromEnv() RunContext {
 		BeadID:          os.Getenv(EnvBeadID),
 		AttemptID:       os.Getenv(EnvAttemptID),
 		RunID:           os.Getenv(EnvRunID),
+		AgentName:       os.Getenv(EnvAgentName),
 		Role:            SpawnRole(os.Getenv(EnvRole)),
 		FormulaStep:     os.Getenv(EnvFormulaStep),
 		Backend:         os.Getenv(EnvBackend),
