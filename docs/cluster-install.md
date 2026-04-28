@@ -1182,6 +1182,21 @@ Before flipping `logStore.backend=gcs` for a tower that will serve transcripts t
 4. Confirm Cloud Logging retention on the GKE cluster's log buckets matches your live-debug window; raise it explicitly if your team relies on Cloud Logging for forensic search rather than gateway reads.
 5. Treat the redactor as defense, not the policy. Continue to redact secrets at the source: avoid logging tokens, scrub environment dumps, never `cat` credential files into stderr.
 
+### Gateway log API surface
+
+Bead-scoped logs are served exclusively through the gateway. Desktop, CLI, and board clients never touch GCS, Cloud Logging, or pod filesystems directly:
+
+- `GET /api/v1/beads/{id}/logs` — list manifest rows for a bead. Returns `{ artifacts: [...], next_cursor: "..." }`. Each artifact row carries identity (attempt, run, agent, role, phase, provider, stream), `byte_size`, `checksum`, `status`, `visibility`, `redaction_version`, optional `summary`/`tail`, plus a `links` block with `raw` and (for transcripts) `pretty` URLs.
+- `GET /api/v1/beads/{id}/logs/summary` — same shape as the list, no pagination, intended for board headers that want the full bounded summary set in one request.
+- `GET /api/v1/beads/{id}/logs/{artifact_id}/raw` — streams the artifact's stored bytes through the gateway. Engineer scope reading engineer-only artifacts gets verbatim bytes; every other path runs the bytes through the runtime redactor.
+- `GET /api/v1/beads/{id}/logs/{artifact_id}/pretty` — fetches the artifact and runs it through the provider-specific `pkg/board/logstream` adapter (Claude / Codex), returning canonical `{ events: [...] }` JSON for clients that want structured rendering rather than raw transcript bytes. Stream must be `transcript`.
+
+Pagination is opaque: clients pass the `next_cursor` value back via `?cursor=...` and `?limit=N` (default 50, capped at 200). The cursor reserves a `byte_offset` field so live-follow (spi-bkha5x) can resume mid-artifact later without changing the wire format.
+
+Caller scope is sourced from the `X-Spire-Scope` header today (`engineer`, `desktop`, `public`); absent the header, requests default to `desktop` so engineer-only artifacts are not exposed by accident. Auth itself reuses the gateway's existing bearer-token middleware — there is no separate log-API auth.
+
+Manifest-only rows (status `writing`, no bytes yet) appear in the list; their `raw`/`pretty` requests return `409 not yet available`. Manifest rows whose bytes have been removed by GCS lifecycle policy return `410 Gone`.
+
 ---
 
 ## 11. Upgrade path
