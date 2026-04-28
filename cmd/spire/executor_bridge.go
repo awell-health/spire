@@ -226,6 +226,7 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		// Step bead operations
 		CreateStepBead:   storeCreateStepBead,
 		ActivateStepBead: storeActivateStepBead,
+		ReopenStepBead:   storeReopenStepBead,
 		CloseStepBead:    storeCloseStepBead,
 		HookStepBead:     storeHookStepBead,
 		UnhookStepBead:   storeUnhookStepBead,

@@ -516,9 +516,11 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 			state.Steps[target] = ts
 			e.log("reset step %s to pending (declared by %s)", target, stepName)
 
-			// Reopen step bead if tracked.
-			if stepBeadID, ok := state.StepBeadIDs[target]; ok {
-				if err := e.deps.ActivateStepBead(stepBeadID); err != nil {
+			// Reopen step bead to "open" if tracked. The actually-active step
+			// will take "in_progress" through the normal dispatch path; we
+			// must not flip every reset target to in_progress here (spi-ogo3wv).
+			if stepBeadID, ok := state.StepBeadIDs[target]; ok && e.deps.ReopenStepBead != nil {
+				if err := e.deps.ReopenStepBead(stepBeadID); err != nil {
 					e.log("warning: reopen step bead %s (%s): %s", stepBeadID, target, err)
 				}
 			}
@@ -1197,7 +1199,7 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 	return e.graphStateStore().Save(e.agentName, state)
 }
 
-// reopenRewoundStepBeads re-activates any step beads in state.StepBeadIDs whose
+// reopenRewoundStepBeads reopens any step beads in state.StepBeadIDs whose
 // graph-state status is "pending" but whose bead status is "closed" or
 // "hooked". This handles two classes of resummon drift:
 //
@@ -1208,17 +1210,25 @@ func (e *Executor) ensureGraphStepBeads(graph *FormulaStepGraph, state *GraphSta
 //     cleaned up the hook (parent graph state advanced to pending), but the
 //     step bead was left hooked. Same silent-skip hazard.
 //
+// Reconciliation reopens to "open" — the pre-dispatch resting state — never
+// "in_progress" (spi-ogo3wv). The actually-active graph step picks up
+// "in_progress" through the normal dispatch path (ActivateStepBead at the top
+// of the step loop). Routing rewound pending steps through ActivateStepBead
+// here would mark every reused step bead "in_progress" simultaneously, which
+// breaks the GetActiveStep single-active invariant and confuses board/trace
+// consumers.
+//
 // Only pending steps are reopened. Completed/in-progress/hooked (when graph
 // state agrees)/skipped steps are left alone. In particular, a "closed" step
 // bead whose graph state is "completed" is the correct terminal state — no
-// activation attempted.
+// reopen attempted.
 //
 // After per-step reconciliation, a final pass clears the parent bead's hook
 // when graph state has no hooked step: the parent was presumably hooked by a
 // prior run whose step bead has since been rewound. Leaving the parent hooked
 // with no matching step confuses status consumers.
 func (e *Executor) reopenRewoundStepBeads(state *GraphState) {
-	if e.deps.ActivateStepBead == nil || e.deps.GetBead == nil {
+	if e.deps.ReopenStepBead == nil || e.deps.GetBead == nil {
 		return
 	}
 	for stepName, stepID := range state.StepBeadIDs {
@@ -1237,7 +1247,7 @@ func (e *Executor) reopenRewoundStepBeads(state *GraphState) {
 		if b.Status != "closed" && b.Status != "hooked" {
 			continue
 		}
-		if err := e.deps.ActivateStepBead(stepID); err != nil {
+		if err := e.deps.ReopenStepBead(stepID); err != nil {
 			e.log("warning: reopen rewound step bead %s (%s, was %s): %s", stepID, stepName, b.Status, err)
 		} else {
 			e.log("reopened rewound step bead %s (%s, was %s) — graph state is pending", stepID, stepName, b.Status)

@@ -22,7 +22,7 @@ sequenceDiagram
     Exec->>Step: HookStepBead
     Exec->>Parent: status = hooked
   else loop / rewind path
-    Exec->>Step: ActivateStepBead to reopen a rewound pending step
+    Exec->>Step: ReopenStepBead to reopen a rewound pending step (→ open, not in_progress)
   end
 
   Approve->>Step: UnhookStepBead for human.approve / design-check

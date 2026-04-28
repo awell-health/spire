@@ -150,9 +150,13 @@ var cmdResummonFunc = func(beadID string) error {
 // triggering real store mutations.
 var cmdResetFunc = cmdReset
 
-// storeActivateStepBeadFunc is a test-replaceable hook for reopening a closed
-// step bead. Production wiring delegates to store.ActivateStepBead.
-var storeActivateStepBeadFunc = storeActivateStepBead
+// storeReopenStepBeadFunc is a test-replaceable hook for reopening a closed
+// step bead during rewind reconciliation. Production wiring delegates to
+// store.ReopenStepBead, which transitions the bead to "open" — NOT
+// "in_progress". The actually-active step picks up in_progress through the
+// normal dispatch path; routing reset rewinds through ActivateStepBead would
+// surface every rewound parent step bead as active simultaneously (spi-ogo3wv).
+var storeReopenStepBeadFunc = storeReopenStepBead
 
 // terminateBeadFunc is the seam reset uses to reap every runtime worker the
 // backend spawned for a bead — the parent wizard plus any nested
@@ -1136,7 +1140,7 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 		}
 		if b.Status == "closed" {
 			_ = storeAddComment(stepBeadID, fmt.Sprintf("Reopened by soft-reset --to %s (step rewound to pending)", targetStep))
-			if err := storeActivateStepBeadFunc(stepBeadID); err != nil {
+			if err := storeReopenStepBeadFunc(stepBeadID); err != nil {
 				fmt.Printf("  %s(note: could not reopen step bead %s for %s: %s)%s\n", dim, stepBeadID, stepName, err, reset)
 				continue
 			}

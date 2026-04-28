@@ -153,9 +153,17 @@ func (e *Executor) ensureReviewSubStepBeads(graph *formula.FormulaStepGraph) err
 			if len(e.state.ReviewStepBeadIDs) > 0 {
 				e.log("reconciled %d review sub-step beads from graph", len(e.state.ReviewStepBeadIDs))
 				// Reset any closed sub-step beads to open (stale from a prior run).
+				// Use ReopenStepBead, not ActivateStepBead — the active sub-step
+				// picks up in_progress through the normal dispatch path
+				// (activateReviewSubStep). Routing every reused closed sub-step
+				// through ActivateStepBead would mark them all in_progress at
+				// once (spi-ogo3wv).
 				for stepName, stepID := range e.state.ReviewStepBeadIDs {
 					if b, err := e.deps.GetBead(stepID); err == nil && b.Status == "closed" {
-						if err := e.deps.ActivateStepBead(stepID); err != nil {
+						if e.deps.ReopenStepBead == nil {
+							continue
+						}
+						if err := e.deps.ReopenStepBead(stepID); err != nil {
 							e.log("warning: reopen stale review sub-step %s (%s): %s", stepID, stepName, err)
 						} else {
 							e.log("reopened stale review sub-step %s (%s)", stepID, stepName)

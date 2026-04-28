@@ -306,6 +306,100 @@ func TestHookStepBead(t *testing.T) {
 	}
 }
 
+// TestReopenStepBead exercises the rewind-reconciliation helper introduced for
+// spi-ogo3wv. Closed/hooked step beads must transition to "open" — never
+// "in_progress" — so reused parent step beads do not surface as active when
+// only one of them is the actually-running step. The helper rejects an
+// in_progress source to prevent accidentally downgrading legitimately active
+// state.
+func TestReopenStepBead(t *testing.T) {
+	tests := []struct {
+		name        string
+		stepID      string
+		issues      map[string]*beads.Issue
+		getErr      map[string]error
+		wantErr     bool
+		wantUpdates int
+		wantStatus  string
+	}{
+		{
+			name:   "reopens a closed step bead to open",
+			stepID: "step-1",
+			issues: map[string]*beads.Issue{
+				"step-1": {ID: "step-1", IssueType: "step", Status: beads.StatusClosed},
+			},
+			wantUpdates: 1,
+			wantStatus:  "open",
+		},
+		{
+			name:   "reopens a hooked step bead to open",
+			stepID: "step-2",
+			issues: map[string]*beads.Issue{
+				"step-2": {ID: "step-2", IssueType: "step", Status: StatusHooked},
+			},
+			wantUpdates: 1,
+			wantStatus:  "open",
+		},
+		{
+			name:   "no-op when already open",
+			stepID: "step-3",
+			issues: map[string]*beads.Issue{
+				"step-3": {ID: "step-3", IssueType: "step", Status: beads.StatusOpen},
+			},
+			wantUpdates: 0,
+		},
+		{
+			name:   "rejects in_progress (would downgrade legitimately active state)",
+			stepID: "step-4",
+			issues: map[string]*beads.Issue{
+				"step-4": {ID: "step-4", IssueType: "step", Status: beads.StatusInProgress},
+			},
+			wantErr:     true,
+			wantUpdates: 0,
+		},
+		{
+			name:   "rejects non-step bead (task)",
+			stepID: "task-1",
+			issues: map[string]*beads.Issue{
+				"task-1": {ID: "task-1", IssueType: beads.TypeTask, Status: beads.StatusClosed},
+			},
+			wantErr:     true,
+			wantUpdates: 0,
+		},
+		{
+			name:    "propagates GetBead error",
+			stepID:  "missing-1",
+			getErr:  map[string]error{"missing-1": fmt.Errorf("not found")},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &hookMockStorage{issues: tt.issues, getErr: tt.getErr}
+			setTestStore(t, mock)
+
+			err := ReopenStepBead(tt.stepID)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ReopenStepBead() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if len(mock.updates) != tt.wantUpdates {
+				t.Fatalf("expected %d UpdateIssue call(s), got %d", tt.wantUpdates, len(mock.updates))
+			}
+			if tt.wantUpdates == 0 {
+				return
+			}
+			u := mock.updates[0]
+			if u.ID != tt.stepID {
+				t.Errorf("UpdateIssue id = %q, want %q", u.ID, tt.stepID)
+			}
+			gotStatus, _ := u.Updates["status"].(string)
+			if gotStatus != tt.wantStatus {
+				t.Errorf("UpdateIssue status = %q, want %q", gotStatus, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestUnhookStepBead(t *testing.T) {
 	tests := []struct {
 		name       string

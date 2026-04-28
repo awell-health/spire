@@ -15,6 +15,7 @@ func TestBuildExecutorDepsWiresAllCallables(t *testing.T) {
 	required := []string{
 		"CreateStepBead",
 		"ActivateStepBead",
+		"ReopenStepBead",
 		"CloseStepBead",
 		"HookStepBead",
 		"UnhookStepBead",

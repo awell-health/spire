@@ -94,9 +94,15 @@ type Deps struct {
 	// Step bead operations
 	CreateStepBead   func(parentID, stepName string) (string, error)
 	ActivateStepBead func(stepID string) error
-	CloseStepBead    func(stepID string) error
-	HookStepBead     func(stepID string) error
-	UnhookStepBead   func(stepID string) error
+	// ReopenStepBead is the rewind-reconciliation counterpart to
+	// ActivateStepBead: it transitions a closed/hooked step bead back to
+	// "open" without marking it active. Callers must use this when the graph
+	// step is "pending" (e.g. after a reset rewound the graph) so the parent
+	// bead surface does not show non-active steps as in_progress (spi-ogo3wv).
+	ReopenStepBead func(stepID string) error
+	CloseStepBead  func(stepID string) error
+	HookStepBead   func(stepID string) error
+	UnhookStepBead func(stepID string) error
 
 	// Agent registry. RegistryAdd is intentionally absent — backend.Spawn is
 	// the sole creator of registry entries (see pkg/agent/README.md "Registry

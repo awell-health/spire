@@ -367,6 +367,40 @@ func ActivateStepBead(stepID string) error {
 	})
 }
 
+// ReopenStepBead transitions a closed/hooked step bead back to "open" — the
+// pre-dispatch resting state. It's the rewind reconciliation counterpart to
+// ActivateStepBead: callers reopening a step whose graph-state is "pending"
+// (because a reset rewound the graph) must use this helper, not
+// ActivateStepBead, otherwise the reused step bead is wrongly marked
+// "in_progress" even though the graph step is not the active one.
+//
+// Status semantics:
+//   - closed → open: rewound step beads return to their pre-run state.
+//   - hooked → open: hooked step beads return to open (mirrors UnhookStepBead).
+//   - open: no-op (idempotent).
+//   - in_progress: rejected — this would be a downgrade of legitimately active
+//     state. Callers must not route the actually-active step through here;
+//     normal dispatch (ActivateStepBead) handles activation.
+func ReopenStepBead(stepID string) error {
+	b, err := GetBead(stepID)
+	if err != nil {
+		return fmt.Errorf("reopen step bead %s: %w", stepID, err)
+	}
+	if b.Type != "step" {
+		return fmt.Errorf("reopen step bead %s: expected type=step, got type=%s", stepID, b.Type)
+	}
+	switch b.Status {
+	case "open":
+		return nil
+	case "in_progress":
+		return fmt.Errorf("reopen step bead %s: refusing to downgrade in_progress to open", stepID)
+	case "closed", "hooked":
+		return UpdateBead(stepID, map[string]interface{}{"status": "open"})
+	default:
+		return UpdateBead(stepID, map[string]interface{}{"status": "open"})
+	}
+}
+
 // CloseStepBead closes a workflow step bead.
 func CloseStepBead(stepID string) error {
 	return CloseBead(stepID)

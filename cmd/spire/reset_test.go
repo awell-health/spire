@@ -1461,13 +1461,16 @@ func TestSoftResetV3_ReopensClosedStepBeadsInResetSet(t *testing.T) {
 		t.Fatalf("softResetV3: %v", err)
 	}
 
-	// Step bead for implement should be reopened (was closed).
+	// Step bead for implement should be reopened to "open" (NOT "in_progress").
+	// The actually-active step picks up in_progress through normal dispatch on
+	// resume; rewound pending steps must rest at "open" so the parent surface
+	// doesn't show every rewound step active simultaneously (spi-ogo3wv).
 	impl, err := storeGetBead(implStepID)
 	if err != nil {
 		t.Fatalf("get implement step: %v", err)
 	}
-	if impl.Status == "closed" {
-		t.Errorf("implement step bead should be reopened, got status=%q", impl.Status)
+	if impl.Status != "open" {
+		t.Errorf("implement step bead status = %q, want open (rewound steps must rest at open, not in_progress)", impl.Status)
 	}
 
 	// Step bead for plan should still be closed (upstream of target).
@@ -1492,6 +1495,103 @@ func TestSoftResetV3_ReopensClosedStepBeadsInResetSet(t *testing.T) {
 	}
 	if loaded.Steps["plan"].Status != "completed" {
 		t.Errorf("plan graph state = %q, want completed (upstream of target)", loaded.Steps["plan"].Status)
+	}
+}
+
+// TestSoftResetV3_MultipleRewoundStepsStayOpen is the canonical regression
+// for spi-ogo3wv: when --to rewinds multiple closed step beads, every
+// rewound bead must surface as "open" (not "in_progress"). Routing the
+// rewind through ActivateStepBead (the prior bug) marked them all
+// in_progress, breaking the GetActiveStep single-active invariant and
+// surfacing every rewound parent step as active on the board / trace.
+func TestSoftResetV3_MultipleRewoundStepsStayOpen(t *testing.T) {
+	requireStore(t)
+
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	withSummonRecorder(t)
+
+	epicID := createTestBead(t, createOpts{
+		Title:    "test-softreset-multi-rewound",
+		Priority: 1,
+		Type:     parseIssueType("task"),
+	})
+
+	planStepID := createTestBead(t, createOpts{
+		Title: "step:plan", Priority: 3, Type: parseIssueType("task"),
+		Labels: []string{"step:plan", "workflow-step"}, Parent: epicID,
+	})
+	implStepID := createTestBead(t, createOpts{
+		Title: "step:implement", Priority: 3, Type: parseIssueType("task"),
+		Labels: []string{"step:implement", "workflow-step"}, Parent: epicID,
+	})
+	reviewStepID := createTestBead(t, createOpts{
+		Title: "step:review", Priority: 3, Type: parseIssueType("task"),
+		Labels: []string{"step:review", "workflow-step"}, Parent: epicID,
+	})
+	mergeStepID := createTestBead(t, createOpts{
+		Title: "step:merge", Priority: 3, Type: parseIssueType("task"),
+		Labels: []string{"step:merge", "workflow-step"}, Parent: epicID,
+	})
+
+	// All four step beads are closed (epic has run all the way through merge).
+	for _, id := range []string{planStepID, implStepID, reviewStepID, mergeStepID} {
+		if err := storeCloseBead(id); err != nil {
+			t.Fatalf("close %s: %v", id, err)
+		}
+	}
+
+	wizardName := "wizard-test-multi-rewound"
+	writeV3GraphStateForTask(t, tmp, wizardName, epicID,
+		map[string]executor.StepState{
+			"plan":      {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:01:00Z"},
+			"implement": {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:02:00Z"},
+			"review":    {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:03:00Z"},
+			"merge":     {Status: "completed", CompletedCount: 1, CompletedAt: "2026-01-01T00:04:00Z"},
+		},
+		"",
+		map[string]string{
+			"plan":      planStepID,
+			"implement": implStepID,
+			"review":    reviewStepID,
+			"merge":     mergeStepID,
+		},
+	)
+
+	if err := softResetV3(epicID, "implement", wizardName, false, nil); err != nil {
+		t.Fatalf("softResetV3: %v", err)
+	}
+
+	// implement, review, and merge all rewound to graph-state pending.
+	// Each parent step bead must rest at "open" — not "in_progress".
+	for _, c := range []struct {
+		stepName string
+		stepID   string
+	}{
+		{"implement", implStepID},
+		{"review", reviewStepID},
+		{"merge", mergeStepID},
+	} {
+		b, err := storeGetBead(c.stepID)
+		if err != nil {
+			t.Fatalf("get %s step bead: %v", c.stepName, err)
+		}
+		if b.Status != "open" {
+			t.Errorf("%s step bead status = %q, want open (rewound steps must rest at open, not in_progress — spi-ogo3wv)",
+				c.stepName, b.Status)
+		}
+	}
+
+	// Single-active invariant: zero steps should be in_progress after rewind.
+	// GetActiveStep treats >1 in_progress as an invariant violation.
+	active, err := storeGetActiveStep(epicID)
+	if err != nil {
+		t.Fatalf("GetActiveStep raised invariant violation after rewind: %v", err)
+	}
+	if active != nil {
+		t.Errorf("GetActiveStep = %s (status=%q), want nil — no step should be active after pure rewind",
+			active.ID, active.Status)
 	}
 }
 

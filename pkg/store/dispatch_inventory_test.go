@@ -256,6 +256,7 @@ var nonDispatchableAPIs = []string{
 	"IsReviewRoundBead",
 	"IsReviewRoundBoardBead",
 	"ActivateStepBead",
+	"ReopenStepBead",
 	"CloseStepBead",
 	"HookStepBead",
 	"UnhookStepBead",

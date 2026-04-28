@@ -357,6 +357,15 @@ store operations (defined in `pkg/store/beadtypes.go`):
 | active → hooked | `HookStepBead` | `hooked` |
 | hooked → active (resume) | `UnhookStepBead` then `ActivateStepBead` | `open` → `in_progress` |
 | active → completed | `CloseStepBead` | `closed` |
+| closed/hooked → reopen on rewind | `ReopenStepBead` | `open` |
+
+Rewind reconciliation (the `reopenRewoundStepBeads` and formula-`Resets`
+paths) MUST use `ReopenStepBead` — never `ActivateStepBead`. The
+actually-active step picks up `in_progress` through the normal dispatch
+path. Routing rewinds through `ActivateStepBead` marked every reused
+parent step bead `in_progress` simultaneously, breaking
+`GetActiveStep`'s single-active invariant and surfacing every rewound
+step as active on board / trace (spi-ogo3wv).
 
 When a step hooks, the interpreter also sets the **parent bead** status to
 `hooked` via `UpdateBead`. When a previously-hooked step resumes and no

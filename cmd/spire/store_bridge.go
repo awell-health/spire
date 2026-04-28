@@ -306,6 +306,10 @@ func storeActivateStepBead(stepID string) error {
 	return store.ActivateStepBead(stepID)
 }
 
+func storeReopenStepBead(stepID string) error {
+	return store.ReopenStepBead(stepID)
+}
+
 func storeCloseStepBead(stepID string) error {
 	if bead, err := storeGetBeadFunc(stepID); err == nil && bead.Status == string(beads.StatusClosed) {
 		return nil

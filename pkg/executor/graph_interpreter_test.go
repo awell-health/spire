@@ -60,6 +60,7 @@ func testGraphDeps(t *testing.T) (*Deps, *[]string) {
 			return fmt.Sprintf("step-%d", stepBeadCounter), nil
 		},
 		ActivateStepBead: func(stepID string) error { return nil },
+		ReopenStepBead:   func(stepID string) error { return nil },
 		CloseStepBead:    func(stepID string) error { return nil },
 		HookStepBead:     func(stepID string) error { return nil },
 		UnhookStepBead:   func(stepID string) error { return nil },
@@ -3496,14 +3497,19 @@ func TestRecordOnErrorRecoveryAttempt_NoOpWhenNoChosenAction(t *testing.T) {
 // when a reused step bead is closed but its graph-state step is now "pending"
 // (rewound by soft-reset --to), ensureGraphStepBeads reopens it so the graph
 // actually re-enters the step on resummon.
+//
+// Reopen MUST go through ReopenStepBead (→ "open"), not ActivateStepBead
+// (→ "in_progress"). Routing through Activate marked every reused step bead
+// in_progress simultaneously and broke board/trace surfaces (spi-ogo3wv).
 func TestEnsureGraphStepBeads_ReopensClosedStepBeadsWithPendingState(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
-	// Track bead status + activate calls.
+	// Track bead status + reopen / activate calls.
 	beadStatus := map[string]string{
 		"step-plan":      "closed",
 		"step-implement": "closed",
 	}
+	var reopened []string
 	var activated []string
 
 	deps.GetBead = func(id string) (Bead, error) {
@@ -3513,9 +3519,14 @@ func TestEnsureGraphStepBeads_ReopensClosedStepBeadsWithPendingState(t *testing.
 		}
 		return Bead{ID: id, Status: status}, nil
 	}
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
 	deps.ActivateStepBead = func(stepID string) error {
 		activated = append(activated, stepID)
-		beadStatus[stepID] = "open"
+		beadStatus[stepID] = "in_progress"
 		return nil
 	}
 
@@ -3546,13 +3557,16 @@ func TestEnsureGraphStepBeads_ReopensClosedStepBeadsWithPendingState(t *testing.
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
-	// Both pending-closed beads must be reopened.
+	// Both pending-closed beads must be reopened to "open" (not in_progress).
 	got := map[string]bool{}
-	for _, id := range activated {
+	for _, id := range reopened {
 		got[id] = true
 	}
 	if !got["step-plan"] || !got["step-implement"] {
-		t.Errorf("expected both step-plan and step-implement to be reactivated, got: %v", activated)
+		t.Errorf("expected both step-plan and step-implement to be reopened via ReopenStepBead, got: %v", reopened)
+	}
+	if len(activated) != 0 {
+		t.Errorf("expected no ActivateStepBead calls during rewind reconciliation, got: %v", activated)
 	}
 }
 
@@ -3566,7 +3580,12 @@ func TestEnsureGraphStepBeads_DoesNotReopenCompletedSteps(t *testing.T) {
 		return Bead{ID: id, Status: "closed"}, nil
 	}
 
+	var reopened []string
 	var activated []string
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		return nil
+	}
 	deps.ActivateStepBead = func(stepID string) error {
 		activated = append(activated, stepID)
 		return nil
@@ -3599,6 +3618,9 @@ func TestEnsureGraphStepBeads_DoesNotReopenCompletedSteps(t *testing.T) {
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
+	if len(reopened) != 0 {
+		t.Errorf("expected no ReopenStepBead calls for completed steps, got: %v", reopened)
+	}
 	if len(activated) != 0 {
 		t.Errorf("expected no ActivateStepBead calls for completed steps, got: %v", activated)
 	}
@@ -3615,7 +3637,12 @@ func TestEnsureGraphStepBeads_MixedStates(t *testing.T) {
 	deps.GetBead = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "closed"}, nil
 	}
+	var reopened []string
 	var activated []string
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		return nil
+	}
 	deps.ActivateStepBead = func(stepID string) error {
 		activated = append(activated, stepID)
 		return nil
@@ -3647,8 +3674,11 @@ func TestEnsureGraphStepBeads_MixedStates(t *testing.T) {
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
-	if len(activated) != 1 || activated[0] != "step-implement" {
-		t.Errorf("expected only step-implement to be reactivated, got: %v", activated)
+	if len(reopened) != 1 || reopened[0] != "step-implement" {
+		t.Errorf("expected only step-implement to be reopened, got: %v", reopened)
+	}
+	if len(activated) != 0 {
+		t.Errorf("expected no ActivateStepBead calls during rewind reconciliation, got: %v", activated)
 	}
 }
 
@@ -3662,17 +3692,26 @@ func TestEnsureGraphStepBeads_MixedStates(t *testing.T) {
 // TestEnsureGraphStepBeads_ReopensClosedWithPendingState is the canonical
 // "reset-path forgot to reopen" case — graph state is pending, step bead is
 // closed. Reconciliation must reopen so the step actually runs on resume.
+//
+// Production semantics (spi-ogo3wv): reopen targets "open", not "in_progress".
+// The actually-active step takes in_progress through normal dispatch.
 func TestEnsureGraphStepBeads_ReopensClosedWithPendingState(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
 	beadStatus := map[string]string{"step-implement": "closed"}
+	var reopened []string
 	var activated []string
 	deps.GetBead = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: beadStatus[id]}, nil
 	}
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
 	deps.ActivateStepBead = func(stepID string) error {
 		activated = append(activated, stepID)
-		beadStatus[stepID] = "open"
+		beadStatus[stepID] = "in_progress"
 		return nil
 	}
 
@@ -3697,8 +3736,14 @@ func TestEnsureGraphStepBeads_ReopensClosedWithPendingState(t *testing.T) {
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
-	if len(activated) != 1 || activated[0] != "step-implement" {
-		t.Errorf("expected step-implement to be reactivated, got: %v", activated)
+	if len(reopened) != 1 || reopened[0] != "step-implement" {
+		t.Errorf("expected step-implement to be reopened, got: %v", reopened)
+	}
+	if len(activated) != 0 {
+		t.Errorf("expected no ActivateStepBead calls during reconciliation, got: %v", activated)
+	}
+	if beadStatus["step-implement"] != "open" {
+		t.Errorf("step-implement status = %q, want open after rewind reconciliation", beadStatus["step-implement"])
 	}
 }
 
@@ -3711,13 +3756,19 @@ func TestEnsureGraphStepBeads_ReopensHookedWithPendingState(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
 	beadStatus := map[string]string{"step-implement": "hooked"}
+	var reopened []string
 	var activated []string
 	deps.GetBead = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: beadStatus[id]}, nil
 	}
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
 	deps.ActivateStepBead = func(stepID string) error {
 		activated = append(activated, stepID)
-		beadStatus[stepID] = "open"
+		beadStatus[stepID] = "in_progress"
 		return nil
 	}
 
@@ -3742,21 +3793,29 @@ func TestEnsureGraphStepBeads_ReopensHookedWithPendingState(t *testing.T) {
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
-	if len(activated) != 1 || activated[0] != "step-implement" {
-		t.Errorf("expected step-implement to be reactivated from hooked, got: %v", activated)
+	if len(reopened) != 1 || reopened[0] != "step-implement" {
+		t.Errorf("expected step-implement to be reopened from hooked, got: %v", reopened)
+	}
+	if len(activated) != 0 {
+		t.Errorf("expected no ActivateStepBead calls during reconciliation, got: %v", activated)
 	}
 }
 
 // TestEnsureGraphStepBeads_LeavesClosedCompletedAlone guards the terminal case:
 // a closed step bead whose graph state is "completed" is the correct terminal
-// state. No activation attempt.
+// state. No reopen attempt.
 func TestEnsureGraphStepBeads_LeavesClosedCompletedAlone(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
 	deps.GetBead = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: "closed"}, nil
 	}
+	var reopened []string
 	var activated []string
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		return nil
+	}
 	deps.ActivateStepBead = func(stepID string) error {
 		activated = append(activated, stepID)
 		return nil
@@ -3783,6 +3842,9 @@ func TestEnsureGraphStepBeads_LeavesClosedCompletedAlone(t *testing.T) {
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
+	if len(reopened) != 0 {
+		t.Errorf("expected no reopens for completed-closed step, got: %v", reopened)
+	}
 	if len(activated) != 0 {
 		t.Errorf("expected no activations for completed-closed step, got: %v", activated)
 	}
@@ -3901,6 +3963,91 @@ func TestEnsureGraphStepBeads_PreservesCurrentParentHook(t *testing.T) {
 		if u["_id"] == "spi-test" {
 			t.Errorf("expected no parent-bead update while step remains hooked, got: %v", u)
 		}
+	}
+}
+
+// TestReopenRewoundStepBeads_DoesNotRouteThroughActivate is the spi-ogo3wv
+// production-semantics guard. The reopen-rewound path MUST NOT route through
+// ActivateStepBead. If it does, every reused step bead in a multi-step rewind
+// becomes "in_progress" simultaneously, breaking GetActiveStep's single-active
+// invariant and surfacing every parent step as active on board / trace.
+//
+// This test stubs ReopenStepBead as nil to prove that ActivateStepBead is
+// never the one called for rewind reconciliation: if it were, the executor
+// would silently invoke ActivateStepBead and the tracker would catch it.
+// With the fix in place, ReopenStepBead is the sole code path.
+func TestReopenRewoundStepBeads_DoesNotRouteThroughActivate(t *testing.T) {
+	deps, _ := testGraphDeps(t)
+
+	beadStatus := map[string]string{
+		"step-plan":      "closed",
+		"step-implement": "closed",
+		"step-review":    "closed",
+		"step-merge":     "closed",
+	}
+	var reopened []string
+	var activated []string
+	deps.GetBead = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: beadStatus[id]}, nil
+	}
+	deps.ReopenStepBead = func(stepID string) error {
+		reopened = append(reopened, stepID)
+		beadStatus[stepID] = "open"
+		return nil
+	}
+	deps.ActivateStepBead = func(stepID string) error {
+		// If the rewind path ever routes here, the bug is back.
+		activated = append(activated, stepID)
+		beadStatus[stepID] = "in_progress"
+		return nil
+	}
+
+	graph := &formula.FormulaStepGraph{
+		Name:    "test-no-activate-on-rewind",
+		Version: 3,
+		Steps: map[string]formula.StepConfig{
+			"plan":      {Action: "test.noop"},
+			"implement": {Action: "test.noop", Needs: []string{"plan"}},
+			"review":    {Action: "test.noop", Needs: []string{"implement"}},
+			"merge":     {Action: "test.noop", Needs: []string{"review"}},
+		},
+	}
+	state := &GraphState{
+		BeadID:    "spi-test",
+		AgentName: "wizard-test",
+		Steps: map[string]StepState{
+			"plan":      {Status: "pending"},
+			"implement": {Status: "pending"},
+			"review":    {Status: "pending"},
+			"merge":     {Status: "pending"},
+		},
+		StepBeadIDs: map[string]string{
+			"plan":      "step-plan",
+			"implement": "step-implement",
+			"review":    "step-review",
+			"merge":     "step-merge",
+		},
+	}
+
+	exec := NewGraphForTest("spi-test", "wizard-test", graph, state, deps)
+	exec.reopenRewoundStepBeads(state)
+
+	if len(activated) != 0 {
+		t.Errorf("rewind reopen MUST NOT call ActivateStepBead; got: %v (regression of spi-ogo3wv)", activated)
+	}
+	if len(reopened) != 4 {
+		t.Errorf("expected 4 ReopenStepBead calls, got %d: %v", len(reopened), reopened)
+	}
+
+	// Every parent step bead must end at "open" — none in_progress.
+	inProgress := []string{}
+	for id, status := range beadStatus {
+		if status == "in_progress" {
+			inProgress = append(inProgress, id)
+		}
+	}
+	if len(inProgress) > 0 {
+		t.Errorf("after pure rewind, no step bead may be in_progress; got: %v (single-active invariant broken)", inProgress)
 	}
 }
 
