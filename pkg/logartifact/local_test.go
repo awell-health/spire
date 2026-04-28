@@ -44,11 +44,19 @@ func expectInsertWriting(mock sqlmock.Sqlmock) {
 // expectGetByID registers the SELECT issued by Finalize/Get/Stat to
 // look up a row by primary key. status controls the row's status.
 func expectGetByID(mock sqlmock.Sqlmock, id string, status, objectURI string, byteSize *int64, checksum string) {
+	expectGetByIDWithVisibility(mock, id, status, objectURI, byteSize, checksum, "engineer_only", 0)
+}
+
+// expectGetByIDWithVisibility extends expectGetByID with visibility and
+// redaction_version controls. Most tests stick with engineer_only / 0;
+// redaction round-trip tests pass desktop_safe / a non-zero version.
+func expectGetByIDWithVisibility(mock sqlmock.Sqlmock, id string, status, objectURI string, byteSize *int64, checksum, visibility string, redactionVersion int) {
 	rows := sqlmock.NewRows([]string{
 		"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 		"role", "phase", "provider", "stream", "sequence", "object_uri",
 		"byte_size", "checksum", "status", "started_at", "ended_at",
-		"created_at", "updated_at", "redaction_version", "summary", "tail",
+		"created_at", "updated_at", "redaction_version", "visibility",
+		"summary", "tail",
 	})
 	var sizeArg, checksumArg interface{}
 	if byteSize != nil {
@@ -64,7 +72,7 @@ func expectGetByID(mock sqlmock.Sqlmock, id string, status, objectURI string, by
 		sizeArg, checksumArg,
 		status, nil, nil,
 		"2026-04-28 01:00:00", "2026-04-28 01:01:00",
-		0, nil, nil,
+		redactionVersion, visibility, nil, nil,
 	)
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts WHERE id = \?`).
 		WithArgs(id).
@@ -103,7 +111,7 @@ func TestLocalStore_PutFinalizeRoundTrip(t *testing.T) {
 
 	expectInsertWriting(mock)
 
-	w, err := store.Put(ctx, identity, 0)
+	w, err := store.Put(ctx, identity, 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -214,7 +222,8 @@ func TestLocalStore_GetMissingRowReturnsErrNotFound(t *testing.T) {
 			"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 			"role", "phase", "provider", "stream", "sequence", "object_uri",
 			"byte_size", "checksum", "status", "started_at", "ended_at",
-			"created_at", "updated_at", "redaction_version", "summary", "tail",
+			"created_at", "updated_at", "redaction_version", "visibility",
+			"summary", "tail",
 		}))
 
 	_, _, err := store.Get(ctx, ManifestRef{ID: "log-missing"})
@@ -231,7 +240,7 @@ func TestLocalStore_FinalizeIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	expectInsertWriting(mock)
-	w, err := store.Put(ctx, validIdentity(), 0)
+	w, err := store.Put(ctx, validIdentity(), 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -284,14 +293,15 @@ func TestLocalStore_ListByBead(t *testing.T) {
 		"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 		"role", "phase", "provider", "stream", "sequence", "object_uri",
 		"byte_size", "checksum", "status", "started_at", "ended_at",
-		"created_at", "updated_at", "redaction_version", "summary", "tail",
+		"created_at", "updated_at", "redaction_version", "visibility",
+		"summary", "tail",
 	}).AddRow(
 		"log-a", "awell-test", "spi-b986in", "spi-att", "run-1",
 		"wizard-spi-b986in", "wizard", "implement", "claude", "transcript",
 		0, "file:///x.jsonl", nil, nil,
 		pkgstore.LogArtifactStatusWriting, nil, nil,
 		"2026-04-28 01:00:00", "2026-04-28 01:00:00",
-		0, nil, nil,
+		0, "engineer_only", nil, nil,
 	)
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
 		WithArgs("spi-b986in").
@@ -330,7 +340,7 @@ func TestLocalStore_PutDuplicateFinalizedReturnsError(t *testing.T) {
 	size := int64(99)
 	expectGetByIdentity(mock, pkgstore.LogArtifactStatusFinalized, &size, "sha256:cafe")
 
-	_, err := store.Put(ctx, validIdentity(), 0)
+	_, err := store.Put(ctx, validIdentity(), 0, VisibilityEngineerOnly)
 	if !errors.Is(err, pkgstore.ErrLogArtifactExists) {
 		t.Errorf("Put err = %v, want ErrLogArtifactExists", err)
 	}
@@ -347,7 +357,7 @@ func TestLocalStore_PutDuplicateWritingReturnsExistingWriter(t *testing.T) {
 		WillReturnError(errors.New("Error 1062: Duplicate entry"))
 	expectGetByIdentity(mock, pkgstore.LogArtifactStatusWriting, nil, "")
 
-	w, err := store.Put(ctx, validIdentity(), 0)
+	w, err := store.Put(ctx, validIdentity(), 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -362,7 +372,8 @@ func expectGetByIdentity(mock sqlmock.Sqlmock, status string, byteSize *int64, c
 		"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 		"role", "phase", "provider", "stream", "sequence", "object_uri",
 		"byte_size", "checksum", "status", "started_at", "ended_at",
-		"created_at", "updated_at", "redaction_version", "summary", "tail",
+		"created_at", "updated_at", "redaction_version", "visibility",
+		"summary", "tail",
 	})
 	var sizeArg, checksumArg interface{}
 	if byteSize != nil {
@@ -377,7 +388,7 @@ func expectGetByIdentity(mock sqlmock.Sqlmock, status string, byteSize *int64, c
 		0, "file:///stub.jsonl", sizeArg, checksumArg,
 		status, nil, nil,
 		"2026-04-28 01:00:00", "2026-04-28 01:00:00",
-		0, nil, nil,
+		0, "engineer_only", nil, nil,
 	)
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
 		WillReturnRows(rows)
@@ -463,7 +474,8 @@ func TestLocalStore_Reconcile_PicksUpExternallyWrittenFile(t *testing.T) {
 		"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 		"role", "phase", "provider", "stream", "sequence", "object_uri",
 		"byte_size", "checksum", "status", "started_at", "ended_at",
-		"created_at", "updated_at", "redaction_version", "summary", "tail",
+		"created_at", "updated_at", "redaction_version", "visibility",
+		"summary", "tail",
 	})
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
 		WillReturnRows(emptyRows)
@@ -567,7 +579,7 @@ func TestLocalWriter_CloseIsSafeWithoutFinalize(t *testing.T) {
 	ctx := context.Background()
 
 	expectInsertWriting(mock)
-	w, err := store.Put(ctx, validIdentity(), 0)
+	w, err := store.Put(ctx, validIdentity(), 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -597,7 +609,7 @@ func TestLocalStore_PutSetsChecksumIncrementally(t *testing.T) {
 	ctx := context.Background()
 
 	expectInsertWriting(mock)
-	w, err := store.Put(ctx, validIdentity(), 0)
+	w, err := store.Put(ctx, validIdentity(), 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}

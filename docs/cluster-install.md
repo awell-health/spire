@@ -37,6 +37,7 @@ for the server/client matrix.
 8. [Attach the CLI](#8-attach-the-cli)
 9. [Attach the Desktop](#9-attach-the-desktop)
 10. [First bead](#10-first-bead)
+10b. [Log retention, redaction, and visibility](#10b-log-retention-redaction-and-visibility)
 11. [Upgrade path](#11-upgrade-path)
 12. [Troubleshooting](#12-troubleshooting)
 
@@ -1119,6 +1120,67 @@ A clean round-trip means all of the following are true:
 - Re-running `bd show demo-a3f8` against the cluster tower from a fresh directory still reflects `closed` — which proves the write went through the gateway, not just a local cache
 
 If all four hold, file → claim → summon → close are flowing through the cluster API. The local dolt instance is uninvolved; the cluster is your tower.
+
+---
+
+## 10b. Log retention, redaction, and visibility
+
+Spire stores three artifact classes for cluster execution: agent transcripts, wizard operational logs, and live-stream events surfaced through Cloud Logging. Each is governed by a distinct retention axis with a distinct owner. **Do not try to collapse them into one policy** — they have different storage classes, access surfaces, and lifecycle assumptions. See [docs/design/spi-7wzwk2.md](#) (the bead's PRD) and `pkg/logartifact/README.md` for the design rationale.
+
+### Three retention axes
+
+| Axis | Backed by | Configured via | Awell default |
+|------|-----------|----------------|---------------|
+| **Cloud Logging** retention | GKE log buckets | Cloud Logging log-bucket retention (`gcloud logging buckets update _Default`) | **30 days** (matches GKE default; cite `cloud.google.com/logging/docs/buckets`) |
+| **GCS artifact** retention | The dedicated log bucket from `logStore.gcs.bucket` | A GCS lifecycle rule applied out-of-band: `gsutil lifecycle set lifecycle.json gs://<log-bucket>` | **90 days** (the value `logStore.retentionDays` in `values.yaml` documents) |
+| **Tower manifest** retention | `agent_log_artifacts` table in Dolt | `pkg/steward.LogArtifactCompactionPolicy` (compiled into the daemon) | PerBeadKeep=64, OlderThan=180 days |
+
+Each owner is responsible for its own axis:
+
+- **Cloud Logging retention.** The platform operator sets this via the GKE/Cloud Logging console. Spire never reaches in. If you need longer live-search history, raise the bucket retention there — the manifest and GCS bucket are unaffected.
+- **GCS artifact retention.** Configure a bucket lifecycle rule on `logStore.gcs.bucket` that deletes objects older than your chosen retention. Spire does NOT reconcile bucket lifecycle policies (Helm cannot natively do so, and we keep parity with `bundleStore` and `backup` which take the same approach). Example `lifecycle.json`:
+  ```json
+  {
+    "lifecycle": {
+      "rule": [{
+        "action": {"type": "Delete"},
+        "condition": {"age": 90}
+      }]
+    }
+  }
+  ```
+  Apply with: `gsutil lifecycle set lifecycle.json gs://<your-log-bucket>`.
+- **Tower manifest retention.** The steward daemon runs `logartifact.CompactManifests` hourly with the policy compiled into `pkg/steward.LogArtifactCompactionPolicy`. The default keeps the 64 most-recent manifest rows per bead and prunes anything past 180 days of `updated_at`. Compaction prunes rows ONLY — the byte store is independent.
+
+### Why the manifest age cap is longer than GCS retention
+
+In steady state, GCS lifecycle deletes objects after 90 days; the manifest's 180-day cap is a safety net so a missed manifest insert (a writer that crashed before stamping a row) doesn't leave a permanent gap. A render that hits a manifest row whose object has been deleted by the lifecycle rule returns `ErrNotFound`; the gateway can fall back to the manifest's summary/tail fields.
+
+### Visibility and redaction
+
+Every log artifact carries a `visibility` class set at upload time. The substrate (spi-cmy90h) makes broader exposure than `engineer_only` an explicit decision at the call site:
+
+| Visibility | Redaction at upload | Redaction at render | Who can read |
+|------------|---------------------|----------------------|--------------|
+| `engineer_only` (default) | None — raw bytes preserved | Engineer scope: none. Other scopes refused. | Engineer scope only |
+| `desktop_safe` | Current redactor applied | Re-applied (defense in depth) | Engineer + Desktop |
+| `public` | Current redactor applied | Re-applied | Engineer + Desktop + Public |
+
+The redactor (`pkg/logartifact/redact`) masks high-confidence credential shapes: provider API keys (Anthropic, OpenAI), AWS/GCP credentials, GitHub tokens, JWTs, `Authorization: Bearer` headers, generic `api_key=` / `password=` assignments, and `BEGIN PRIVATE KEY` blocks. The mask token is the literal `[REDACTED]`.
+
+**The redactor is hygiene, not a security boundary.** A determined adversary can phrase a credential in a way the patterns won't catch; the right control is "don't put secrets in logs in the first place." The redactor catches the obvious cases when that contract slips — it is the last filter, not the first.
+
+The render layer always re-applies the current redactor on read for non-engineer scopes, regardless of what was stored. If the pattern set improves after an artifact is uploaded, the new patterns apply on the next read without rewriting storage. The redactor is versioned (`CurrentRedactionVersion`); the manifest records the version that ran at upload and the render layer reports both stored and runtime versions in its response metadata.
+
+### Operator checklist
+
+Before flipping `logStore.backend=gcs` for a tower that will serve transcripts to non-engineering surfaces:
+
+1. Create a dedicated log bucket. **Do not reuse `bundleStore.gcs.bucket` or `backup.gcs.bucket`** — their lifecycle, storage-class, and access rules are incompatible.
+2. Apply a lifecycle policy on the log bucket matching the retention you want (`gsutil lifecycle set ...`).
+3. Confirm the Workload Identity GSA has `roles/storage.objectAdmin` on the new bucket; both the gateway (read) and operator-stamped exporter sidecars (write) reuse the same GSA.
+4. Confirm Cloud Logging retention on the GKE cluster's log buckets matches your live-debug window; raise it explicitly if your team relies on Cloud Logging for forensic search rather than gateway reads.
+5. Treat the redactor as defense, not the policy. Continue to redact secrets at the source: avoid logging tokens, scrub environment dumps, never `cat` credential files into stderr.
 
 ---
 

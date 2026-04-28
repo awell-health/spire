@@ -104,13 +104,14 @@ func TestInsertLogArtifact_FillsDefaults(t *testing.T) {
 			rec.Tower, rec.BeadID, rec.AttemptID, rec.RunID, rec.AgentName,
 			rec.Role, rec.Phase, rec.Provider, rec.Stream, rec.Sequence,
 			rec.ObjectURI,
-			nil, nil,             // byte_size, checksum
+			nil, nil, // byte_size, checksum
 			LogArtifactStatusWriting,
-			nil, nil,             // started_at, ended_at
-			sqlmock.AnyArg(),     // created_at
-			sqlmock.AnyArg(),     // updated_at
-			0,                    // redaction_version
-			nil, nil,             // summary, tail
+			nil, nil, // started_at, ended_at
+			sqlmock.AnyArg(),                  // created_at
+			sqlmock.AnyArg(),                  // updated_at
+			0,                                 // redaction_version
+			LogArtifactVisibilityEngineerOnly, // visibility (defaulted)
+			nil, nil,                          // summary, tail
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -211,7 +212,7 @@ func TestGetLogArtifact_Found(t *testing.T) {
 			0, "file:///tmp/x.jsonl", int64(1234), "sha256:deadbeef",
 			LogArtifactStatusFinalized, "2026-04-28 01:00:00", "2026-04-28 01:01:00",
 			"2026-04-28 01:00:00", "2026-04-28 01:01:00",
-			0, "summary text", "tail bytes",
+			0, LogArtifactVisibilityEngineerOnly, "summary text", "tail bytes",
 		)
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts WHERE id = \?`).
 		WithArgs("log-abc").
@@ -256,7 +257,7 @@ func TestGetLogArtifactByIdentity_Found(t *testing.T) {
 			rec.Sequence, rec.ObjectURI, nil, nil,
 			rec.Status, nil, nil,
 			"2026-04-28 01:00:00", "2026-04-28 01:01:00",
-			0, nil, nil,
+			0, LogArtifactVisibilityEngineerOnly, nil, nil,
 		)
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts WHERE bead_id = \?`).
 		WithArgs(
@@ -292,7 +293,7 @@ func TestListLogArtifactsForBead(t *testing.T) {
 			0, "file:///a.jsonl", nil, nil,
 			LogArtifactStatusWriting, nil, nil,
 			"2026-04-28 01:00:00", "2026-04-28 01:00:00",
-			0, nil, nil,
+			0, LogArtifactVisibilityEngineerOnly, nil, nil,
 		).
 		AddRow(
 			"log-b", "awell", "spi-x", "spi-att1", "run-1",
@@ -300,7 +301,7 @@ func TestListLogArtifactsForBead(t *testing.T) {
 			1, "file:///b.jsonl", int64(100), "sha256:cafe",
 			LogArtifactStatusFinalized, nil, nil,
 			"2026-04-28 01:00:00", "2026-04-28 01:01:00",
-			0, nil, nil,
+			0, LogArtifactVisibilityEngineerOnly, nil, nil,
 		)
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
 		WithArgs("spi-x").
@@ -437,6 +438,7 @@ func logArtifactColumnNames() []string {
 		"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 		"role", "phase", "provider", "stream", "sequence", "object_uri",
 		"byte_size", "checksum", "status", "started_at", "ended_at",
-		"created_at", "updated_at", "redaction_version", "summary", "tail",
+		"created_at", "updated_at", "redaction_version", "visibility",
+		"summary", "tail",
 	}
 }

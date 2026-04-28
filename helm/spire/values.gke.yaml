@@ -338,6 +338,21 @@ logStore:
   # configured out-of-band (see "Bucket lifecycle" above). Increase
   # for longer forensic-replay windows; decrease for cost-sensitive
   # installs that rely on Cloud Logging for live debugging instead.
+  #
+  # Awell three-axis retention defaults (see docs/cluster-install.md
+  # § 10b "Log retention, redaction, and visibility"):
+  #
+  #   - Cloud Logging: 30 days (GKE default; raise via gcloud logging
+  #                    buckets update _Default if your team relies
+  #                    on it for forensic search)
+  #   - GCS lifecycle:  90 days (this value, applied via gsutil)
+  #   - Tower manifest: PerBeadKeep=64 / OlderThan=180 days, run
+  #                    hourly by pkg/steward.LogArtifactCompactionPolicy
+  #
+  # The three axes have independent owners. Manifest compaction is
+  # deliberately longer than GCS retention so a missed manifest
+  # insert (writer crashed mid-upload) does not leave a permanent
+  # gap; the steady state has GCS lifecycle delete first.
   retentionDays: 90
 
 ## --- Log exporter (passive sidecar, cluster-grade) ---

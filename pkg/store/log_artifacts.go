@@ -51,6 +51,7 @@ const AgentLogArtifactsTableSQL = `CREATE TABLE IF NOT EXISTS agent_log_artifact
     created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     redaction_version  INT          NOT NULL DEFAULT 0,
+    visibility         VARCHAR(32)  NOT NULL DEFAULT 'engineer_only',
     summary            LONGTEXT     NULL,
     tail               LONGTEXT     NULL,
     UNIQUE KEY uniq_log_artifact_identity (
@@ -78,6 +79,13 @@ const (
 	LogArtifactStatusFinalized = "finalized"
 	LogArtifactStatusFailed    = "failed"
 )
+
+// LogArtifactVisibilityEngineerOnly is the canonical default visibility.
+// pkg/store coerces empty Visibility to this value at insert so a
+// forgetful caller fails closed (raw bytes preserved on disk; render-
+// time gate refuses non-engineer callers). pkg/logartifact owns the
+// full enum.
+const LogArtifactVisibilityEngineerOnly = "engineer_only"
 
 // ErrLogArtifactExists is returned by InsertLogArtifact when the unique
 // identity tuple already has a manifest row. Callers performing idempotent
@@ -109,8 +117,13 @@ type LogArtifactRecord struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	RedactionVersion int
-	Summary          string
-	Tail             string
+	// Visibility is the access class of the artifact (engineer_only,
+	// desktop_safe, public). Empty values are coerced to engineer_only
+	// at insert time so a forgetful caller fails closed. See
+	// pkg/logartifact.Visibility for the policy.
+	Visibility string
+	Summary    string
+	Tail       string
 }
 
 // EnsureAgentLogArtifactsTable creates the agent_log_artifacts table if it
@@ -171,6 +184,9 @@ func InsertLogArtifact(ctx context.Context, db *sql.DB, rec LogArtifactRecord) (
 	if rec.Status == "" {
 		rec.Status = LogArtifactStatusWriting
 	}
+	if rec.Visibility == "" {
+		rec.Visibility = LogArtifactVisibilityEngineerOnly
+	}
 
 	var startedAt, endedAt interface{}
 	if rec.StartedAt != nil {
@@ -200,14 +216,14 @@ func InsertLogArtifact(ctx context.Context, db *sql.DB, rec LogArtifactRecord) (
             id, tower, bead_id, attempt_id, run_id, agent_name, role, phase,
             provider, stream, sequence, object_uri, byte_size, checksum,
             status, started_at, ended_at, created_at, updated_at,
-            redaction_version, summary, tail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            redaction_version, visibility, summary, tail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.Tower, rec.BeadID, rec.AttemptID, rec.RunID, rec.AgentName,
 		rec.Role, rec.Phase, rec.Provider, rec.Stream, rec.Sequence, rec.ObjectURI,
 		byteSize, checksum, rec.Status, startedAt, endedAt,
 		rec.CreatedAt.UTC().Format("2006-01-02 15:04:05"),
 		rec.UpdatedAt.UTC().Format("2006-01-02 15:04:05"),
-		rec.RedactionVersion, summary, tail,
+		rec.RedactionVersion, rec.Visibility, summary, tail,
 	)
 	if err != nil {
 		if isDuplicateKeyError(err) {
@@ -356,13 +372,171 @@ func FinalizeLogArtifact(
 	return nil
 }
 
+// SetLogArtifactRedaction stamps redaction_version on a manifest row.
+// Called by the upload path after running the redactor on an artifact
+// flagged for desktop_safe / public visibility — the version recorded
+// here is the redactor generation that ran at upload, NOT a promise
+// about what the render layer applies (which always re-redacts at read
+// with the current generation; see pkg/logartifact.Render).
+//
+// version=0 is reserved for "no redactor applied"; callers that pass 0
+// are no-ops at the SQL level (the COALESCE-shaped UPDATE leaves the
+// existing column alone).
+func SetLogArtifactRedaction(ctx context.Context, db *sql.DB, id string, version int) error {
+	if version < 0 {
+		return fmt.Errorf("redaction version must be >= 0 (got %d)", version)
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err := db.ExecContext(ctx,
+		`UPDATE agent_log_artifacts SET redaction_version = ?, updated_at = ? WHERE id = ?`,
+		version, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update log artifact redaction %s: %w", id, err)
+	}
+	return nil
+}
+
+// LogArtifactCompactionPolicy bounds the work CompactLogArtifacts does
+// in one pass. The two axes — older-than (a hard age cap) and per-bead
+// keep (a recency floor) — are evaluated independently and combined
+// with AND: a row is pruned only when both conditions agree it should
+// go. This keeps the policy from accidentally pruning the only manifest
+// row a long-running bead has, and from accidentally retaining stale
+// rows for a churning bead that never crosses the recency floor.
+type LogArtifactCompactionPolicy struct {
+	// OlderThan prunes rows whose updated_at is more than this duration
+	// ago. Zero disables the age cap.
+	OlderThan time.Duration
+	// PerBeadKeep retains the N most recent rows per bead (ordered by
+	// updated_at DESC). Zero disables the recency floor.
+	PerBeadKeep int
+	// Now overrides the wall-clock for tests; zero uses time.Now().
+	Now time.Time
+}
+
+// CompactLogArtifacts deletes manifest rows that fall outside the
+// policy. Returns the number of rows deleted.
+//
+// The function does NOT touch the byte store (local files or GCS
+// objects). Object retention is owned by GCS bucket lifecycle policies
+// and the local artifact root cleanup; the manifest is the index, and
+// its retention is independent of object retention by design (see
+// docs/cluster-install.md "Three retention axes" section). Callers that
+// want object deletion go through the artifact backend explicitly.
+//
+// An empty policy (zero OlderThan and zero PerBeadKeep) is a no-op.
+func CompactLogArtifacts(ctx context.Context, db *sql.DB, policy LogArtifactCompactionPolicy) (int, error) {
+	if policy.OlderThan <= 0 && policy.PerBeadKeep <= 0 {
+		return 0, nil
+	}
+	now := policy.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	// Build the candidate ID set in two passes — age cap first (cheap),
+	// then per-bead recency floor. We collect IDs in memory rather than
+	// issuing a single DELETE because Dolt does not yet support
+	// correlated subqueries in DELETE for this shape, and the manifest
+	// table is small enough (per-bead) that a streaming pass is fine.
+	var idsToDelete []string
+	seen := make(map[string]struct{})
+	mark := func(id string) {
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		idsToDelete = append(idsToDelete, id)
+	}
+
+	if policy.OlderThan > 0 {
+		cutoff := now.Add(-policy.OlderThan).UTC().Format("2006-01-02 15:04:05")
+		rows, err := db.QueryContext(ctx,
+			`SELECT id FROM agent_log_artifacts WHERE updated_at < ?`,
+			cutoff,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("compact: scan by age: %w", err)
+		}
+		var id string
+		for rows.Next() {
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("compact: scan id: %w", err)
+			}
+			mark(id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("compact: rows err: %w", err)
+		}
+	}
+
+	if policy.PerBeadKeep > 0 {
+		// Pull (bead_id, id, updated_at) ordered by bead, then
+		// updated_at DESC, and keep the first N per bead. Rows past
+		// position N are eligible for deletion. The set is unioned with
+		// the age-based set above; a row eligible by either rule is
+		// pruned.
+		rows, err := db.QueryContext(ctx,
+			`SELECT bead_id, id FROM agent_log_artifacts
+             ORDER BY bead_id ASC, updated_at DESC, id ASC`,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("compact: scan by bead: %w", err)
+		}
+		var bead, id string
+		var lastBead string
+		var counter int
+		for rows.Next() {
+			if err := rows.Scan(&bead, &id); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("compact: scan bead row: %w", err)
+			}
+			if bead != lastBead {
+				lastBead = bead
+				counter = 0
+			}
+			counter++
+			if counter > policy.PerBeadKeep {
+				mark(id)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("compact: bead rows err: %w", err)
+		}
+	}
+
+	if len(idsToDelete) == 0 {
+		return 0, nil
+	}
+
+	// Issue deletes one at a time. Batching with IN(...) is faster but
+	// requires query argument count limits we don't want to track per
+	// driver; the dataset compaction targets is small (steward cadence
+	// keeps it that way) so the overhead is negligible.
+	deleted := 0
+	for _, id := range idsToDelete {
+		_, err := db.ExecContext(ctx,
+			`DELETE FROM agent_log_artifacts WHERE id = ?`, id,
+		)
+		if err != nil {
+			return deleted, fmt.Errorf("compact: delete %s: %w", id, err)
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
 // logArtifactColumns is the column list used by the SELECT helpers. Kept
 // in sync with scanLogArtifactRow / scanLogArtifactRows.
 const logArtifactColumns = `
     id, tower, bead_id, attempt_id, run_id, agent_name, role, phase,
     provider, stream, sequence, object_uri, byte_size, checksum,
     status, started_at, ended_at, created_at, updated_at,
-    redaction_version, summary, tail`
+    redaction_version, visibility, summary, tail`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanLogArtifact can serve
 // both single-row and multi-row paths.
@@ -373,24 +547,30 @@ type rowScanner interface {
 func scanLogArtifactRow(row rowScanner) (*LogArtifactRecord, error) {
 	rec := &LogArtifactRecord{}
 	var (
-		byteSize  sql.NullInt64
-		checksum  sql.NullString
-		startedAt sql.NullString
-		endedAt   sql.NullString
-		summary   sql.NullString
-		tail      sql.NullString
-		createdAt string
-		updatedAt string
+		byteSize   sql.NullInt64
+		checksum   sql.NullString
+		startedAt  sql.NullString
+		endedAt    sql.NullString
+		visibility sql.NullString
+		summary    sql.NullString
+		tail       sql.NullString
+		createdAt  string
+		updatedAt  string
 	)
 	err := row.Scan(
 		&rec.ID, &rec.Tower, &rec.BeadID, &rec.AttemptID, &rec.RunID,
 		&rec.AgentName, &rec.Role, &rec.Phase, &rec.Provider, &rec.Stream,
 		&rec.Sequence, &rec.ObjectURI, &byteSize, &checksum,
 		&rec.Status, &startedAt, &endedAt, &createdAt, &updatedAt,
-		&rec.RedactionVersion, &summary, &tail,
+		&rec.RedactionVersion, &visibility, &summary, &tail,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if visibility.Valid && visibility.String != "" {
+		rec.Visibility = visibility.String
+	} else {
+		rec.Visibility = LogArtifactVisibilityEngineerOnly
 	}
 	if byteSize.Valid {
 		v := byteSize.Int64

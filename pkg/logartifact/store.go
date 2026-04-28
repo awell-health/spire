@@ -50,6 +50,11 @@ type Writer interface {
 	// before Put has reserved the manifest row (it never is, in
 	// practice — Put always inserts before returning a writer).
 	ManifestID() string
+
+	// Visibility returns the access class the writer was opened at.
+	// Used by Finalize to decide whether to stamp redaction_version on
+	// the manifest row.
+	Visibility() Visibility
 }
 
 // Store is the contract every artifact backend implements. Local and
@@ -62,7 +67,19 @@ type Store interface {
 	// StatusFinalized, Put returns ErrLogArtifactExists from pkg/store
 	// — callers performing idempotent re-uploads should fetch the
 	// existing manifest via Stat or List rather than rewriting.
-	Put(ctx context.Context, identity Identity, sequence int) (Writer, error)
+	//
+	// Visibility is required and gates the redaction behavior:
+	//   - VisibilityEngineerOnly: bytes pass through unmodified (forensic
+	//     fidelity); render-time access is gated to engineer scope.
+	//   - VisibilityDesktopSafe / VisibilityPublic: bytes are redacted
+	//     before they hit the byte store; the manifest's
+	//     redaction_version is stamped to the version that ran. Render
+	//     re-applies the current redactor on read.
+	// The empty string is rejected — callers must declare visibility
+	// explicitly so a forgetful caller fails to compile or fails fast,
+	// not silently leaks raw bytes through a default. See design
+	// spi-cmy90h.
+	Put(ctx context.Context, identity Identity, sequence int, visibility Visibility) (Writer, error)
 
 	// Finalize closes the writer, persists the final size and
 	// checksum, and updates the manifest row to StatusFinalized. The
@@ -111,6 +128,10 @@ func (c *chunkedHash) Write(p []byte) (int, error) {
 // package returns. Centralized here so backends share one mapping and
 // future column additions land in a single place.
 func recordToManifest(rec pkgstore.LogArtifactRecord) Manifest {
+	visibility := Visibility(rec.Visibility)
+	if visibility == "" || !visibility.Valid() {
+		visibility = VisibilityEngineerOnly
+	}
 	m := Manifest{
 		ID: rec.ID,
 		Identity: Identity{
@@ -131,6 +152,7 @@ func recordToManifest(rec pkgstore.LogArtifactRecord) Manifest {
 		CreatedAt:        rec.CreatedAt,
 		UpdatedAt:        rec.UpdatedAt,
 		RedactionVersion: rec.RedactionVersion,
+		Visibility:       visibility,
 		Summary:          rec.Summary,
 		Tail:             rec.Tail,
 	}

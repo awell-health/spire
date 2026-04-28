@@ -114,7 +114,7 @@ func TestGCSStore_ObjectKeyShape(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO agent_log_artifacts`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	w, err := store.Put(ctx, identity, 0)
+	w, err := store.Put(ctx, identity, 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestGCSStore_PutFinalizeRoundTrip(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO agent_log_artifacts`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	w, err := store.Put(ctx, identity, 0)
+	w, err := store.Put(ctx, identity, 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestGCSStore_GetMissingManifestReturnsErrNotFound(t *testing.T) {
 			"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 			"role", "phase", "provider", "stream", "sequence", "object_uri",
 			"byte_size", "checksum", "status", "started_at", "ended_at",
-			"created_at", "updated_at", "redaction_version", "summary", "tail",
+			"created_at", "updated_at", "redaction_version", "visibility", "summary", "tail",
 		}))
 
 	_, _, err := store.Get(ctx, ManifestRef{ID: "log-missing"})
@@ -292,7 +292,7 @@ func TestGCSStore_EmptyPrefix(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO agent_log_artifacts`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	w, err := store.Put(ctx, validIdentity(), 0)
+	w, err := store.Put(ctx, validIdentity(), 0, VisibilityEngineerOnly)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestGCSStore_ListDelegatesToManifest(t *testing.T) {
 		"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
 		"role", "phase", "provider", "stream", "sequence", "object_uri",
 		"byte_size", "checksum", "status", "started_at", "ended_at",
-		"created_at", "updated_at", "redaction_version", "summary", "tail",
+		"created_at", "updated_at", "redaction_version", "visibility", "summary", "tail",
 	})
 	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
 		WithArgs("spi-b986in").

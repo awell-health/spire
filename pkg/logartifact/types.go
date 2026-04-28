@@ -140,6 +140,7 @@ type Manifest struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	RedactionVersion int
+	Visibility       Visibility
 	Summary          string
 	Tail             string
 }

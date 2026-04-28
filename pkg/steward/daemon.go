@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -19,6 +20,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/integration"
+	"github.com/awell-health/spire/pkg/logartifact"
 	"github.com/awell-health/spire/pkg/olap"
 	spireOtel "github.com/awell-health/spire/pkg/otel"
 	"github.com/awell-health/spire/pkg/store"
@@ -311,7 +313,89 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	// Remove stale updated:<timestamp> labels left by the old heartbeat mechanism.
 	CleanUpdatedLabels()
 
+	// Compact log-artifact manifests on a slow cadence (hourly across the
+	// process lifetime). The byte stores own their own retention (GCS
+	// lifecycle, local fs cleanup, Cloud Logging retention); this only
+	// bounds the tower-side index. Non-fatal if the table doesn't exist
+	// — early towers may not have applied the agent_log_artifacts DDL.
+	if pruned, lerr := maybeCompactLogArtifacts(tower); lerr == nil && pruned > 0 {
+		log.Printf("[daemon] [%s] compacted %d log-artifact manifest row(s)", tower.Name, pruned)
+	}
+
 	log.Printf("[daemon] [%s] cycle complete", tower.Name)
+}
+
+// LogArtifactCompactionPolicy is the policy applied by the daemon's
+// hourly log-manifest compaction. The defaults match the Awell cluster
+// retention guidance documented in docs/cluster-install.md:
+//
+//   - PerBeadKeep = 64 — retain the 64 most recent manifest rows per
+//     bead. Generous enough that a long-running epic with many attempts
+//     keeps its full history; tight enough that a runaway agent
+//     producing thousands of artifacts can't blow up the table.
+//   - OlderThan = 180 days — hard age cap. Past this, the manifest is
+//     pruned regardless of per-bead recency. Object retention (GCS
+//     lifecycle, default 90 days) typically removes the byte-store
+//     entry first, so the manifest's age cap is a safety net.
+//
+// Tests and operators can override by setting LogArtifactCompactionPolicy
+// before the daemon starts; the package-level variable keeps the wiring
+// simple without growing StewardConfig.
+var LogArtifactCompactionPolicy = logartifact.CompactionPolicy{
+	PerBeadKeep: 64,
+	OlderThan:   180 * 24 * time.Hour,
+}
+
+// logArtifactCompactionInterval is the minimum wall-clock gap between
+// successive compactions. The daemon cycle runs every 2 minutes by
+// default; we don't need to scan the manifest table that often.
+const logArtifactCompactionInterval = time.Hour
+
+var (
+	lastLogCompactedAt   = make(map[string]time.Time) // tower name → last run
+	lastLogCompactedAtMu sync.Mutex
+)
+
+// maybeCompactLogArtifacts runs CompactManifests at most once per
+// logArtifactCompactionInterval per tower. Returns the number of rows
+// pruned (zero if the cooldown is still active or the table is missing).
+func maybeCompactLogArtifacts(tower config.TowerConfig) (int, error) {
+	lastLogCompactedAtMu.Lock()
+	last := lastLogCompactedAt[tower.Name]
+	now := time.Now()
+	if !last.IsZero() && now.Sub(last) < logArtifactCompactionInterval {
+		lastLogCompactedAtMu.Unlock()
+		return 0, nil
+	}
+	lastLogCompactedAt[tower.Name] = now
+	lastLogCompactedAtMu.Unlock()
+
+	db, ok := store.ActiveDB()
+	if !ok || db == nil {
+		return 0, nil
+	}
+	// Probe for the table; on towers that haven't yet seen the
+	// agent_log_artifacts DDL the compaction is a no-op. The compactor
+	// itself would surface a SQL error, which we'd rather treat as
+	// "nothing to do" than as a daemon-cycle failure.
+	if !logArtifactsTableExists(db) {
+		return 0, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return logartifact.CompactManifests(ctx, db, LogArtifactCompactionPolicy)
+}
+
+// logArtifactsTableExists reports whether the agent_log_artifacts table
+// exists in the active database. Used as a soft guard so the daemon
+// doesn't error on towers that predate spi-b986in.
+func logArtifactsTableExists(db *sql.DB) bool {
+	row := db.QueryRow(`SHOW TABLES LIKE 'agent_log_artifacts'`)
+	var name string
+	if err := row.Scan(&name); err != nil {
+		return false
+	}
+	return name == "agent_log_artifacts"
 }
 
 // DaemonDB is the database name override for the current tower cycle.

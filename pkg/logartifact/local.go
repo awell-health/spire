@@ -1,6 +1,7 @@
 package logartifact
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -14,6 +15,8 @@ import (
 	"strings"
 
 	pkgstore "github.com/awell-health/spire/pkg/store"
+
+	"github.com/awell-health/spire/pkg/logartifact/redact"
 )
 
 // LocalStore is a filesystem-backed log artifact store. The byte stream
@@ -66,16 +69,28 @@ func (s *LocalStore) Root() string { return s.root }
 // localWriter is the LocalStore-side Writer. It owns a tmpfile; the
 // final filename is locked at Put time so Finalize's rename is a single
 // system call.
+//
+// When visibility is desktop_safe or public, bytes flow through the
+// redactor before they reach the tmpfile. The substrate buffers the
+// full payload, redacts it on Close/Finalize, and writes the redacted
+// version to disk; we don't redact streaming chunks because the
+// redactor's regex set must see token boundaries (a token split across
+// two writes would slip through). For artifacts at desktop_safe scale
+// (provider transcripts measured in MB at most) the buffer cost is
+// acceptable; engineer_only artifacts skip the buffer entirely.
 type localWriter struct {
-	identity   Identity
-	sequence   int
-	finalPath  string
-	tmpFile    *os.File
-	tmpPath    string
-	objectURI  string
-	manifestID string
-	chunked    *chunkedHash
-	closed     bool
+	identity      Identity
+	sequence      int
+	finalPath     string
+	tmpFile       *os.File
+	tmpPath       string
+	objectURI     string
+	manifestID    string
+	visibility    Visibility
+	redactBuf     *bytes.Buffer // non-nil iff visibility.RedactsAtUpload()
+	chunked       *chunkedHash
+	closed        bool
+	redactionDone int // generation that ran; 0 = engineer_only/no redactor
 }
 
 func (w *localWriter) Identity() Identity { return w.identity }
@@ -84,8 +99,9 @@ func (w *localWriter) Size() int64        { return w.chunked.size }
 func (w *localWriter) ChecksumHex() string {
 	return hex.EncodeToString(w.chunked.hasher.Sum(nil))
 }
-func (w *localWriter) ObjectURI() string  { return w.objectURI }
-func (w *localWriter) ManifestID() string { return w.manifestID }
+func (w *localWriter) ObjectURI() string    { return w.objectURI }
+func (w *localWriter) ManifestID() string   { return w.manifestID }
+func (w *localWriter) Visibility() Visibility { return w.visibility }
 
 func (w *localWriter) Write(p []byte) (int, error) {
 	if w.closed {
@@ -117,12 +133,18 @@ func (w *localWriter) Close() error {
 }
 
 // Put implements Store.
-func (s *LocalStore) Put(ctx context.Context, identity Identity, sequence int) (Writer, error) {
+func (s *LocalStore) Put(ctx context.Context, identity Identity, sequence int, visibility Visibility) (Writer, error) {
 	if err := identity.Validate(); err != nil {
 		return nil, err
 	}
 	if sequence < 0 {
 		return nil, fmt.Errorf("logartifact: sequence must be >= 0 (got %d)", sequence)
+	}
+	if visibility == "" {
+		return nil, errors.New("logartifact: Put requires visibility (engineer_only/desktop_safe/public)")
+	}
+	if !visibility.Valid() {
+		return nil, fmt.Errorf("logartifact: invalid visibility %q", visibility)
 	}
 
 	// Build the canonical relative key (no prefix; the backend
@@ -146,7 +168,7 @@ func (s *LocalStore) Put(ctx context.Context, identity Identity, sequence int) (
 
 	objectURI := "file://" + filepath.ToSlash(finalPath)
 
-	manifestID, err := insertOrFetchManifest(ctx, s.db, identity, sequence, objectURI)
+	manifestID, err := insertOrFetchManifestWithVisibility(ctx, s.db, identity, sequence, objectURI, visibility)
 	if err != nil {
 		// Clean up the tmpfile we just created — the manifest insert
 		// failure means no caller will hold this writer.
@@ -155,7 +177,7 @@ func (s *LocalStore) Put(ctx context.Context, identity Identity, sequence int) (
 		return nil, err
 	}
 
-	return &localWriter{
+	w := &localWriter{
 		identity:   identity,
 		sequence:   sequence,
 		finalPath:  finalPath,
@@ -163,11 +185,21 @@ func (s *LocalStore) Put(ctx context.Context, identity Identity, sequence int) (
 		tmpPath:    tmp.Name(),
 		objectURI:  objectURI,
 		manifestID: manifestID,
-		chunked: &chunkedHash{
-			dst:    tmp,
-			hasher: sha256.New(),
-		},
-	}, nil
+		visibility: visibility,
+	}
+	if visibility.RedactsAtUpload() {
+		// Buffer in memory so the redactor sees full token boundaries.
+		// A token split across two streaming chunks would slip the
+		// pattern set; buffering trades some memory for that
+		// correctness. The bytes go through the hasher AFTER redaction
+		// in Finalize, so the on-disk checksum matches the on-disk
+		// content.
+		w.redactBuf = &bytes.Buffer{}
+		w.chunked = &chunkedHash{dst: w.redactBuf, hasher: sha256.New()}
+	} else {
+		w.chunked = &chunkedHash{dst: tmp, hasher: sha256.New()}
+	}
+	return w, nil
 }
 
 // Finalize implements Store.
@@ -198,6 +230,32 @@ func (s *LocalStore) Finalize(ctx context.Context, w Writer) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("logartifact: Finalize on already-closed writer (id=%s)", lw.manifestID)
 	}
 
+	// Redact-at-upload path: the bytes Write accepted are buffered in
+	// redactBuf. Run the redactor over the full buffer (so a token
+	// straddling two chunks isn't missed), recompute size+checksum on
+	// the redacted output, write it to the tmpfile, and stamp the
+	// redaction_version on the manifest row.
+	if lw.redactBuf != nil {
+		redacted, version := redact.New().Redact(lw.redactBuf.Bytes())
+		hasher := sha256.New()
+		hasher.Write(redacted)
+		// Replace the chunked accounting so Size()/ChecksumHex() now
+		// describe what is actually on disk after the rename below,
+		// not the unredacted buffer the caller wrote.
+		lw.chunked = &chunkedHash{
+			dst:    io.Discard,
+			hasher: hasher,
+			size:   int64(len(redacted)),
+		}
+		lw.redactionDone = version
+		if _, werr := lw.tmpFile.Write(redacted); werr != nil {
+			lw.tmpFile.Close()
+			os.Remove(lw.tmpPath)
+			_ = pkgstore.UpdateLogArtifactStatus(ctx, s.db, lw.manifestID, pkgstore.LogArtifactStatusFailed)
+			return Manifest{}, fmt.Errorf("logartifact: write redacted: %w", werr)
+		}
+	}
+
 	// fsync + close the tmpfile, then rename into place. After this
 	// point a crash leaves the canonical artifact on disk in its
 	// finalized form.
@@ -223,6 +281,11 @@ func (s *LocalStore) Finalize(ctx context.Context, w Writer) (Manifest, error) {
 	checksum := "sha256:" + lw.ChecksumHex()
 	if err := pkgstore.FinalizeLogArtifact(ctx, s.db, lw.manifestID, lw.Size(), checksum, "", ""); err != nil {
 		return Manifest{}, fmt.Errorf("logartifact: finalize manifest: %w", err)
+	}
+	if lw.redactionDone > 0 {
+		if err := pkgstore.SetLogArtifactRedaction(ctx, s.db, lw.manifestID, lw.redactionDone); err != nil {
+			return Manifest{}, fmt.Errorf("logartifact: stamp redaction version: %w", err)
+		}
 	}
 
 	rec, err = pkgstore.GetLogArtifact(ctx, s.db, lw.manifestID)
@@ -494,23 +557,37 @@ func localPathFromURI(uri string) (string, error) {
 }
 
 // insertOrFetchManifest writes a writing-status row for the identity
-// tuple, or returns the ID of the existing row if one already exists
-// and is not yet finalized. Finalized rows can't be re-Put without
-// going through Reconcile / a new sequence.
+// tuple at the safe-default visibility (engineer_only), or returns the
+// ID of the existing row if one already exists and is not yet finalized.
+// Finalized rows can't be re-Put without going through Reconcile / a
+// new sequence.
+//
+// Kept for callers (Reconcile) that have no visibility to declare; the
+// upload path uses insertOrFetchManifestWithVisibility so the manifest
+// records the caller's intent.
 func insertOrFetchManifest(ctx context.Context, db *sql.DB, identity Identity, sequence int, objectURI string) (string, error) {
+	return insertOrFetchManifestWithVisibility(ctx, db, identity, sequence, objectURI, VisibilityEngineerOnly)
+}
+
+// insertOrFetchManifestWithVisibility is the visibility-aware variant
+// used by the Put path. The visibility is recorded on the manifest row
+// at insert time so a parallel reader can see the caller's intent
+// without waiting for Finalize to complete.
+func insertOrFetchManifestWithVisibility(ctx context.Context, db *sql.DB, identity Identity, sequence int, objectURI string, visibility Visibility) (string, error) {
 	rec := pkgstore.LogArtifactRecord{
-		Tower:     identity.Tower,
-		BeadID:    identity.BeadID,
-		AttemptID: identity.AttemptID,
-		RunID:     identity.RunID,
-		AgentName: identity.AgentName,
-		Role:      string(identity.Role),
-		Phase:     identity.Phase,
-		Provider:  identity.Provider,
-		Stream:    string(identity.Stream),
-		Sequence:  sequence,
-		ObjectURI: objectURI,
-		Status:    pkgstore.LogArtifactStatusWriting,
+		Tower:      identity.Tower,
+		BeadID:     identity.BeadID,
+		AttemptID:  identity.AttemptID,
+		RunID:      identity.RunID,
+		AgentName:  identity.AgentName,
+		Role:       string(identity.Role),
+		Phase:      identity.Phase,
+		Provider:   identity.Provider,
+		Stream:     string(identity.Stream),
+		Sequence:   sequence,
+		ObjectURI:  objectURI,
+		Status:     pkgstore.LogArtifactStatusWriting,
+		Visibility: string(visibility),
 	}
 	id, err := pkgstore.InsertLogArtifact(ctx, db, rec)
 	if err == nil {

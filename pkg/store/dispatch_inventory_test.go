@@ -371,6 +371,8 @@ var nonDispatchableAPIs = []string{
 	"ListLogArtifactsForAttempt",
 	"UpdateLogArtifactStatus",
 	"FinalizeLogArtifact",
+	"SetLogArtifactRedaction",
+	"CompactLogArtifacts",
 
 	// testing.go — test-only scaffolding.
 	"SetTestStorage",

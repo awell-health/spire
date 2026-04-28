@@ -1,6 +1,7 @@
 package logartifact
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -13,6 +14,8 @@ import (
 
 	"cloud.google.com/go/storage"
 	pkgstore "github.com/awell-health/spire/pkg/store"
+
+	"github.com/awell-health/spire/pkg/logartifact/redact"
 )
 
 // GCSStore is a Google Cloud Storage-backed log artifact store.
@@ -76,24 +79,31 @@ func (s *GCSStore) Bucket() string { return s.bucket }
 // Prefix returns the normalized object-name prefix.
 func (s *GCSStore) Prefix() string { return s.prefix }
 
-// gcsWriter is the GCSStore-side Writer.
+// gcsWriter is the GCSStore-side Writer. See localWriter for the
+// upload-time redaction strategy: bytes for desktop_safe / public
+// visibilities are buffered and run through the redactor at Finalize so
+// the redactor sees full token boundaries.
 type gcsWriter struct {
-	identity   Identity
-	sequence   int
-	objectKey  string
-	objectURI  string
-	manifestID string
-	gcs        *storage.Writer
-	chunked    *chunkedHash
-	closed     bool
+	identity      Identity
+	sequence      int
+	objectKey     string
+	objectURI     string
+	manifestID    string
+	visibility    Visibility
+	gcs           *storage.Writer
+	redactBuf     *bytes.Buffer
+	chunked       *chunkedHash
+	closed        bool
+	redactionDone int
 }
 
-func (w *gcsWriter) Identity() Identity   { return w.identity }
-func (w *gcsWriter) Sequence() int        { return w.sequence }
-func (w *gcsWriter) Size() int64          { return w.chunked.size }
-func (w *gcsWriter) ChecksumHex() string  { return hex.EncodeToString(w.chunked.hasher.Sum(nil)) }
-func (w *gcsWriter) ObjectURI() string    { return w.objectURI }
-func (w *gcsWriter) ManifestID() string   { return w.manifestID }
+func (w *gcsWriter) Identity() Identity     { return w.identity }
+func (w *gcsWriter) Sequence() int          { return w.sequence }
+func (w *gcsWriter) Size() int64            { return w.chunked.size }
+func (w *gcsWriter) ChecksumHex() string    { return hex.EncodeToString(w.chunked.hasher.Sum(nil)) }
+func (w *gcsWriter) ObjectURI() string      { return w.objectURI }
+func (w *gcsWriter) ManifestID() string     { return w.manifestID }
+func (w *gcsWriter) Visibility() Visibility { return w.visibility }
 
 func (w *gcsWriter) Write(p []byte) (int, error) {
 	if w.closed {
@@ -119,12 +129,18 @@ func (w *gcsWriter) Close() error {
 }
 
 // Put implements Store.
-func (s *GCSStore) Put(ctx context.Context, identity Identity, sequence int) (Writer, error) {
+func (s *GCSStore) Put(ctx context.Context, identity Identity, sequence int, visibility Visibility) (Writer, error) {
 	if err := identity.Validate(); err != nil {
 		return nil, err
 	}
 	if sequence < 0 {
 		return nil, fmt.Errorf("logartifact: sequence must be >= 0 (got %d)", sequence)
+	}
+	if visibility == "" {
+		return nil, errors.New("logartifact: Put requires visibility (engineer_only/desktop_safe/public)")
+	}
+	if !visibility.Valid() {
+		return nil, fmt.Errorf("logartifact: invalid visibility %q", visibility)
 	}
 	relKey, err := BuildObjectKey("", identity, sequence)
 	if err != nil {
@@ -136,24 +152,28 @@ func (s *GCSStore) Put(ctx context.Context, identity Identity, sequence int) (Wr
 	}
 	objectURI := fmt.Sprintf("gs://%s/%s", s.bucket, objectKey)
 
-	manifestID, err := insertOrFetchManifest(ctx, s.db, identity, sequence, objectURI)
+	manifestID, err := insertOrFetchManifestWithVisibility(ctx, s.db, identity, sequence, objectURI, visibility)
 	if err != nil {
 		return nil, err
 	}
 
-	w := s.client.Bucket(s.bucket).Object(objectKey).NewWriter(ctx)
-	return &gcsWriter{
+	gw := s.client.Bucket(s.bucket).Object(objectKey).NewWriter(ctx)
+	w := &gcsWriter{
 		identity:   identity,
 		sequence:   sequence,
 		objectKey:  objectKey,
 		objectURI:  objectURI,
 		manifestID: manifestID,
-		gcs:        w,
-		chunked: &chunkedHash{
-			dst:    w,
-			hasher: sha256.New(),
-		},
-	}, nil
+		visibility: visibility,
+		gcs:        gw,
+	}
+	if visibility.RedactsAtUpload() {
+		w.redactBuf = &bytes.Buffer{}
+		w.chunked = &chunkedHash{dst: w.redactBuf, hasher: sha256.New()}
+	} else {
+		w.chunked = &chunkedHash{dst: gw, hasher: sha256.New()}
+	}
+	return w, nil
 }
 
 // Finalize implements Store.
@@ -183,6 +203,27 @@ func (s *GCSStore) Finalize(ctx context.Context, w Writer) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("logartifact: Finalize on already-closed writer (id=%s)", gw.manifestID)
 	}
 
+	// Redact-at-upload: the bytes Write accepted are buffered in
+	// redactBuf; run the redactor over the full buffer so a token
+	// straddling chunks is not missed, then write the redacted output
+	// to GCS, recompute size+checksum on it, and stamp redaction_version
+	// on the manifest row. See localWriter for the symmetric path.
+	if gw.redactBuf != nil {
+		redacted, version := redact.New().Redact(gw.redactBuf.Bytes())
+		hasher := sha256.New()
+		hasher.Write(redacted)
+		gw.chunked = &chunkedHash{
+			dst:    io.Discard,
+			hasher: hasher,
+			size:   int64(len(redacted)),
+		}
+		gw.redactionDone = version
+		if _, werr := gw.gcs.Write(redacted); werr != nil {
+			_ = pkgstore.UpdateLogArtifactStatus(ctx, s.db, gw.manifestID, pkgstore.LogArtifactStatusFailed)
+			return Manifest{}, fmt.Errorf("logartifact: write redacted to GCS: %w", werr)
+		}
+	}
+
 	// Close the GCS writer to flush the resumable upload.
 	if err := gw.gcs.Close(); err != nil {
 		_ = pkgstore.UpdateLogArtifactStatus(ctx, s.db, gw.manifestID, pkgstore.LogArtifactStatusFailed)
@@ -194,6 +235,11 @@ func (s *GCSStore) Finalize(ctx context.Context, w Writer) (Manifest, error) {
 	checksum := "sha256:" + gw.ChecksumHex()
 	if err := pkgstore.FinalizeLogArtifact(ctx, s.db, gw.manifestID, gw.Size(), checksum, "", ""); err != nil {
 		return Manifest{}, fmt.Errorf("logartifact: finalize manifest: %w", err)
+	}
+	if gw.redactionDone > 0 {
+		if err := pkgstore.SetLogArtifactRedaction(ctx, s.db, gw.manifestID, gw.redactionDone); err != nil {
+			return Manifest{}, fmt.Errorf("logartifact: stamp redaction version: %w", err)
+		}
 	}
 
 	rec, err = pkgstore.GetLogArtifact(ctx, s.db, gw.manifestID)
