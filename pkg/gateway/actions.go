@@ -539,6 +539,8 @@ func (s *Server) handleRecoveryByID(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "comment_request":
 		s.handleRecoveryCommentRequest(w, r, id)
+	case "gate":
+		s.handleRecoveryGate(w, r, id)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}

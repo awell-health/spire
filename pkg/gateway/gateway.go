@@ -124,6 +124,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/workshop/formulas/", s.corsMiddleware(s.bearerAuth(s.handleWorkshopFormulaByName)))
 	mux.Handle("/api/v1/attempts/", s.corsMiddleware(s.bearerAuth(s.handleAttemptByID)))
 	mux.Handle("/api/v1/actions", s.corsMiddleware(s.bearerAuth(s.handleActionsManifest)))
+	mux.Handle("/api/v1/recoveries", s.corsMiddleware(s.bearerAuth(s.handleRecoveriesList)))
 	mux.Handle("/api/v1/recoveries/", s.corsMiddleware(s.bearerAuth(s.handleRecoveryByID)))
 
 	srv := &http.Server{
