@@ -195,11 +195,21 @@ func GetCrossBeadLearnings(failureClass string, limit int) ([]store.Bead, error)
 // Filters by structured metadata `source_bead == sourceBeadID` rather than
 // dep traversal so the helper works even before the caused-by edge has been
 // committed (the helper is read-only and should not depend on dep ordering).
-func PeerRecoveries(sourceBeadID string) ([]store.Bead, error) {
+func PeerRecoveries(sourceBeadID string) (peers []store.Bead, err error) {
 	if sourceBeadID == "" {
 		return nil, nil
 	}
-	peers, err := store.ListBeadsByMetadata(
+	// Defensive guard: tests that exercise the escalation path with a nil
+	// activeStore (e.g. pkg/executor's seam tests) would otherwise panic
+	// inside ListBeads. The peer-link is best-effort — when the store is
+	// unreachable, we simply skip the related-dep wiring.
+	defer func() {
+		if r := recover(); r != nil {
+			peers = nil
+			err = nil
+		}
+	}()
+	peers, err = store.ListBeadsByMetadata(
 		map[string]string{
 			KeySourceBead: sourceBeadID,
 		},

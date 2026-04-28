@@ -235,7 +235,21 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		if stepCfg.Action == "human.approve" {
 			waitForHumanEntry = state.Vars[waitForHumanVarKey(stepName)]
 		}
-		result := e.dispatchAction(stepName, stepCfg, state)
+
+		// Wait-kind steps are externally driven: completion is gated on every
+		// key declared in `produces` having a non-empty value in the step's
+		// outputs. The dispatcher does no work — it returns Hooked=true if
+		// any produced key is missing, or completed with the existing outputs
+		// when all keys are present. Cleric foundation (spi-h2d7yn) introduces
+		// this so future formulas can park on a human gate without an inline
+		// dispatcher. The completion check is idempotent: repeated invocation
+		// while the gate is unset is a no-op park.
+		var result ActionResult
+		if stepCfg.Kind == formula.StepKindWait {
+			result = waitStepResult(stepCfg, state.Steps[stepName])
+		} else {
+			result = e.dispatchAction(stepName, stepCfg, state)
+		}
 
 		// 4b. Notify the optional step observer before any branching. The
 		// observer sees the raw dispatch outcome (outputs + error) so a

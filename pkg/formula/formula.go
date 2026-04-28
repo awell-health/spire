@@ -218,13 +218,19 @@ func LoadEmbeddedStepGraph(name string) (*FormulaStepGraph, error) {
 // --- Resolution ---
 
 // DefaultV3FormulaMap maps bead types to default v3 formula names.
+//
+// Cleric foundation (spi-h2d7yn): the legacy "cleric-default" formula was
+// retired along with the inline recovery cycle. Recovery beads now have no
+// default formula — the cleric runtime feature (spi-hhkozk) will introduce
+// a new minimal formula keyed off the steward's dispatch loop. Until then,
+// recovery beads filed by EscalateGraphStepFailure live as data the
+// steward (or a human) picks up directly.
 var DefaultV3FormulaMap = map[string]string{
-	"task":     "task-default",
-	"bug":      "bug-default",
-	"epic":     "epic-default",
-	"chore":    "chore-default",
-	"feature":  "task-default",
-	"recovery": "cleric-default",
+	"task":    "task-default",
+	"bug":     "bug-default",
+	"epic":    "epic-default",
+	"chore":   "chore-default",
+	"feature": "task-default",
 }
 
 // BeadInfo carries the bead fields needed for formula resolution.

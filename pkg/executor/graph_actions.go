@@ -49,6 +49,32 @@ func init() {
 	actionRegistry["graph.run"] = actionGraphRun
 }
 
+// waitStepResult drives a kind=wait step. The step has no dispatcher; its
+// completion is gated on every key declared in step.Produces having a
+// non-empty value in the step's persisted outputs. The result is:
+//
+//   - Hooked=true (no error, no outputs change) when any produced key is
+//     missing — the interpreter parks the step and exits cleanly. The
+//     gateway / steward sets the missing outputs externally to unhook.
+//   - Completed (no Hooked, no Error, outputs preserved) when every
+//     declared key has a value — the step advances and the interpreter
+//     re-evaluates the graph.
+//
+// Repeated invocation while outputs are unset is idempotent: the function
+// is pure with respect to the step state and reports the same Hooked
+// result. Cleric foundation (spi-h2d7yn) — used by the future cleric
+// formula's wait_for_gate step.
+func waitStepResult(step StepConfig, ss StepState) ActionResult {
+	outputs := ss.Outputs
+	for _, key := range step.Produces {
+		if v, ok := outputs[key]; !ok || v == "" {
+			return ActionResult{Hooked: true}
+		}
+	}
+	// All produced keys present — preserve outputs as the step's result.
+	return ActionResult{Outputs: outputs}
+}
+
 // dispatchAction looks up step.Action in the action registry and calls the handler.
 func (e *Executor) dispatchAction(stepName string, step StepConfig, state *GraphState) ActionResult {
 	if step.Action == "" {

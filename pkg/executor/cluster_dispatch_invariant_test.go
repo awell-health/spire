@@ -111,16 +111,12 @@ var allowedSpawnCallSites = []allowedSpawnFile{
 		Path:   "pkg/executor/action_dispatch.go",
 		Reason: "wave / sequential / direct child dispatch — pending migration under spi-5bzu9r.2",
 	},
-	{
-		Path:   "pkg/executor/recovery_phase.go",
-		Reason: "recovery worker spawn — pending migration under spi-5bzu9r.2 / .3",
-	},
-	// Note: pkg/executor/recovery_actions_agentic.go captures
-	// ctx.Spawner.Spawn as a function value (`dispatch =
-	// ctx.Spawner.Spawn`) rather than a direct call expression, so the
-	// AST scanner does not match it. If a future change replaces that
-	// assignment with a direct call, this allowlist must grow to cover
-	// it explicitly.
+	// Cleric foundation (spi-h2d7yn) deleted pkg/executor/recovery_phase.go
+	// and pkg/executor/recovery_actions_agentic.go along with the rest of
+	// the inline-recovery cycle, so their entries are gone from this list.
+	// The cluster-native invariant they guarded is preserved by the
+	// remaining allowlisted dispatch sites; recovery worker spawn no
+	// longer exists in this package.
 }
 
 // TestNoDirectSpawnInClusterDispatch is the static AST invariant that

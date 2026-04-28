@@ -477,6 +477,55 @@ func TestValidateGraph_OnErrorValid(t *testing.T) {
 	}
 }
 
+// TestValidateGraph_WaitStepRequiresProduces is the cleric-foundation
+// (spi-h2d7yn) invariant test. A kind=wait step with no produces declaration
+// can never complete (its readiness is gated on every produced key being
+// non-empty in outputs); validation must reject it loudly so the formula
+// authors notice at parse time, not runtime.
+func TestValidateGraph_WaitStepRequiresProduces(t *testing.T) {
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"wait_for_gate": {
+				Kind:     StepKindWait,
+				Terminal: true,
+			},
+		},
+	}
+	err := ValidateGraph(g)
+	if err == nil {
+		t.Fatal("expected error for wait step without produces")
+	}
+	if !strings.Contains(err.Error(), "kind=wait requires") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+// TestValidateGraph_WaitStepWithProduces verifies that a kind=wait step that
+// declares a produces key passes validation. Companion to the negative test
+// above.
+func TestValidateGraph_WaitStepWithProduces(t *testing.T) {
+	g := &FormulaStepGraph{
+		Steps: map[string]StepConfig{
+			"wait_for_gate": {
+				Kind:     StepKindWait,
+				Produces: []string{"gate"},
+				Terminal: true,
+			},
+		},
+	}
+	if err := ValidateGraph(g); err != nil {
+		t.Fatalf("ValidateGraph with kind=wait + produces: unexpected error: %v", err)
+	}
+}
+
+// TestValidStepKind_Wait pins the new wait kind in the registry. Cleric
+// foundation (spi-h2d7yn).
+func TestValidStepKind_Wait(t *testing.T) {
+	if !ValidStepKind(StepKindWait) {
+		t.Fatalf("ValidStepKind(%q) = false, want true", StepKindWait)
+	}
+}
+
 func TestValidateGraph_WhenAndConditionCollision(t *testing.T) {
 	g := &FormulaStepGraph{
 		Steps: map[string]StepConfig{

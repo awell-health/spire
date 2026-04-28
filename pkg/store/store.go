@@ -221,16 +221,21 @@ const StatusHooked beads.Status = "hooked"
 // path that transitions a bead into it.
 const StatusAwaitingReview beads.Status = "awaiting_review"
 
-// AllowedStatusTransitions maps each known status to the set of statuses it
-// may transition into. The map is intentionally NOT exhaustive on the source
-// side — only entries that participate in cleric foundation transitions are
-// pinned here. ValidStatusTransition treats unlisted source statuses as
-// permissive (returns true) so this map is purely an additive contract for
-// statuses that have explicit invariants the cleric epic depends on.
+// AllowedStatusTransitions maps each constrained source status to the set of
+// destinations it may transition into. The map is intentionally NOT
+// exhaustive on the source side — only statuses that participate in cleric
+// foundation invariants are pinned here. ValidStatusTransition treats
+// unlisted source statuses as permissive (returns true) so existing untyped
+// transitions keep working; this map is purely an additive contract for
+// statuses with explicit invariants.
+//
+// Today only `awaiting_review` is constrained on the source side: it may
+// transition only to `closed` (cleric or human approved + executed), back
+// to `in_progress` (cleric was rejected and a fresh round will run), or to
+// itself (same-status no-op). The reverse pairing — `in_progress →
+// awaiting_review` — is always permitted because `in_progress` is a
+// permissive source status.
 var AllowedStatusTransitions = map[beads.Status]map[beads.Status]bool{
-	beads.StatusInProgress: {
-		StatusAwaitingReview: true,
-	},
 	StatusAwaitingReview: {
 		beads.StatusClosed:     true,
 		beads.StatusInProgress: true,
