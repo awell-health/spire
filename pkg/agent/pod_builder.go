@@ -49,6 +49,7 @@ import (
 	"github.com/awell-health/spire/pkg/runtime"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -166,6 +167,25 @@ const LogExporterCommand = "spire-log-exporter"
 // by default) so SIGTERM → Flush has headroom to finalize open
 // artifacts before the kubelet kills the container.
 const LogExporterDefaultTerminationGrace int64 = 30
+
+// LogExporterDefaultResources returns the resource requests/limits
+// applied to the spire-log-exporter sidecar when PodSpec.LogExporterResources
+// is left zero-valued. The sidecar is mostly idle (tails files +
+// occasional GCS upload), so the defaults are deliberately small —
+// callers that need a different shape (e.g. high-volume transcript
+// streams, latency-sensitive installs) override on PodSpec.
+func LogExporterDefaultResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+}
 
 // PodSpec is the explicit, apprentice-scoped input to
 // BuildApprenticePod. Every field is intentional and the struct has no
@@ -554,12 +574,17 @@ func (s PodSpec) buildLogExporterContainer(agentEnv []corev1.EnvVar, logsMount c
 		})
 	}
 
+	resources := s.LogExporterResources
+	if len(resources.Requests) == 0 && len(resources.Limits) == 0 {
+		resources = LogExporterDefaultResources()
+	}
+
 	return corev1.Container{
 		Name:         LogExporterContainerName,
 		Image:        image,
 		Command:      []string{LogExporterCommand},
 		Env:          logExporterEnv(agentEnv),
-		Resources:    s.LogExporterResources,
+		Resources:    resources,
 		VolumeMounts: mounts,
 	}
 }

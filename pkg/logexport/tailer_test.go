@@ -346,6 +346,83 @@ func TestTailer_FlushFinalizesOpenArtifacts(t *testing.T) {
 	}
 }
 
+// TestTailer_PartialLineCompletesAcrossScans pins the regression for
+// the buffer/offset duplication bug fixed in round 3: when a file is
+// written without a trailing newline, multiple scan cycles see the
+// partial bytes. The fix advances tf.offset past every byte read on
+// each scan so subsequent reads do not re-pull the partial tail. When
+// the line eventually completes with a newline, the emitted line and
+// the artifact's bytes/checksum must equal the original file content
+// exactly — no duplication.
+func TestTailer_PartialLineCompletesAcrossScans(t *testing.T) {
+	kit := newTailerTestKit(t)
+
+	// Initial write: complete line + partial-line tail (no newline).
+	abs := writeFile(t, kit.root, canonicalRel, []byte("alpha\nbeta"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = kit.tailer.Run(ctx) }()
+
+	// First complete line emits immediately; the partial "beta" stays
+	// in the carry-over buffer until a newline arrives.
+	waitFor(t, "alpha emitted", func() bool {
+		return kit.stats.Snapshot().LinesEmitted >= 1
+	}, time.Second)
+
+	// Let several scan cycles run with the file unchanged so the
+	// (broken) old code would re-read "beta" from disk on every cycle
+	// and double-append it to the uploader. The new code advances
+	// tf.offset past all bytes read — no re-read.
+	time.Sleep(50 * time.Millisecond)
+
+	// Append the missing newline. The next scan combines the carry-
+	// over "beta" with the new "\n" and emits exactly one "beta" line.
+	appendFile(t, abs, []byte("\n"))
+
+	waitFor(t, "beta emitted", func() bool {
+		return kit.stats.Snapshot().LinesEmitted >= 2
+	}, time.Second)
+
+	cancel()
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer flushCancel()
+	if err := kit.tailer.Flush(flushCtx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	stdout := kit.stdout.String()
+	// The emitted "beta" line must equal the original — no duplication
+	// (e.g. "betabeta") from the partial-line tail being read twice.
+	if strings.Count(stdout, `"message":"beta"`) != 1 {
+		t.Errorf("expected exactly one beta line, got stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "betabeta") {
+		t.Errorf("found duplicated partial-line content in stdout:\n%s", stdout)
+	}
+
+	// Most important acceptance criterion: artifact byte size and
+	// checksum match the original file exactly. Old code re-appended
+	// "beta" on each scan — N scans of a partial line → N duplicates
+	// in the artifact, breaking the checksum.
+	want := []byte("alpha\nbeta\n")
+	manifests, _ := kit.store.List(context.Background(), logartifact.Filter{BeadID: "spi-bead"})
+	if len(manifests) != 1 {
+		t.Fatalf("manifests = %d, want 1", len(manifests))
+	}
+	m := manifests[0]
+	if m.ByteSize != int64(len(want)) {
+		t.Errorf("ByteSize = %d, want %d (partial-line bytes must not be double-appended)",
+			m.ByteSize, len(want))
+	}
+	wantHash := sha256.Sum256(want)
+	wantChecksum := "sha256:" + hex.EncodeToString(wantHash[:])
+	if m.Checksum != wantChecksum {
+		t.Errorf("Checksum = %q, want %q (artifact must equal file byte-for-byte)",
+			m.Checksum, wantChecksum)
+	}
+}
+
 // TestSplitLines covers the line-splitter directly. The helper is
 // reused on every scan; correctness is load-bearing for offset math
 // and stdout emission.

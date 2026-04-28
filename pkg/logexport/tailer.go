@@ -331,29 +331,35 @@ func (t *Tailer) advance(ctx context.Context, path string, info PathInfo) {
 		return
 	}
 
-	// Carry over any partial line from previous reads so a JSON record
-	// split across two scan cycles emits exactly once.
+	// combined = previous partial-line carry-over + freshly-read bytes.
+	// combinedStart is the file offset of combined[0]; per-line emit
+	// offsets derive from combinedStart so live-follow consumers see the
+	// line's true position even when it spans two scans.
 	combined := tf.buffer
 	combined = append(combined, data...)
+	combinedStart := tf.offset - int64(len(tf.buffer))
 	lines, remainder := splitLines(combined)
+
+	// Advance the read cursor past every byte we just read so the next
+	// scan reads only fresh bytes — not the partial-line tail again.
+	// The partial line is preserved in tf.buffer and combined with the
+	// next slab on the following scan.
+	tf.offset += int64(n)
 	tf.buffer = remainder
 
+	pos := 0
 	for _, line := range lines {
-		// Emit one stdout record per line. Offsets passed to the sink
-		// are the byte offset of the line's first byte in the file —
-		// not the offset of the next read — so live-follow consumers
-		// can de-duplicate by (file, offset).
-		t.sink.Emit(info.Identity, path, info.Sequence+tf.sequence, tf.offset, line.bytes)
-		tf.offset += int64(len(line.fullBytes))
+		t.sink.Emit(info.Identity, path, info.Sequence+tf.sequence, combinedStart+int64(pos), line.bytes)
+		pos += len(line.fullBytes)
 	}
 	if t.stats != nil {
 		t.stats.addBytes(n)
 	}
 
-	// Push the full slab (including the trailing partial line that
-	// might land in the next scan) into the uploader so the artifact
-	// preserves byte-for-byte fidelity. The uploader appends to the
-	// open writer; the running checksum and size land on Finalize.
+	// Push only the new bytes (data) into the uploader. The running
+	// checksum and byte count must equal the file's bytes — appending
+	// `combined` would double-count the partial-line carry-over from
+	// the previous scan.
 	if err := t.uploader.Append(ctx, info.Identity, tf.sequence+info.Sequence, data); err != nil {
 		// Append failure already accounted by Uploader; nothing more
 		// to do here besides record the lastWrite stamp so the idle-
