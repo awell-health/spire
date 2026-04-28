@@ -1,6 +1,6 @@
 package repoconfig
 
-import "time"
+import spireconfig "github.com/awell-health/spire/pkg/config"
 
 // System-wide default constants. Defined once here so that repoconfig,
 // wizard, executor, and steward all share the same values.
@@ -12,13 +12,13 @@ const (
 	DefaultReviewModel = "claude-opus-4-6"
 
 	// DefaultTimeout is the default fatal timeout for agent work.
-	DefaultTimeout = "15m"
+	DefaultTimeout = spireconfig.DefaultAgentShutdownText
 
 	// DefaultDesignTimeout is the default timeout for design phases.
 	DefaultDesignTimeout = "10m"
 
 	// DefaultStale is the default stale warning threshold.
-	DefaultStale = "10m"
+	DefaultStale = spireconfig.DefaultAgentStaleText
 
 	// DefaultBranchBase is the default base branch name.
 	DefaultBranchBase = "main"
@@ -30,10 +30,10 @@ const (
 	DefaultProvider = "claude"
 
 	// DefaultStaleDuration is DefaultStale as a time.Duration.
-	DefaultStaleDuration = 10 * time.Minute
+	DefaultStaleDuration = spireconfig.DefaultAgentStaleThreshold
 
 	// DefaultTimeoutDuration is DefaultTimeout as a time.Duration.
-	DefaultTimeoutDuration = 15 * time.Minute
+	DefaultTimeoutDuration = spireconfig.DefaultAgentShutdownThreshold
 
 	// DefaultClericPromotionThreshold is the global default for the number
 	// of consecutive clean agentic recoveries (each carrying a

@@ -1,12 +1,15 @@
 package steward
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +32,17 @@ func mustMarshalOutcome(t *testing.T, out recovery.RecoveryOutcome) string {
 		t.Fatalf("marshal recovery outcome: %v", err)
 	}
 	return string(b)
+}
+
+func captureStewardLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prevOutput := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() {
+		log.SetOutput(prevOutput)
+	})
+	return &buf
 }
 
 // --- AgentNames tests (replaces loadRoster tests) ---
@@ -539,9 +553,9 @@ func TestRecoverStaleDispatched_SkipsInternalBeads(t *testing.T) {
 	stuckTime := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		return []store.Bead{
-			{ID: "spi-attempt", Type: "attempt", UpdatedAt: stuckTime},          // internal
+			{ID: "spi-attempt", Type: "attempt", UpdatedAt: stuckTime},             // internal
 			{ID: "spi-child", Type: "task", Parent: "spi-a", UpdatedAt: stuckTime}, // child
-			{ID: "spi-top", Type: "task", UpdatedAt: stuckTime},                   // counts
+			{ID: "spi-top", Type: "task", UpdatedAt: stuckTime},                    // counts
 		}, nil
 	}
 	updated := 0
@@ -746,6 +760,80 @@ func TestCheckBeadHealth_ShutdownKillsAgent(t *testing.T) {
 	}
 	if len(backend.killed) != 1 || backend.killed[0] != "wizard-old" {
 		t.Errorf("killed = %v, want [wizard-old]", backend.killed)
+	}
+}
+
+func TestCheckBeadHealth_ShutdownLogIncludesAttemptContext(t *testing.T) {
+	oldTime := time.Now().Add(-45 * time.Minute).UTC().Format(time.RFC3339)
+	origList := ListBeadsFunc
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		return []store.Bead{
+			{ID: "spi-old", Title: "old task", Status: "in_progress", UpdatedAt: oldTime},
+		}, nil
+	}
+	defer func() { ListBeadsFunc = origList }()
+
+	attemptBead := &store.Bead{
+		ID:     "spi-old.attempt-1",
+		Status: "in_progress",
+		Labels: []string{"attempt", "agent:wizard-old"},
+	}
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-old" {
+			return attemptBead, nil
+		}
+		return nil, nil
+	}
+	defer func() { GetActiveAttemptFunc = origAttempt }()
+
+	origGetInstance := GetAttemptInstanceFunc
+	GetAttemptInstanceFunc = func(attemptID string) (*store.InstanceMeta, error) {
+		return &store.InstanceMeta{
+			InstanceID:   "local-instance-uuid",
+			InstanceName: "baker-pro.local",
+			SessionID:    "session-123",
+			Backend:      "process",
+			Tower:        "awell-test",
+			StartedAt:    oldTime,
+			LastSeenAt:   oldTime,
+		}, nil
+	}
+	defer func() { GetAttemptInstanceFunc = origGetInstance }()
+
+	origInstanceID := InstanceIDFunc
+	InstanceIDFunc = func() string { return "local-instance-uuid" }
+	defer func() { InstanceIDFunc = origInstanceID }()
+
+	backend := &fakeBackend{
+		agents: []agent.Info{{Name: "wizard-old", Alive: true}},
+	}
+	buf := captureStewardLog(t)
+
+	_, shutdownCount := CheckBeadHealth(10*time.Minute, 30*time.Minute, false, backend, config.DeploymentModeLocalNative)
+
+	if shutdownCount != 1 {
+		t.Fatalf("shutdownCount = %d, want 1", shutdownCount)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"SHUTDOWN: spi-old (old task) owner=wizard-old",
+		`attempt="spi-old.attempt-1"`,
+		`owner_state="alive"`,
+		`attempt_meta="present"`,
+		`heartbeat_state="parsed"`,
+		`local_instance="local-instance-uuid"`,
+		`attempt_instance="local-instance-uuid"`,
+		`session_id="session-123"`,
+		`backend="process"`,
+		`tower="awell-test"`,
+		`last_seen_at="` + oldTime + `"`,
+		`stale_threshold=10m0s`,
+		`shutdown_threshold=30m0s`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log to contain %q, got %s", want, got)
+		}
 	}
 }
 
@@ -1908,7 +1996,6 @@ func TestSweepHookedSteps_FailureEvidence_NoRecoveryBead_Skips(t *testing.T) {
 		return nil, nil
 	}
 
-
 	backend := &spawnTrackingBackend{}
 	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
 	count := SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
@@ -1996,7 +2083,6 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 		}
 		return nil, nil
 	}
-
 
 	var unhooked []string
 	UnhookStepBeadFunc = func(id string) error {

@@ -21,7 +21,7 @@ agent:
   model: claude-sonnet-4-6
   max-turns: 0              # omit Claude turn cap; timeout remains the guard
   stale: 10m
-  timeout: 15m
+  timeout: 60m
 
 branch:
   base: main
@@ -78,7 +78,7 @@ Controls how wizards run.
 | `model` | string | `claude-sonnet-4-6` | Claude model for implementation. |
 | `max-turns` | int | `0` | Optional Claude Code turn limit per phase. `0` means omit `--max-turns` and rely on timeout. |
 | `stale` | duration | `10m` | Steward warning threshold. After this time, steward flags the wizard as stale. |
-| `timeout` | duration | `15m` | Hard kill threshold. Steward terminates the wizard after this time. |
+| `timeout` | duration | `60m` | Hard kill threshold. Steward terminates the wizard after this time. |
 | `design-timeout` | duration | unset | Optional override for the design phase timeout. |
 | `formula` | string | (by bead type) | Default formula to use. Overrides bead-type mapping but is overridden by bead labels. |
 

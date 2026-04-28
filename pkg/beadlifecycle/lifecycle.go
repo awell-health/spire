@@ -24,6 +24,7 @@ import (
 	"log"
 	"time"
 
+	spireconfig "github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/wizardregistry"
 	"github.com/steveyegge/beads"
@@ -134,12 +135,12 @@ type Deps interface {
 // even when the registry says the wizard is dead/missing — registry blips,
 // stale PIDs, and PID-probe false negatives must not orphan a live wizard.
 //
-// Set to mirror the steward's typical ShutdownThreshold (15m, see
+// Set to mirror the steward's default ShutdownThreshold (60m, see
 // cmd/spire/steward.go default) so OrphanSweep and the steward agree on
 // which heartbeats count as "still alive": a heartbeat the steward would
 // not yet kill on must not be orphaned here either (spi-9ixgqy +
 // spi-p2ou7v).
-const heartbeatFreshness = 15 * time.Minute
+const heartbeatFreshness = spireconfig.DefaultAgentShutdownThreshold
 
 // nowTimeFunc returns the current UTC time. Replaceable in tests so the
 // heartbeat-freshness gate can be exercised deterministically.
@@ -166,6 +167,20 @@ func attemptHeartbeatFresh(deps Deps, attemptID string) (skip bool, lastSeen tim
 		return true, lastSeen, true
 	}
 	return false, lastSeen, true
+}
+
+func orphanSweepAttemptID(attempt *store.Bead) string {
+	if attempt == nil || attempt.ID == "" {
+		return "-"
+	}
+	return attempt.ID
+}
+
+func orphanSweepTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // nowFunc returns the current UTC time as an RFC3339 string.
@@ -503,13 +518,27 @@ func OrphanSweep(deps Deps, reg wizardregistry.Registry, scope OrphanScope) (Swe
 		// execution-owner truth surface; the local registry is only
 		// the local process lookup.
 		active, aerr := findActiveAttempt(deps, entry.BeadID)
+		heartbeatState := "no-attempt"
+		lastSeenAt := time.Time{}
+		if aerr != nil {
+			heartbeatState = "attempt-lookup-error"
+			log.Printf("OrphanSweep: scan A: findActiveAttempt bead=%s agent=%s: %v", entry.BeadID, entry.ID, aerr)
+		}
 		if aerr == nil && active != nil {
-			if skip, lastSeen, _ := attemptHeartbeatFresh(deps, active.ID); skip {
+			if skip, lastSeen, present := attemptHeartbeatFresh(deps, active.ID); skip {
 				log.Printf("OrphanSweep: scan A: skip-fresh-heartbeat agent=%s attempt=%s last_seen_at=%s registry_verdict=%s",
 					entry.ID, active.ID, lastSeen.Format(time.RFC3339), registryVerdict)
 				continue
+			} else if present {
+				heartbeatState = "stale"
+				lastSeenAt = lastSeen
+			} else {
+				heartbeatState = "missing-or-error"
 			}
 		}
+
+		log.Printf("OrphanSweep: scan A: orphaning bead=%s agent=%s attempt=%s registry_verdict=%s heartbeat_state=%s last_seen_at=%s",
+			entry.BeadID, entry.ID, orphanSweepAttemptID(active), registryVerdict, heartbeatState, orphanSweepTime(lastSeenAt))
 
 		// Declared dead.
 		report.Dead++
@@ -591,11 +620,19 @@ func OrphanSweep(deps Deps, reg wizardregistry.Registry, scope OrphanScope) (Swe
 			// dead/missing but a fresh attempt heartbeat means the
 			// execution owner is alive. Skip rather than orphan a live
 			// wizard.
-			if skip, lastSeen, _ := attemptHeartbeatFresh(deps, b.ID); skip {
+			heartbeatState := "missing-or-error"
+			lastSeenAt := time.Time{}
+			if skip, lastSeen, present := attemptHeartbeatFresh(deps, b.ID); skip {
 				log.Printf("OrphanSweep: scan B: skip-fresh-heartbeat agent=%s attempt=%s last_seen_at=%s registry_verdict=%s",
 					agentName, b.ID, lastSeen.Format(time.RFC3339), registryVerdict)
 				continue
+			} else if present {
+				heartbeatState = "stale"
+				lastSeenAt = lastSeen
 			}
+
+			log.Printf("OrphanSweep: scan B: orphaning parent=%s agent=%s attempt=%s registry_verdict=%s heartbeat_state=%s last_seen_at=%s",
+				b.Parent, agentName, b.ID, registryVerdict, heartbeatState, orphanSweepTime(lastSeenAt))
 
 			// Phantom or dead-but-still-listed: close attempt + reopen parent.
 			if cerr := deps.CloseAttemptBead(b.ID, "interrupted:orphan"); cerr != nil {

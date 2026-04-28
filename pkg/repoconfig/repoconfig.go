@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	spireconfig "github.com/awell-health/spire/pkg/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -88,7 +89,7 @@ type AgentConfig struct {
 	MaxTurns       int          `yaml:"max-turns"`          // optional turn cap (0 = unlimited/timeout-gated)
 	MaxApprentices int          `yaml:"max-apprentices"`    // cap on concurrent apprentices per wizard (0 = unset; resolves to DefaultMaxApprentices)
 	Stale          string       `yaml:"stale"`              // warning: wizard exceeded guidelines (e.g. "10m")
-	Timeout        string       `yaml:"timeout"`            // fatal: tower kills the wizard (e.g. "15m")
+	Timeout        string       `yaml:"timeout"`            // fatal: tower kills the wizard (e.g. "60m")
 	DesignTimeout  string       `yaml:"design-timeout"`     // timeout for design phase (e.g. "10m")
 	Docker         DockerConfig `yaml:"docker"`             // Docker spawner configuration
 	Formula        string       `yaml:"formula,omitempty"`  // default formula name
@@ -157,6 +158,33 @@ func validate(cfg *RepoConfig) error {
 		}
 	}
 	return nil
+}
+
+// AgentTimeoutDurations resolves the effective stale and shutdown thresholds
+// for agent work. Absent values fall back to the package defaults; invalid
+// durations are ignored and returned as warnings so callers can log them while
+// continuing with safe defaults.
+func AgentTimeoutDurations(cfg *RepoConfig) (stale time.Duration, timeout time.Duration, warnings []error) {
+	stale = spireconfig.DefaultAgentStaleThreshold
+	timeout = spireconfig.DefaultAgentShutdownThreshold
+	if cfg == nil {
+		return stale, timeout, nil
+	}
+	if cfg.Agent.Stale != "" {
+		if d, err := time.ParseDuration(cfg.Agent.Stale); err == nil {
+			stale = d
+		} else {
+			warnings = append(warnings, fmt.Errorf("invalid agent.stale=%q: %w", cfg.Agent.Stale, err))
+		}
+	}
+	if cfg.Agent.Timeout != "" {
+		if d, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
+			timeout = d
+		} else {
+			warnings = append(warnings, fmt.Errorf("invalid agent.timeout=%q: %w", cfg.Agent.Timeout, err))
+		}
+	}
+	return stale, timeout, warnings
 }
 
 // findAndParse walks up from dir looking for spire.yaml. Returns the parsed

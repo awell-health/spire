@@ -968,7 +968,7 @@ agent:
   model: claude-sonnet-4-6  # default model for wizards in this repo
   max-turns: 0              # omit Claude turn cap; timeout remains the guard
   stale: 10m                # steward warning threshold
-  timeout: 15m              # steward kill threshold
+  timeout: 60m              # steward kill threshold
 
 branch:
   base: main

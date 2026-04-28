@@ -215,25 +215,14 @@ func cmdSteward(args []string) error {
 	}
 
 	// Read stale + shutdown (timeout) from spire.yaml.
-	var staleThreshold, shutdownThreshold time.Duration
 	cwd, _ := os.Getwd()
-	if cfg, err := repoconfig.Load(cwd); err == nil {
-		if cfg.Agent.Stale != "" {
-			if d, err := time.ParseDuration(cfg.Agent.Stale); err == nil {
-				staleThreshold = d
-			}
-		}
-		if cfg.Agent.Timeout != "" {
-			if d, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
-				shutdownThreshold = d
-			}
-		}
+	repoCfg, cfgErr := repoconfig.Load(cwd)
+	if cfgErr != nil {
+		log.Printf("[steward] config: repoconfig.Load(%s): %v — using threshold defaults unless flags override", cwd, cfgErr)
 	}
-	if staleThreshold == 0 {
-		staleThreshold = 10 * time.Minute
-	}
-	if shutdownThreshold == 0 {
-		shutdownThreshold = 15 * time.Minute
+	staleThreshold, shutdownThreshold, warnings := repoconfig.AgentTimeoutDurations(repoCfg)
+	for _, warn := range warnings {
+		log.Printf("[steward] config: %s", warn)
 	}
 	// Explicit flag overrides config.
 	if staleOverride > 0 {

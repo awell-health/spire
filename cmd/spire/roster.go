@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
@@ -51,20 +50,7 @@ func cmdRoster(args []string) error {
 
 	cwd, _ := os.Getwd()
 	cfg, _ := repoconfig.Load(cwd)
-	stale := 10 * time.Minute
-	timeout := 15 * time.Minute
-	if cfg != nil {
-		if cfg.Agent.Stale != "" {
-			if d, err := time.ParseDuration(cfg.Agent.Stale); err == nil {
-				stale = d
-			}
-		}
-		if cfg.Agent.Timeout != "" {
-			if d, err := time.ParseDuration(cfg.Agent.Timeout); err == nil {
-				timeout = d
-			}
-		}
-	}
+	stale, timeout, _ := repoconfig.AgentTimeoutDurations(cfg)
 	_ = stale
 
 	rosterDeps := board.RosterDeps{

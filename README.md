@@ -189,7 +189,7 @@ Two thresholds keep wizards honest:
 # spire.yaml
 agent:
   stale: 10m      # warning — wizard exceeded guidelines
-  timeout: 15m    # fatal — tower kills the pod
+  timeout: 60m    # fatal — tower kills the pod
 ```
 
 ```bash
@@ -216,7 +216,7 @@ agent:
   model: claude-sonnet-4-6
   max-turns: 0
   stale: 10m
-  timeout: 15m
+  timeout: 60m
 
 branch:
   base: main

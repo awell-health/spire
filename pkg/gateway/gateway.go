@@ -37,6 +37,7 @@ import (
 	"github.com/awell-health/spire/pkg/metrics/report"
 	"github.com/awell-health/spire/pkg/olap"
 	"github.com/awell-health/spire/pkg/process"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/reset"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/summon"
@@ -805,7 +806,9 @@ func (s *Server) handleRoster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timeout := 15 * time.Minute
+	cwd, _ := os.Getwd()
+	repoCfg, _ := repoconfig.Load(cwd)
+	_, timeout, _ := repoconfig.AgentTimeoutDurations(repoCfg)
 
 	// Dispatch on the active tower's deployment mode rather than on
 	// kubectl reachability + registry presence. The previous cascade
