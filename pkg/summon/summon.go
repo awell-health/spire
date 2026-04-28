@@ -20,11 +20,13 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
+	"github.com/awell-health/spire/pkg/cleric"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/wizardregistry"
+	"github.com/steveyegge/beads"
 )
 
 // Result is what a successful Run / SpawnWizard returns.
@@ -36,6 +38,14 @@ type Result struct {
 // ErrAlreadyRunning is returned (wrapped) when a live wizard already owns the
 // bead. CLI callers typically treat this as a skip; API callers as a 4xx.
 var ErrAlreadyRunning = errors.New("wizard already running")
+
+// ErrRecoveryInFlight is returned (wrapped) when a non-closed recovery
+// bead is linked via caused-by to the bead being summoned. The single-
+// owner invariant (cleric runtime, spi-hhkozk) requires that the wizard
+// and cleric never run simultaneously on the same source bead — while a
+// recovery is open, the human gate (or an in-flight cleric round) owns
+// the source and a fresh wizard summon is refused.
+var ErrRecoveryInFlight = errors.New("open recovery bead exists for this source")
 
 // Seams — package-level vars so cmd/spire tests can intercept calls without
 // importing pkg/store or standing up a real dolt server. Defaults wire to
@@ -61,6 +71,12 @@ var (
 	SpawnFunc = func(b agent.Backend, cfg agent.SpawnConfig) (agent.Handle, error) {
 		return b.Spawn(cfg)
 	}
+
+	// GetDependentsWithMetaFunc is the seam used by the single-owner
+	// invariant check (cleric runtime, spi-hhkozk) to look up recovery
+	// beads linked to a candidate source bead. Tests overwrite this to
+	// inject in-memory dependents without standing up a full store.
+	GetDependentsWithMetaFunc = store.GetDependentsWithMeta
 
 	// Registry is the wizard liveness oracle. Wired by cmd/spire to a
 	// wizardregistry/local instance in local mode (cluster mode never
@@ -119,7 +135,20 @@ func Run(beadID, dispatch string) (Result, error) {
 // the caller is expected to have transitioned open/ready/hooked to
 // in_progress. Returns ErrAlreadyRunning (wrapped) if a live wizard already
 // owns the bead.
+//
+// Single-owner invariant (cleric runtime, spi-hhkozk): refuses with
+// ErrRecoveryInFlight (wrapped) when any non-closed recovery bead is
+// linked to bead via caused-by. The wizard and cleric must never run on
+// the same source simultaneously; the steward's hooked-sweep path
+// re-summons after the cleric closes the recovery (DOES NOT route through
+// this function).
 func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
+	if has, recoveryID, err := hasOpenRecovery(bead.ID); err != nil {
+		log.Printf("warning: single-owner check for %s failed: %v", bead.ID, err)
+	} else if has {
+		return Result{}, fmt.Errorf("%w: recovery %s is open for source %s — close or take over the recovery first", ErrRecoveryInFlight, recoveryID, bead.ID)
+	}
+
 	if dispatch != "" {
 		for _, l := range bead.Labels {
 			if strings.HasPrefix(l, "dispatch:") {
@@ -207,6 +236,16 @@ func SpawnWizard(bead store.Bead, dispatch string) (Result, error) {
 	}
 
 	return Result{WizardName: name, CommentID: commentID}, nil
+}
+
+// hasOpenRecovery delegates to cleric.HasOpenRecovery using the test-
+// replaceable GetDependentsWithMetaFunc seam. Wrapped here so the
+// summon flow doesn't reach into pkg/cleric directly (and tests can
+// inject the dependents list without touching pkg/cleric).
+func hasOpenRecovery(sourceBeadID string) (bool, string, error) {
+	return cleric.HasOpenRecovery(sourceBeadID, func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return GetDependentsWithMetaFunc(id)
+	})
 }
 
 // resolveTowerName walks the usual sources in precedence order so the spawned

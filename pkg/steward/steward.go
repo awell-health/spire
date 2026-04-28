@@ -1713,14 +1713,26 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				continue
 			}
 
+			// awaiting_review (cleric runtime, spi-hhkozk): the cleric has
+			// posted a proposal and the human review owns the gate. The
+			// steward must NOT redispatch — leave the bead alone until the
+			// gateway sets the gate output and flips status back to
+			// in_progress (or closes via cleric.takeover).
+			if recoveryBead.Status == "awaiting_review" {
+				log.Printf("[steward] hooked sweep: recovery %s awaiting_review — human gate owns it, skipping", evidence.RecoveryBeadID)
+				continue
+			}
+
 			if recoveryBead.Status == "closed" {
-				// Cleric finished. Check resolution: DecisionResume → unhook + resummon,
-				// DecisionEscalate → leave hooked for human attention. Beads without a
-				// recorded outcome (older beads or missing writes) default to the
+				// Cleric finished. Check resolution: a closed recovery bead
+				// with the new cleric.finish outcome (cleric_outcome=
+				// approve+executed) OR the legacy DecisionResume outcome
+				// resumes the wizard. A bead with the new takeover outcome
+				// (source carries needs-manual label) is left hooked for the
+				// human. Beads without ANY recorded outcome default to the
 				// leave-hooked path for safety.
-				outcome, haveOutcome := recovery.ReadOutcome(recoveryBead)
-				if !haveOutcome || outcome.Decision == recovery.DecisionEscalate {
-					log.Printf("[steward] hooked sweep: recovery %s escalated (or no outcome) for %s — leaving hooked for human", evidence.RecoveryBeadID, parent.ID)
+				if !recoveryShouldResume(recoveryBead) {
+					log.Printf("[steward] hooked sweep: recovery %s did not resolve to resume (takeover or no outcome) for %s — leaving hooked for human", evidence.RecoveryBeadID, parent.ID)
 					continue
 				}
 
@@ -1856,7 +1868,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 			handle, spawnErr := dispatchPhase(context.Background(), pd, backend, agent.SpawnConfig{
 				Name:       clericName,
 				BeadID:     evidence.RecoveryBeadID,
-				Role:       agent.RoleExecutor,
+				Role:       agent.RoleCleric,
 				Tower:      towerName,
 				InstanceID: localInstanceID,
 				LogPath:    filepath.Join(dolt.GlobalDir(), "wizards", clericName+".log"),
@@ -2090,6 +2102,29 @@ func hookedResumePhase(beadType string) string {
 // gains a dedicated cleric role/phase pair.
 func clericDispatchPhase() string {
 	return intent.PhaseWizard
+}
+
+// recoveryShouldResume reports whether the steward should unhook the
+// source bead and re-summon the wizard given a closed recovery bead.
+// True iff the cleric's outcome was approve+executed (cleric runtime)
+// OR the legacy recovery cycle wrote a DecisionResume outcome. A
+// takeover outcome (source carries needs-manual label and no outcome
+// here) returns false — the human is expected to fix and unhook
+// manually.
+func recoveryShouldResume(bead store.Bead) bool {
+	// New cleric runtime (spi-hhkozk): cleric.finish stamps
+	// cleric_outcome=approve+executed when the formula reaches its
+	// finish step. cleric.takeover does NOT stamp this key — the
+	// recovery is closed but the source still carries needs-manual.
+	if bead.Meta("cleric_outcome") == "approve+executed" {
+		return true
+	}
+	// Legacy in-wizard recovery cycle (pre-foundation): the
+	// DecisionResume outcome means the wizard should resume.
+	if outcome, ok := recovery.ReadOutcome(bead); ok {
+		return outcome.Decision == recovery.DecisionResume
+	}
+	return false
 }
 
 // FailureEvidence holds the IDs of recovery and alert beads linked to a hooked parent

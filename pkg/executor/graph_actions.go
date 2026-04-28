@@ -162,6 +162,8 @@ func actionWizardRun(e *Executor, stepName string, step StepConfig, state *Graph
 		return actionPlanTask(e, stepName, step, state)
 	case "epic-plan":
 		return actionPlanEpic(e, stepName, step, state)
+	case "cleric-decide":
+		return actionClericDecide(e, stepName, step, state)
 	case "implement":
 		extraArgs := []string{"--apprentice"}
 		if wsDir != "" {

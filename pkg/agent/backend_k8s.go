@@ -1148,6 +1148,23 @@ func resourcesForRole(role SpawnRole) corev1.ResourceRequirements {
 				corev1.ResourceCPU:    resource.MustParse("500m"),
 			},
 		}
+	case RoleCleric:
+		// Cleric pods are one-shot Claude invocations: spawn, think,
+		// emit JSON, exit. They do not check out the workspace, do not
+		// invoke the gateway directly (gateway action endpoints run
+		// server-side), and do not run validation. Memory/CPU envelope
+		// matches the wizard/executor tier with extra headroom for the
+		// Claude invocation. Cleric runtime (spi-hhkozk).
+		return corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+				corev1.ResourceCPU:    resource.MustParse("250m"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("1Gi"),
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+			},
+		}
 	default:
 		// Fallback to wizard-tier resources.
 		return corev1.ResourceRequirements{

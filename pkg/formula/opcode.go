@@ -18,36 +18,44 @@ const (
 
 // Opcodes — the minimum executor action set.
 const (
-	OpcodeCheckDesignLinked     = "check.design-linked"
-	OpcodeWizardRun             = "wizard.run"
-	OpcodeBeadsMaterializePlan  = "beads.materialize_plan"
-	OpcodeDispatchChildren      = "dispatch.children"
-	OpcodeVerifyRun             = "verify.run"
-	OpcodeGraphRun              = "graph.run"
-	OpcodeGitMergeToMain        = "git.merge_to_main"
-	OpcodeBeadFinish            = "bead.finish"
-	OpcodeNoop                  = "noop"
-	OpcodeClericExecute       = "cleric.execute"
-	OpcodeClericDecide        = "cleric.decide"
-	OpcodeClericLearn         = "cleric.learn"
-	OpcodeClericCollectContext = "cleric.collect_context"
+	OpcodeCheckDesignLinked    = "check.design-linked"
+	OpcodeWizardRun            = "wizard.run"
+	OpcodeBeadsMaterializePlan = "beads.materialize_plan"
+	OpcodeDispatchChildren     = "dispatch.children"
+	OpcodeVerifyRun            = "verify.run"
+	OpcodeGraphRun             = "graph.run"
+	OpcodeGitMergeToMain       = "git.merge_to_main"
+	OpcodeBeadFinish           = "bead.finish"
+	OpcodeHumanApprove         = "human.approve"
+	OpcodeNoop                 = "noop"
+	// Cleric runtime (spi-hhkozk) opcodes — drive the open-loop
+	// recovery formula. publish: parse Claude's ProposedAction JSON,
+	// write it to the recovery bead, and transition to awaiting_review.
+	// execute: run the approved action via the gateway. takeover: mark
+	// source bead needs-manual and close the recovery. finish: record
+	// outcome for the promotion/demotion tally.
+	OpcodeClericPublish  = "cleric.publish"
+	OpcodeClericExecute  = "cleric.execute"
+	OpcodeClericTakeover = "cleric.takeover"
+	OpcodeClericFinish   = "cleric.finish"
 )
 
 // ValidOpcodes is the set of recognized executor opcodes.
 var ValidOpcodes = map[string]bool{
-	OpcodeCheckDesignLinked:      true,
-	OpcodeWizardRun:              true,
-	OpcodeBeadsMaterializePlan:   true,
-	OpcodeDispatchChildren:       true,
-	OpcodeVerifyRun:              true,
-	OpcodeGraphRun:               true,
-	OpcodeGitMergeToMain:         true,
-	OpcodeBeadFinish:             true,
-	OpcodeNoop:                   true,
+	OpcodeCheckDesignLinked:    true,
+	OpcodeWizardRun:            true,
+	OpcodeBeadsMaterializePlan: true,
+	OpcodeDispatchChildren:     true,
+	OpcodeVerifyRun:            true,
+	OpcodeGraphRun:             true,
+	OpcodeGitMergeToMain:       true,
+	OpcodeBeadFinish:           true,
+	OpcodeHumanApprove:         true,
+	OpcodeNoop:                 true,
+	OpcodeClericPublish:        true,
 	OpcodeClericExecute:        true,
-	OpcodeClericDecide:         true,
-	OpcodeClericLearn:          true,
-	OpcodeClericCollectContext: true,
+	OpcodeClericTakeover:       true,
+	OpcodeClericFinish:         true,
 }
 
 // ValidOpcode returns true if the opcode is in the recognized set.

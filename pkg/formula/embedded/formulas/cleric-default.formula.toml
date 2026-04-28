@@ -1,0 +1,94 @@
+# cleric-default.formula.toml — recovery lifecycle for a recovery bead.
+#
+# Cleric runtime (spi-hhkozk). The cleric is a one-shot Claude agent:
+#   decide → publish → wait_for_gate → {execute → finish | takeover | requeue}
+#
+# - decide: spawn Claude with the cleric prompt; it emits a ProposedAction
+#   JSON to stdout.
+# - publish: parse the JSON, write it to the recovery bead's metadata,
+#   transition the bead to awaiting_review.
+# - wait_for_gate: park until the gateway sets steps.wait_for_gate.outputs.gate
+#   to "approve" / "reject" / "takeover".
+# - approve → execute the action via the gateway, then finish (records
+#   outcome for promotion/demotion tally).
+# - reject → noop step resets decide+publish+wait_for_gate so a fresh
+#   cleric round runs against the rejection comment.
+# - takeover → label source bead `needs-manual`, close recovery; humans
+#   take over the source bead manually.
+#
+# Single-owner invariant: the steward only dispatches this formula on
+# recovery beads in `in_progress`. Wizard summon refuses to fire while
+# any non-closed recovery bead has `caused-by` → the source bead.
+
+name = "cleric-default"
+description = "One-shot cleric round: propose → human gate → execute / takeover / requeue"
+version = 3
+entry = "decide"
+
+[vars.bead_id]
+type = "bead_id"
+description = "The recovery bead being worked on"
+required = true
+
+# --- Steps ---
+
+# Step 1: Spawn Claude with the cleric prompt — emits a ProposedAction JSON.
+[steps.decide]
+kind = "op"
+action = "wizard.run"
+flow = "cleric-decide"
+title = "Cleric proposes a recovery action"
+[steps.decide.with]
+prompt = "cleric"
+
+# Step 2: Parse ProposedAction JSON, write to bead, transition to awaiting_review.
+[steps.publish]
+kind = "op"
+action = "cleric.publish"
+needs = ["decide"]
+title = "Publish proposal to recovery bead"
+
+# Step 3: Park until gateway sets gate output.
+[steps.wait_for_gate]
+kind = "wait"
+needs = ["publish"]
+produces = ["gate", "rejection_comment"]
+title = "Wait for human gate"
+
+# Step 4a: Execute the approved action (approve path).
+[steps.execute]
+kind = "op"
+action = "cleric.execute"
+needs = ["wait_for_gate"]
+title = "Execute approved recovery action"
+[steps.execute.when]
+all = [{ left = "steps.wait_for_gate.outputs.gate", op = "eq", right = "approve" }]
+
+# Step 4b: Reject path — noop step that resets the prior three steps so a
+# fresh cleric round runs.
+[steps.requeue_after_reject]
+kind = "op"
+action = "noop"
+needs = ["wait_for_gate"]
+resets = ["decide", "publish", "wait_for_gate"]
+title = "Requeue cleric after rejection"
+[steps.requeue_after_reject.when]
+all = [{ left = "steps.wait_for_gate.outputs.gate", op = "eq", right = "reject" }]
+
+# Step 4c: Takeover path — label source bead needs-manual, close recovery.
+[steps.handle_takeover]
+kind = "op"
+action = "cleric.takeover"
+needs = ["wait_for_gate"]
+terminal = true
+title = "Human takeover — close recovery, mark source needs-manual"
+[steps.handle_takeover.when]
+all = [{ left = "steps.wait_for_gate.outputs.gate", op = "eq", right = "takeover" }]
+
+# Step 5: Record outcome for promotion/demotion tally and close recovery.
+[steps.finish]
+kind = "op"
+action = "cleric.finish"
+needs = ["execute"]
+terminal = true
+title = "Record outcome and close recovery"

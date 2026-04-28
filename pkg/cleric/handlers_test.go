@@ -1,0 +1,352 @@
+package cleric
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/awell-health/spire/pkg/store"
+	"github.com/steveyegge/beads"
+)
+
+// fakeStore is an in-memory test seam for the cleric handlers. Each
+// field is a per-bead map mirroring the pkg/store API the handlers
+// touch. Tests construct a fake, populate beads, run a handler, and
+// then assert directly on the fake's state.
+type fakeStore struct {
+	beadsByID  map[string]store.Bead
+	depsByID   map[string][]*beads.IssueWithDependencyMetadata
+	depsRev    map[string][]*beads.IssueWithDependencyMetadata
+	comments   map[string][]string
+	gateway    GatewayClient
+	clockNow   time.Time
+	addLabelFn func(id, label string) error
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		beadsByID: map[string]store.Bead{},
+		depsByID:  map[string][]*beads.IssueWithDependencyMetadata{},
+		depsRev:   map[string][]*beads.IssueWithDependencyMetadata{},
+		comments:  map[string][]string{},
+		clockNow:  time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func (fs *fakeStore) toDeps() Deps {
+	d := Deps{
+		GetBead: func(id string) (store.Bead, error) {
+			return fs.beadsByID[id], nil
+		},
+		SetBeadMetadata: func(id string, m map[string]string) error {
+			b := fs.beadsByID[id]
+			if b.Metadata == nil {
+				b.Metadata = map[string]string{}
+			}
+			for k, v := range m {
+				b.Metadata[k] = v
+			}
+			fs.beadsByID[id] = b
+			return nil
+		},
+		UpdateBead: func(id string, updates map[string]interface{}) error {
+			b := fs.beadsByID[id]
+			for k, v := range updates {
+				if k == "status" {
+					if s, ok := v.(string); ok {
+						b.Status = s
+					}
+				}
+			}
+			fs.beadsByID[id] = b
+			return nil
+		},
+		AddLabel: func(id, label string) error {
+			if fs.addLabelFn != nil {
+				return fs.addLabelFn(id, label)
+			}
+			b := fs.beadsByID[id]
+			b.Labels = append(b.Labels, label)
+			fs.beadsByID[id] = b
+			return nil
+		},
+		AddComment: func(id, text string) error {
+			fs.comments[id] = append(fs.comments[id], text)
+			return nil
+		},
+		CloseBead: func(id string) error {
+			b := fs.beadsByID[id]
+			b.Status = StatusClosed
+			fs.beadsByID[id] = b
+			return nil
+		},
+		GetDepsWithMeta: func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+			return fs.depsByID[id], nil
+		},
+		Gateway: fs.gateway,
+		Now:     func() time.Time { return fs.clockNow },
+	}
+	return d
+}
+
+// linkCausedBy adds a caused-by edge from rec → src and the reverse for
+// dependents-style queries.
+func (fs *fakeStore) linkCausedBy(rec, src string) {
+	srcBead, ok := fs.beadsByID[src]
+	if !ok {
+		srcBead = store.Bead{ID: src}
+	}
+	fs.depsByID[rec] = append(fs.depsByID[rec], &beads.IssueWithDependencyMetadata{
+		Issue: beads.Issue{
+			ID:        src,
+			Title:     srcBead.Title,
+			IssueType: beads.IssueType(srcBead.Type),
+			Status:    beads.Status(srcBead.Status),
+		},
+		DependencyType: beads.DependencyType(store.DepCausedBy),
+	})
+	fs.depsRev[src] = append(fs.depsRev[src], &beads.IssueWithDependencyMetadata{
+		Issue: beads.Issue{
+			ID:        rec,
+			IssueType: beads.IssueType("recovery"),
+			Status:    beads.Status(fs.beadsByID[rec].Status),
+		},
+		DependencyType: beads.DependencyType(store.DepCausedBy),
+	})
+}
+
+// ---
+
+func TestPublish_PersistsProposalAndTransitions(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	stdout := `{"verb":"resummon","reasoning":"transient build flake","failure_class":"build-error"}`
+	res := Publish("spi-rec", stdout, fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("publish err: %v", res.Err)
+	}
+	if got := res.Outputs["status"]; got != "awaiting_review" {
+		t.Errorf("outputs.status = %q, want awaiting_review", got)
+	}
+	if rec := fs.beadsByID["spi-rec"]; rec.Status != StatusAwaitingReview {
+		t.Errorf("recovery status = %q, want %q", rec.Status, StatusAwaitingReview)
+	}
+	if rec := fs.beadsByID["spi-rec"]; rec.Metadata[MetadataKeyProposal] == "" {
+		t.Error("proposal metadata not persisted")
+	}
+	if comments := fs.comments["spi-rec"]; len(comments) == 0 {
+		t.Error("no audit comment on recovery")
+	}
+}
+
+func TestPublish_ParseFailureReturnsError(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec"}
+	res := Publish("spi-rec", "not json", fs.toDeps())
+	if res.Err == nil {
+		t.Fatal("expected error for unparseable stdout")
+	}
+	if rec := fs.beadsByID["spi-rec"]; rec.Status == StatusAwaitingReview {
+		t.Error("recovery should not transition on parse failure")
+	}
+}
+
+// ---
+
+type fakeGateway struct {
+	called  []ExecuteRequest
+	result  ExecuteResult
+	err     error
+}
+
+func (f *fakeGateway) Execute(_ context.Context, req ExecuteRequest) (ExecuteResult, error) {
+	f.called = append(f.called, req)
+	return f.result, f.err
+}
+
+func TestExecute_CallsGatewayAndRecordsOutcome(t *testing.T) {
+	fs := newFakeStore()
+	gw := &fakeGateway{result: ExecuteResult{Success: true, Message: "applied"}}
+	fs.gateway = gw
+
+	pa := ProposedAction{
+		Verb:         "resummon",
+		Reasoning:    "transient",
+		FailureClass: "build-error",
+	}
+	enc, _ := pa.Marshal()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Metadata: map[string]string{
+		MetadataKeyProposal: string(enc),
+	}}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	res := Execute("spi-rec", fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("execute err: %v", res.Err)
+	}
+	if len(gw.called) != 1 {
+		t.Fatalf("gateway called %d times, want 1", len(gw.called))
+	}
+	if gw.called[0].SourceBeadID != "spi-src" {
+		t.Errorf("source bead = %q, want spi-src", gw.called[0].SourceBeadID)
+	}
+	if got := res.Outputs["execute_success"]; got != "true" {
+		t.Errorf("execute_success = %q, want true", got)
+	}
+	if rec := fs.beadsByID["spi-rec"]; rec.Metadata[MetadataKeyExecuteResult] == "" {
+		t.Error("execute result not persisted")
+	}
+}
+
+func TestExecute_GatewayUnimplementedSurfacesAsRecorded(t *testing.T) {
+	fs := newFakeStore()
+	gw := &fakeGateway{result: ExecuteResult{Message: "stub"}, err: ErrGatewayUnimplemented}
+	fs.gateway = gw
+
+	pa := ProposedAction{Verb: "resummon", Reasoning: "r", FailureClass: "c"}
+	enc, _ := pa.Marshal()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Metadata: map[string]string{
+		MetadataKeyProposal: string(enc),
+	}}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	res := Execute("spi-rec", fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("execute err: %v", res.Err)
+	}
+	if got := res.Outputs["execute_success"]; got != "false" {
+		t.Errorf("execute_success = %q, want false", got)
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if got := rec.Metadata[MetadataKeyExecuteResult]; !strings.HasPrefix(got, "unimplemented:") {
+		t.Errorf("execute_result = %q; want prefix unimplemented:", got)
+	}
+}
+
+// ---
+
+func TestTakeover_LabelsSourceAndClosesRecovery(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Status: StatusAwaitingReview}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	res := Takeover("spi-rec", fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("takeover err: %v", res.Err)
+	}
+	src := fs.beadsByID["spi-src"]
+	if !containsString(src.Labels, LabelNeedsManual) {
+		t.Errorf("source labels = %v, want %s", src.Labels, LabelNeedsManual)
+	}
+	if src.Status != "hooked" {
+		t.Errorf("source status changed to %q; takeover must NOT touch source status", src.Status)
+	}
+	if rec := fs.beadsByID["spi-rec"]; rec.Status != StatusClosed {
+		t.Errorf("recovery status = %q, want %q", rec.Status, StatusClosed)
+	}
+}
+
+func TestFinish_PersistsOutcomeAndCloses(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID: "spi-rec",
+		Metadata: map[string]string{
+			"cleric_proposal_verb":          "resummon",
+			"cleric_proposal_failure_class": "build-error",
+			MetadataKeyExecuteResult:        "applied",
+		},
+	}
+	res := Finish("spi-rec", fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("finish err: %v", res.Err)
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if rec.Status != StatusClosed {
+		t.Errorf("recovery status = %q, want closed", rec.Status)
+	}
+	if got := rec.Metadata[MetadataKeyOutcome]; got != "approve+executed" {
+		t.Errorf("outcome = %q, want approve+executed", got)
+	}
+}
+
+// ---
+
+func TestHasOpenRecovery_DetectsOpenRecovery(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Type: "recovery", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+
+	has, recoveryID, err := HasOpenRecovery("spi-src", func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return fs.depsRev[id], nil
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !has || recoveryID != "spi-rec" {
+		t.Errorf("has=%v id=%q; want has=true id=spi-rec", has, recoveryID)
+	}
+}
+
+func TestHasOpenRecovery_IgnoresClosedRecovery(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Type: "recovery", Status: StatusClosed}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+	// Manually set the dependent's status so the recovery looks closed.
+	fs.depsRev["spi-src"][0].Status = beads.Status(StatusClosed)
+
+	has, _, err := HasOpenRecovery("spi-src", func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return fs.depsRev[id], nil
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if has {
+		t.Error("should not flag closed recovery as open")
+	}
+}
+
+func TestHasOpenRecovery_IgnoresNonRecoveryCausedBy(t *testing.T) {
+	// A bug bead linked via caused-by should NOT block summon.
+	fs := newFakeStore()
+	fs.beadsByID["spi-bug"] = store.Bead{ID: "spi-bug", Type: "bug", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src"}
+	fs.depsRev["spi-src"] = []*beads.IssueWithDependencyMetadata{
+		{
+			Issue: beads.Issue{
+				ID:        "spi-bug",
+				IssueType: beads.IssueType("bug"),
+				Status:    beads.Status(StatusInProgress),
+			},
+			DependencyType: beads.DependencyType(store.DepCausedBy),
+		},
+	}
+	has, _, err := HasOpenRecovery("spi-src", func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		return fs.depsRev[id], nil
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if has {
+		t.Error("non-recovery caused-by edges should not block summon")
+	}
+}
+
+// helpers
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}

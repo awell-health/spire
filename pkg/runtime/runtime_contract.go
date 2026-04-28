@@ -32,6 +32,9 @@ const (
 	RoleWizard SpawnRole = "wizard"
 	// RoleExecutor is a formula-driven executor.
 	RoleExecutor SpawnRole = "executor"
+	// RoleCleric is a one-shot recovery agent — proposes a recovery
+	// action as JSON for human review. Cleric runtime (spi-hhkozk).
+	RoleCleric SpawnRole = "cleric"
 )
 
 // RepoIdentity is the canonical identity a worker resolves before any

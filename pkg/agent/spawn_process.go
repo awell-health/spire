@@ -526,9 +526,12 @@ func setEnv(cmd *exec.Cmd, key, value string) {
 // Returns a slice so multi-word role-scoped subcommands (e.g. "apprentice run")
 // can be spliced into the command line by each backend.
 //
-// RoleWizard and RoleExecutor both map to "execute": the in-pod command is
-// `spire execute`, and the wizard identity lives in the enum (surfaced via the
-// SPIRE_ROLE env var and role-specific pod spec / resources).
+// RoleWizard, RoleExecutor, and RoleCleric all map to "execute": the in-pod
+// command is `spire execute`, and the role identity lives in the enum
+// (surfaced via the SPIRE_ROLE env var and role-specific pod spec /
+// resources). The cleric is the same formula-driven executor pointed at a
+// recovery bead via the cleric-default formula; the no-PVC pod shape is
+// the only k8s difference and lives in the pod-builder dispatch.
 func roleToSubcmd(role SpawnRole) ([]string, error) {
 	switch role {
 	case RoleApprentice:
@@ -538,6 +541,8 @@ func roleToSubcmd(role SpawnRole) ([]string, error) {
 	case RoleWizard:
 		return []string{"execute"}, nil
 	case RoleExecutor:
+		return []string{"execute"}, nil
+	case RoleCleric:
 		return []string{"execute"}, nil
 	default:
 		return nil, fmt.Errorf("unknown spawn role: %q", role)

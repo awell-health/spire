@@ -132,6 +132,10 @@ const (
 
 	// RoleExecutor is a formula-driven executor (execute).
 	RoleExecutor = runtime.RoleExecutor
+
+	// RoleCleric is a one-shot recovery agent — proposes a recovery
+	// action as JSON for human review. Cleric runtime (spi-hhkozk).
+	RoleCleric = runtime.RoleCleric
 )
 
 // SpawnConfig describes the intent for spawning an agent.
