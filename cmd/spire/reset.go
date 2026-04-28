@@ -298,7 +298,15 @@ func cmdReset(args []string) error {
 	// tower. Mirrors the v0.48 hardening pattern (spi-zz2ve9 / spi-i7k1ag.4)
 	// — local-mode towers stay on the in-process path so on-disk worktrees
 	// and graph state are reset alongside the bead.
+	//
+	// `--hard` routes to the dedicated POST /api/v1/beads/{id}/reset_hard
+	// endpoint (spi-wrjiw6) so the manifest's one-verb-per-endpoint shape
+	// holds for the destructive variant. The soft / `--to` paths continue
+	// through the existing /reset endpoint.
 	if t, terr := activeTowerConfigFunc(); terr == nil && t != nil && t.IsGateway() {
+		if hard && toPhase == "" {
+			return resetHardBeadViaGatewayFunc(context.Background(), beadID)
+		}
 		return gatewayResetBeadFunc(context.Background(), beadID, resetpkg.Opts{
 			BeadID: beadID,
 			To:     toPhase,
@@ -324,6 +332,37 @@ func cmdReset(args []string) error {
 // store.NewGatewayClientForTower + gatewayclient.ResetBead so the wiring
 // matches the close/summon gateway-mode dispatchers.
 var gatewayResetBeadFunc = resetBeadViaGateway
+
+// resetHardBeadViaGatewayFunc is the gateway-mode dispatch seam for the
+// `--hard` variant. Routes to the dedicated /api/v1/beads/{id}/reset_hard
+// endpoint (spi-wrjiw6) so the manifest's one-verb-per-endpoint shape
+// holds for the destructive case. Tests swap this to verify routing
+// without standing up a real gateway.
+var resetHardBeadViaGatewayFunc = resetHardBeadViaGateway
+
+// resetHardBeadViaGateway tunnels a `reset --hard` call through the
+// active tower's gatewayclient. Renders the post-reset bead's status to
+// stdout to match the local-mode CLI output shape so a gateway-mode
+// invocation looks identical to a local one at the terminal.
+func resetHardBeadViaGateway(ctx context.Context, id string) error {
+	t, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("reset %s: resolve tower: %w", id, err)
+	}
+	if t == nil {
+		return fmt.Errorf("reset %s: no active tower", id)
+	}
+	c, err := store.NewGatewayClientForTower(t)
+	if err != nil {
+		return fmt.Errorf("reset %s: %w", id, err)
+	}
+	bead, err := c.ResetHardBead(ctx, id)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s reset --hard (gateway: status=%s)\n", id, bead.Status)
+	return nil
+}
 
 // resetBeadViaGateway tunnels a reset call through the active tower's
 // gatewayclient. Renders the post-reset bead's status to stdout to match
