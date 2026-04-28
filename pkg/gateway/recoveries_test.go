@@ -432,9 +432,12 @@ func TestHandleRecoveriesList_GraphContext(t *testing.T) {
 		Status: "closed",
 		Type:   "recovery",
 		Metadata: map[string]string{
-			"cleric_proposal_verb":           "reset --hard",
-			"cleric_proposal_failure_class":  "step-failure:review",
-			cleric.MetadataKeyOutcome:        "reject",
+			"cleric_proposal_verb":          "reset --hard",
+			"cleric_proposal_failure_class": "step-failure:review",
+			// Rejected peers are short-circuited before cleric.finish,
+			// so MetadataKeyOutcome is empty; the gate decision lives
+			// on MetadataKeyGate (set by the gateway's gate handler).
+			cleric.MetadataKeyGate: cleric.GateReject,
 		},
 	}
 
@@ -505,6 +508,15 @@ func TestHandleRecoveriesList_GraphContext(t *testing.T) {
 	}
 	if peer.Verb != "reset --hard" {
 		t.Errorf("peer.Verb = %q, want reset --hard", peer.Verb)
+	}
+	// The desktop banner heuristic ("you've rejected this 3 times")
+	// keys on peer.Gate. Verify the gate decision surfaces from the
+	// MetadataKeyGate metadata the gate handler writes.
+	if peer.Gate != cleric.GateReject {
+		t.Errorf("peer.Gate = %q, want %q", peer.Gate, cleric.GateReject)
+	}
+	if peer.GateOutcome != "" {
+		t.Errorf("peer.GateOutcome = %q, want empty (rejected peers never reach cleric.finish)", peer.GateOutcome)
 	}
 }
 
@@ -664,8 +676,11 @@ func TestHandleRecoveryGate_ApproveHappyPath(t *testing.T) {
 	if len(env.calls.setMetadataCalls) != 1 {
 		t.Fatalf("setMetadata calls = %d, want 1", len(env.calls.setMetadataCalls))
 	}
-	if env.calls.setMetadataCalls[0].meta["cleric_gate"] != "approve" {
-		t.Errorf("cleric_gate metadata = %q, want approve", env.calls.setMetadataCalls[0].meta["cleric_gate"])
+	if env.calls.setMetadataCalls[0].meta[cleric.MetadataKeyGate] != cleric.GateApprove {
+		t.Errorf("%s metadata = %q, want %q",
+			cleric.MetadataKeyGate,
+			env.calls.setMetadataCalls[0].meta[cleric.MetadataKeyGate],
+			cleric.GateApprove)
 	}
 }
 
@@ -703,9 +718,11 @@ func TestHandleRecoveryGate_RejectStoresComment(t *testing.T) {
 	}
 
 	// Metadata records the comment too.
-	if env.calls.setMetadataCalls[0].meta["cleric_gate_comment"] != "try a different approach" {
-		t.Errorf("metadata cleric_gate_comment = %q, want %q",
-			env.calls.setMetadataCalls[0].meta["cleric_gate_comment"], "try a different approach")
+	if env.calls.setMetadataCalls[0].meta[cleric.MetadataKeyGateComment] != "try a different approach" {
+		t.Errorf("metadata %s = %q, want %q",
+			cleric.MetadataKeyGateComment,
+			env.calls.setMetadataCalls[0].meta[cleric.MetadataKeyGateComment],
+			"try a different approach")
 	}
 }
 

@@ -33,6 +33,23 @@ const MetadataKeyOutcome = "cleric_outcome"
 // error message) so the desktop surface can show what happened.
 const MetadataKeyExecuteResult = "cleric_execute_result"
 
+// MetadataKeyGate, MetadataKeyGateSetAt, and MetadataKeyGateComment are
+// written by the gateway's POST /api/v1/recoveries/{id}/gate handler
+// (pkg/gateway, spi-sn0qg3) to record the human reviewer's decision. The
+// keys live on the cleric package because they are part of the recovery
+// bead's durable contract: the desktop's listing reads them back to
+// render rejection counts and audit trails. MetadataKeyGate's value is
+// one of GateApprove / GateReject / GateTakeover.
+//
+// MetadataKeyOutcome (above) covers post-execute outcomes only — a
+// rejected proposal never reaches cleric.finish, so the gate keys are
+// the only durable record the desktop has of a rejection.
+const (
+	MetadataKeyGate        = "cleric_gate"
+	MetadataKeyGateSetAt   = "cleric_gate_set_at"
+	MetadataKeyGateComment = "cleric_gate_comment"
+)
+
 // LabelNeedsManual is the label cleric.takeover applies to the source
 // bead (NOT the recovery bead) when the human chooses to take over
 // manually. The source stays `hooked`; the label is the only signal.

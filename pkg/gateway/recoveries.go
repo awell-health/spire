@@ -225,6 +225,13 @@ type RecoveryPeer struct {
 	Verb         string `json:"verb,omitempty"`
 	FailureClass string `json:"failure_class,omitempty"`
 
+	// Gate is the human reviewer's decision recorded by the gate
+	// handler — one of cleric.GateApprove / GateReject / GateTakeover.
+	// The desktop's banner heuristic ("you've rejected this 3 times")
+	// keys on this field. Empty when the peer has not yet been gated
+	// (status awaiting_review or in_progress without a prior decision).
+	Gate string `json:"gate,omitempty"`
+
 	// GateOutcome reflects the persisted execute_result metadata when
 	// the gate was approve+executed; empty for reject/takeover/in-flight.
 	// Surfaced so the desktop can show "approved → executed" badges.
@@ -457,11 +464,16 @@ func (s *Server) recoveryGraphContext(recoveryID string) (*RecoverySourceSummary
 				Status:    string(d.Status),
 				UpdatedAt: d.UpdatedAt.Format(time.RFC3339),
 			}
-			// Pull verb / failure_class / outcome from the peer's
-			// metadata for the desktop's banner heuristic.
+			// Pull verb / failure_class / gate / outcome from the
+			// peer's metadata for the desktop's banner heuristic.
+			// Gate is the human's approve/reject/takeover decision
+			// (set by the gate handler); GateOutcome is the
+			// post-execute result (set by cleric.finish, only present
+			// for approve+executed peers).
 			if peerBead, gErr := recoveriesGetBeadFunc(d.ID); gErr == nil {
 				peer.Verb = peerBead.Meta("cleric_proposal_verb")
 				peer.FailureClass = peerBead.Meta("cleric_proposal_failure_class")
+				peer.Gate = peerBead.Meta(cleric.MetadataKeyGate)
 				peer.GateOutcome = peerBead.Meta(cleric.MetadataKeyOutcome)
 			}
 			peers = append(peers, peer)
@@ -620,11 +632,11 @@ func (s *Server) handleRecoveryGate(w http.ResponseWriter, r *http.Request, id s
 	// Mirrors the cleric.publish convention of using bead metadata as
 	// the durable record.
 	gateMeta := map[string]string{
-		"cleric_gate":         body.Gate,
-		"cleric_gate_set_at":  recoveriesNowFunc().Format(time.RFC3339),
+		cleric.MetadataKeyGate:      body.Gate,
+		cleric.MetadataKeyGateSetAt: recoveriesNowFunc().Format(time.RFC3339),
 	}
 	if body.Gate == cleric.GateReject {
-		gateMeta["cleric_gate_comment"] = body.Comment
+		gateMeta[cleric.MetadataKeyGateComment] = body.Comment
 	}
 	if err := recoveriesSetMetadataFunc(id, gateMeta); err != nil {
 		// Non-fatal: gate output already set in GraphState. Log and continue.
