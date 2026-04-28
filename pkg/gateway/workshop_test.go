@@ -68,6 +68,7 @@ func TestWorkshopFormulas_ReturnsAllEmbedded(t *testing.T) {
 	wantNames := []string{
 		"bug-default",
 		"chore-default",
+		"cleric-default",
 		"epic-default",
 		"subgraph-implement",
 		"subgraph-review",
@@ -94,6 +95,7 @@ func TestWorkshopFormulas_ReturnsAllEmbedded(t *testing.T) {
 		"bug-default":        {category: "bug", defaultFor: []string{"bug"}, source: "embedded"},
 		"epic-default":       {category: "epic", defaultFor: []string{"epic"}, source: "embedded"},
 		"chore-default":      {category: "chore", defaultFor: []string{"chore"}, source: "embedded"},
+		"cleric-default":     {category: "recovery", defaultFor: []string{"recovery"}, source: "embedded"},
 		"subgraph-review":    {category: "subgraph", defaultFor: []string{}, source: "embedded"},
 		"subgraph-implement": {category: "subgraph", defaultFor: []string{}, source: "embedded"},
 	}
