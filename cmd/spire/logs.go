@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/board/logstream"
 	"github.com/awell-health/spire/pkg/observability"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -371,35 +373,106 @@ func listTranscripts(w io.Writer, doltGlobal, wizardName, providerFilter string)
 	return tw.Flush()
 }
 
+// resolveLogSource picks the logstream.Source that backs `spire logs`
+// commands for the active tower. Local-native (or no tower) gets a
+// LocalSource rooted at the dolt global wizards directory; cluster-
+// attach (gateway-mode tower) gets a GatewaySource that talks to the
+// remote gateway through the same client used by the rest of the CLI
+// dispatch layer (pkg/store/dispatch.go's NewGatewayClientForTower).
+//
+// The returned bool reports whether the resolved source was the
+// gateway path — useful when a caller wants to phrase a missing-logs
+// message ("through the gateway" vs "in <path>") explicitly.
+func resolveLogSource() (logstream.Source, bool, error) {
+	if t, err := activeTowerConfigFunc(); err == nil && t != nil && t.IsGateway() {
+		client, cerr := store.NewGatewayClientForTower(t)
+		if cerr != nil {
+			return nil, false, fmt.Errorf("logs: build gateway client: %w", cerr)
+		}
+		// Engineer scope on the local CLI is the right answer here:
+		// the operator running `spire logs` is the engineer who
+		// produced the bead's logs, and pretty-rendering raw provider
+		// transcripts (the historical local-native behaviour) requires
+		// engineer-scope reads of engineer_only artifacts. Desktop
+		// callers (board) flip this to false through the inspector
+		// path so they see the redacted view.
+		return logstream.NewGatewaySource(client, true), true, nil
+	}
+	return logstream.NewLocalSource(filepath.Join(doltGlobalDir(), "wizards")), false, nil
+}
+
 // runLogsPretty discovers the latest transcript for a bead and renders
-// it through the per-provider logstream adapter to stdout.
+// it through the per-provider logstream adapter to stdout. Local-native
+// reads from the on-disk wizards directory; cluster-attach pulls the
+// same artifacts through the gateway. Empty (no transcripts) is a
+// success path — print a one-liner and exit 0 — so a fresh bead does
+// not look like an error.
 func runLogsPretty(beadID, providerFilter string, expand bool) error {
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
 	}
 
-	gd := doltGlobalDir()
-	wizardDir := wizardDirForBead(gd, beadID)
-	ts, err := discoverTranscripts(wizardDir, providerFilter)
+	src, viaGateway, err := resolveLogSource()
 	if err != nil {
 		return err
 	}
-	if len(ts) == 0 {
-		return fmt.Errorf("no transcripts found for %s (looked in %s)", beadID, wizardDir)
-	}
-	latest := ts[len(ts)-1]
 
-	content, err := os.ReadFile(latest.Path)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	artifacts, err := src.List(ctx, beadID)
 	if err != nil {
 		return err
 	}
+
+	// Filter to provider transcripts that match the requested provider
+	// (or any provider when providerFilter is empty). Operational
+	// (Provider == "") rows have no adapter to render through, so they
+	// drop out of the pretty path even when no filter is set.
+	filtered := artifacts[:0:0]
+	for _, a := range artifacts {
+		if a.Provider == "" {
+			continue
+		}
+		if providerFilter != "" && a.Provider != providerFilter {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+
+	if len(filtered) == 0 {
+		// Distinguish empty vs error in the user message. Local-native
+		// includes the on-disk path the user can poke at; cluster-
+		// attach points at the gateway. Either way, exit 0 — the
+		// orchestrator will append more artifacts as the bead runs.
+		switch {
+		case viaGateway:
+			fmt.Printf("no transcripts available for %s through the gateway\n", beadID)
+		default:
+			fmt.Printf("no transcripts found for %s (looked in %s)\n", beadID, wizardDirForBead(doltGlobalDir(), beadID))
+		}
+		return nil
+	}
+
+	// LocalSource returns provider transcripts newest-first within each
+	// directory; GatewaySource returns rows in (attempt, run, sequence)
+	// order. We want the last write so the user sees the most recent
+	// run — pick the artifact whose Path has the largest lexicographic
+	// timestamp (local) or the highest sequence (gateway). Both fall
+	// back to "the last entry" when the heuristic is ambiguous.
+	latest := pickLatestArtifact(filtered)
+
+	if latest.Content == "" {
+		fmt.Printf("transcript for %s has no bytes yet (still writing)\n", beadID)
+		return nil
+	}
+
 	adapter := logstream.Get(latest.Provider)
-	events, ok := adapter.Parse(string(content))
+	events, ok := adapter.Parse(latest.Content)
 	if !ok || len(events) == 0 {
 		// Adapter didn't recognize the content; print raw bytes so the
 		// user still sees something rather than silent empty output.
-		_, err := os.Stdout.Write(content)
-		return err
+		_, werr := os.Stdout.WriteString(latest.Content)
+		return werr
 	}
 	width := terminalWidth()
 	for _, ev := range events {
@@ -409,6 +482,29 @@ func runLogsPretty(beadID, providerFilter string, expand bool) error {
 	}
 	return nil
 }
+
+// pickLatestArtifact selects the "newest" artifact from a filtered set
+// of provider transcripts. For local sources, Path encodes a
+// YYYYMMDD-HHMMSS timestamp that sorts lexicographically; for gateway
+// sources, the final entry is the most recent because the gateway
+// returns ascending order (attempt, run, sequence). Falling back to
+// the last entry when no Path is present keeps gateway-mode parity.
+func pickLatestArtifact(arts []logstream.Artifact) logstream.Artifact {
+	best := arts[0]
+	for _, a := range arts[1:] {
+		if a.Path != "" && best.Path != "" {
+			if a.Path > best.Path {
+				best = a
+			}
+			continue
+		}
+		// No path comparison possible — gateway-mode rows come in
+		// ascending order, so newer rows arrive later.
+		best = a
+	}
+	return best
+}
+
 
 // terminalWidth returns the current stdout column width, or 100 when
 // stdout is not a TTY or the query fails.

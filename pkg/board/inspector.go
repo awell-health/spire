@@ -1,8 +1,8 @@
 package board
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,6 +19,31 @@ import (
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 )
+
+// logSourceFactory returns the logstream.Source used to populate the
+// Logs tab for a bead. Defaults to the local-filesystem source rooted
+// at dolt.GlobalDir()+"/wizards" so existing local-native flows render
+// the same logs they did before the refactor. cmd/spire's board entry
+// point overrides this in cluster-attach mode (via SetLogSourceFactory)
+// with a gateway-backed source so desktop / CLI never read pod logs
+// directly.
+var logSourceFactory = func() logstream.Source {
+	return logstream.NewLocalSource(filepath.Join(dolt.GlobalDir(), "wizards"))
+}
+
+// SetLogSourceFactory installs the package-wide log source constructor.
+// cmd/spire calls this once at board startup to switch the inspector
+// onto a gateway-backed source when the active tower is in gateway
+// (cluster-attach) mode. Passing nil restores the default local-filesystem
+// source so tests can reset between runs.
+func SetLogSourceFactory(f func() logstream.Source) {
+	if f == nil {
+		f = func() logstream.Source {
+			return logstream.NewLocalSource(filepath.Join(dolt.GlobalDir(), "wizards"))
+		}
+	}
+	logSourceFactory = f
+}
 
 // Inspector tab constants.
 const (
@@ -159,52 +184,18 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		data.HookedStep = findHookedStepInfo(b.ID, data.DAG)
 	}
 
-	// Wizard log content: read and cache here (not in View).
-	wizardName := "wizard-" + b.ID
-	logDir := filepath.Join(dolt.GlobalDir(), "wizards")
-	candidates := []string{
-		filepath.Join(logDir, wizardName+".log"),
-		filepath.Join(logDir, wizardName+"-fix.log"),
-	}
-	for _, path := range candidates {
-		if content, err := os.ReadFile(path); err == nil {
-			data.Logs = append(data.Logs, LogView{
-				Name:    "wizard",
-				Path:    path,
-				Content: string(content),
-			})
-			break
-		}
-	}
-
-	// Per-invocation provider subprocess logs (claude, codex, …).
-	data.Logs = append(data.Logs, loadProviderLogViews(filepath.Join(logDir, wizardName), "")...)
-
-	// Sibling spawn logs: apprentices, sages, clerics. Each spawn is named
-	// wizard-<beadID>-<suffix> (e.g. -impl, -sage-review-1, -w1-1, -seq-1),
-	// with its own provider subdirs for any subprocesses it invokes.
-	knownNames := map[string]bool{}
-	for _, lv := range data.Logs {
-		knownNames[filepath.Base(lv.Path)] = true
-	}
-	if siblings, err := filepath.Glob(filepath.Join(logDir, wizardName+"-*.log")); err == nil {
-		sort.Strings(siblings)
-		for _, path := range siblings {
-			if knownNames[filepath.Base(path)] {
-				continue
-			}
-			content, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			stem := strings.TrimSuffix(filepath.Base(path), ".log")
-			name := strings.TrimPrefix(stem, wizardName+"-")
-			data.Logs = append(data.Logs, LogView{
-				Name:    name,
-				Path:    path,
-				Content: string(content),
-			})
-			data.Logs = append(data.Logs, loadProviderLogViews(filepath.Join(logDir, stem), name+"/")...)
+	// Logs tab: assemble through a logstream.Source so local-native and
+	// cluster-attach modes share one read path. The default factory
+	// returns a local filesystem source rooted at dolt.GlobalDir()+
+	// "/wizards"; cmd/spire swaps in a gateway-backed source for
+	// gateway-mode towers (see SetLogSourceFactory).
+	src := logSourceFactory()
+	if src != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		artifacts, err := src.List(ctx, b.ID)
+		cancel()
+		if err == nil {
+			data.Logs = artifactsToLogViews(artifacts)
 		}
 	}
 
@@ -302,163 +293,62 @@ func buildLogCycleMap(children []Bead) map[string]int {
 }
 
 // loadProviderLogViews walks wizardDir/<provider>/ subdirectories and
-// returns a LogView for every transcript file it finds. The operational
-// worker log (a file named "<wizard>.log" alongside these subdirs) is
-// skipped by the IsDir() filter and must be loaded by the caller.
-//
-// Pattern selection per provider:
-//
-//   - "claude" → *.jsonl plus legacy *.log (backward compat for transcripts
-//     captured before the .jsonl convention landed)
-//   - any other name → *.jsonl only
-//
-// Files ending in ".stderr.log" are never returned as transcripts — they
-// are sidecars for a peer transcript and their contents are loaded into
-// StderrContent/StderrPath of the matching LogView.
-//
-// namePrefix is prepended to every returned Name (used to mark sibling
-// spawn logs with "<spawn-name>/"). Within each provider directory,
-// matches are sorted newest-first by filename (timestamps in the filename
-// sort lexicographically), matching the ordering used before this
-// helper existed.
+// returns a LogView for every transcript file it finds. Thin wrapper
+// around the logstream helper that produces Artifacts; this layer adds
+// adapter event parsing and the stderr-line synthesis the inspector
+// depends on. Kept as a pkg/board-level helper so tests in this package
+// (transcript_e2e_test.go in particular) can probe the LogView shape
+// directly without going through the Source.
 func loadProviderLogViews(wizardDir, namePrefix string) []LogView {
-	entries, err := os.ReadDir(wizardDir)
-	if err != nil {
+	return artifactsToLogViews(logstream.LoadProviderArtifacts(wizardDir, namePrefix))
+}
+
+// artifactsToLogViews converts Source-produced Artifacts to LogViews,
+// running each artifact's bytes through the registered provider
+// adapter and synthesising a KindStderr event per non-empty sidecar
+// line. Provider-empty artifacts (operational stdout) get no events
+// because no adapter exists; the renderer falls back to printing
+// Content verbatim. Cycle remains unset here — inspector callers that
+// want grouping must layer it on after this conversion (see
+// buildLogCycleMap and the cycle-tagging block in FetchInspectorData).
+func artifactsToLogViews(artifacts []logstream.Artifact) []LogView {
+	if len(artifacts) == 0 {
 		return nil
 	}
-	var views []LogView
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		providerName := e.Name()
-		providerDir := filepath.Join(wizardDir, providerName)
-
-		patterns := []string{"*.jsonl"}
-		if providerName == "claude" {
-			patterns = append(patterns, "*.log")
-		}
-		seen := map[string]bool{}
-		var matches []string
-		for _, pat := range patterns {
-			paths, err := filepath.Glob(filepath.Join(providerDir, pat))
-			if err != nil {
-				continue
+	views := make([]LogView, 0, len(artifacts))
+	for _, a := range artifacts {
+		var events []logstream.LogEvent
+		if a.Provider != "" {
+			adapter := logstream.Get(a.Provider)
+			parsed, ok := adapter.Parse(a.Content)
+			if ok {
+				events = parsed
 			}
-			for _, p := range paths {
-				if strings.HasSuffix(p, ".stderr.log") {
+		}
+		if a.StderrContent != "" {
+			for _, line := range strings.Split(a.StderrContent, "\n") {
+				if line == "" {
 					continue
 				}
-				if seen[p] {
-					continue
-				}
-				seen[p] = true
-				matches = append(matches, p)
+				events = append(events, logstream.LogEvent{
+					Kind:  logstream.KindStderr,
+					Body:  line,
+					Raw:   line,
+					Error: true,
+				})
 			}
 		}
-		// Newest-first: timestamped filenames sort lexicographically, so
-		// reverse order is effectively descending by timestamp.
-		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
-
-		adapter := logstream.Get(providerName)
-		for _, path := range matches {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			content := string(raw)
-
-			var stderrPath, stderrContent string
-			candidate := deriveStderrPath(path)
-			if sc, err := os.ReadFile(candidate); err == nil {
-				stderrPath = candidate
-				stderrContent = string(sc)
-			}
-
-			events, ok := adapter.Parse(content)
-			if !ok {
-				events = nil
-			}
-			if stderrContent != "" {
-				for _, line := range strings.Split(stderrContent, "\n") {
-					if line == "" {
-						continue
-					}
-					events = append(events, logstream.LogEvent{
-						Kind:  logstream.KindStderr,
-						Body:  line,
-						Raw:   line,
-						Error: true,
-					})
-				}
-			}
-
-			name := claudeLogName(filepath.Base(path))
-			if namePrefix != "" {
-				name = namePrefix + name
-			}
-			views = append(views, LogView{
-				Name:          name,
-				Path:          path,
-				Content:       content,
-				Provider:      providerName,
-				StderrPath:    stderrPath,
-				StderrContent: stderrContent,
-				Events:        events,
-			})
-		}
+		views = append(views, LogView{
+			Name:          a.Name,
+			Path:          a.Path,
+			Content:       a.Content,
+			Provider:      a.Provider,
+			StderrPath:    a.StderrPath,
+			StderrContent: a.StderrContent,
+			Events:        events,
+		})
 	}
 	return views
-}
-
-// deriveStderrPath returns the sidecar path for a transcript: strip the
-// final extension and append ".stderr.log". For "foo/bar.jsonl" it
-// returns "foo/bar.stderr.log"; for "foo/bar.log" it returns the same.
-func deriveStderrPath(transcriptPath string) string {
-	ext := filepath.Ext(transcriptPath)
-	base := strings.TrimSuffix(transcriptPath, ext)
-	return base + ".stderr.log"
-}
-
-// claudeLogName derives a display name from a provider log filename.
-// Input: "<label>-<YYYYMMDD-HHMMSS>.{log,jsonl}" (e.g.
-// "epic-plan-20260417-173412.log" or "epic-plan-20260417-173412.jsonl").
-// Output: "<label> (HH:MM)" (e.g. "epic-plan (17:34)").
-// If the filename does not match the expected pattern, returns the filename
-// without its extension as a fallback.
-func claudeLogName(filename string) string {
-	base := strings.TrimSuffix(filename, ".log")
-	base = strings.TrimSuffix(base, ".jsonl")
-	// Find the last occurrence of "-YYYYMMDD-HHMMSS" suffix.
-	// Scan from the right for a suffix of the form -DDDDDDDD-DDDDDD (8+6 digits).
-	if len(base) < 16 {
-		return base
-	}
-	tsStart := len(base) - 16 // position of the leading '-'
-	if base[tsStart] != '-' {
-		return base
-	}
-	tsPart := base[tsStart+1:] // "YYYYMMDD-HHMMSS"
-	if len(tsPart) != 15 || tsPart[8] != '-' {
-		return base
-	}
-	datePart := tsPart[:8]
-	timePart := tsPart[9:]
-	for i := 0; i < 8; i++ {
-		if datePart[i] < '0' || datePart[i] > '9' {
-			return base
-		}
-	}
-	for i := 0; i < 6; i++ {
-		if timePart[i] < '0' || timePart[i] > '9' {
-			return base
-		}
-	}
-	label := base[:tsStart]
-	if label == "" {
-		return base
-	}
-	return fmt.Sprintf("%s (%s:%s)", label, timePart[:2], timePart[2:4])
 }
 
 // findHookedStepInfo determines which step is hooked and what it's waiting for.
@@ -1160,7 +1050,14 @@ func renderInspectorSnap(b BoardBead, data *InspectorData, dag *DAGProgress, wid
 
 	if tab == InspectorTabLogs {
 		if len(data.Logs) == 0 {
-			lines = append(lines, dimStyle.Render("  No logs for "+bb.ID))
+			// Distinct empty-state copy: not a load error, just a bead
+			// that hasn't produced any artifacts yet (fresh bead, or a
+			// cluster-attach gateway that returned an empty manifest).
+			// The single dim line below is the only thing the panel
+			// renders so the inspector reads as "intentionally blank"
+			// rather than "broken".
+			lines = append(lines, dimStyle.Render("  No log artifacts yet for "+bb.ID))
+			lines = append(lines, dimStyle.Render("  (logs appear here once an agent has produced output)"))
 		} else {
 			// Clamp logIdx into range.
 			idx := logIdx

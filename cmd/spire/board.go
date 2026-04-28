@@ -9,7 +9,9 @@ import (
 
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/board"
+	"github.com/awell-health/spire/pkg/board/logstream"
 	"github.com/awell-health/spire/pkg/config"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/wizard"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -95,6 +97,29 @@ func cmdBoard(args []string) error {
 	// Resolve current tower name for header display.
 	if tower, err := config.ResolveTowerConfig(); err == nil && tower != nil {
 		opts.TowerName = tower.Name
+		// Cluster-attach: the inspector should ask the gateway for log
+		// artifacts instead of walking the local wizards directory.
+		// SetLogSourceFactory installs the constructor on the board
+		// package; FetchInspectorData consults it on every fetch so a
+		// later tower switch picks up the change without restarting
+		// the board. Falls back silently to the local source if the
+		// gateway client cannot be built (e.g. token missing) — the
+		// inspector then renders the local-native empty state instead
+		// of throwing during render.
+		if tower.IsGateway() {
+			t := tower
+			board.SetLogSourceFactory(func() logstream.Source {
+				client, err := store.NewGatewayClientForTower(t)
+				if err != nil {
+					return logstream.NewLocalSource(filepath.Join(doltGlobalDir(), "wizards"))
+				}
+				// Desktop scope: the board UI is the right surface for
+				// the redacted view; engineer-only artifacts surface
+				// through `spire logs pretty` (CLI), which sets the
+				// engineer scope explicitly.
+				return logstream.NewGatewaySource(client, false)
+			})
+		}
 	}
 
 	// Inject tower list function for the T-key switcher (used by BoardMode internally).
