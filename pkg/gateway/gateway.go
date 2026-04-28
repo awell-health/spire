@@ -123,6 +123,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v1/workshop/formulas", s.corsMiddleware(s.bearerAuth(s.handleWorkshopFormulas)))
 	mux.Handle("/api/v1/workshop/formulas/", s.corsMiddleware(s.bearerAuth(s.handleWorkshopFormulaByName)))
 	mux.Handle("/api/v1/attempts/", s.corsMiddleware(s.bearerAuth(s.handleAttemptByID)))
+	mux.Handle("/api/v1/actions", s.corsMiddleware(s.bearerAuth(s.handleActionsManifest)))
+	mux.Handle("/api/v1/recoveries/", s.corsMiddleware(s.bearerAuth(s.handleRecoveryByID)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -478,6 +480,26 @@ func (s *Server) handleBeadByID(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/beads/{id}/close
 	if strings.HasSuffix(id, "/close") {
 		s.handleBeadClose(w, r, strings.TrimSuffix(id, "/close"))
+		return
+	}
+	// /api/v1/beads/{id}/resummon
+	if strings.HasSuffix(id, "/resummon") {
+		s.handleBeadResummon(w, r, strings.TrimSuffix(id, "/resummon"))
+		return
+	}
+	// /api/v1/beads/{id}/dismiss
+	if strings.HasSuffix(id, "/dismiss") {
+		s.handleBeadDismiss(w, r, strings.TrimSuffix(id, "/dismiss"))
+		return
+	}
+	// /api/v1/beads/{id}/update_status
+	if strings.HasSuffix(id, "/update_status") {
+		s.handleBeadUpdateStatus(w, r, strings.TrimSuffix(id, "/update_status"))
+		return
+	}
+	// /api/v1/beads/{id}/reset_hard
+	if strings.HasSuffix(id, "/reset_hard") {
+		s.handleBeadResetHard(w, r, strings.TrimSuffix(id, "/reset_hard"))
 		return
 	}
 	switch r.Method {

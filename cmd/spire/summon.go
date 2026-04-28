@@ -449,6 +449,24 @@ func cmdDismiss(args []string) error {
 	if err != nil {
 		return fmt.Errorf("dismiss: resolve active tower: %w", err)
 	}
+	// Gateway-mode dispatch (bead-level dismiss): when the active tower is
+	// gateway-mode AND the caller named explicit targets, route to
+	// POST /api/v1/beads/{id}/dismiss for each target. The gateway endpoint
+	// has the broader "cancel the bead's work entirely" semantics — it
+	// closes the bead and cleans the worktree+branch — which is the right
+	// behaviour for an attached cluster tower where the local CLI has no
+	// process to kill anyway. Bare counts (no targets) stay on the
+	// wizard-pool path; they have no mapping to the bead-level endpoint.
+	if tower != nil && tower.IsGateway() && len(targetIDs) > 0 {
+		var lastErr error
+		for _, id := range targetIDs {
+			if err := dismissBeadViaGatewayFunc(context.Background(), id); err != nil {
+				fmt.Fprintf(os.Stderr, "dismiss %s: %v\n", id, err)
+				lastErr = err
+			}
+		}
+		return lastErr
+	}
 	switch tower.EffectiveDeploymentMode() {
 	case config.DeploymentModeClusterNative:
 		if !isK8sAvailableFunc() {

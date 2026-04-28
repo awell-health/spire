@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -8,7 +9,9 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/executor"
+	"github.com/awell-health/spire/pkg/gatewayclient"
 	"github.com/awell-health/spire/pkg/recovery"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
 )
@@ -31,6 +34,15 @@ func cmdResummon(args []string) error {
 
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
+	}
+
+	// Gateway-mode dispatch: tunnel to POST /api/v1/beads/{id}/resummon so
+	// the same `spire resummon` invocation works against an attached cluster
+	// tower. Same shape as the v0.48 hardening pattern (spi-zz2ve9 /
+	// spi-i7k1ag.4) — local-mode towers stay on the in-process path so
+	// on-disk worktrees and graph state are exercised alongside the bead.
+	if t, terr := activeTowerConfigFunc(); terr == nil && t != nil && t.IsGateway() {
+		return resummonViaGatewayFunc(context.Background(), beadID)
 	}
 
 	// 1. Look up the bead and verify it's in a resummonable state.
@@ -195,6 +207,88 @@ func removeResummonRegistryEntries(reg wizardRegistry, beadID string) {
 		reg.Wizards = remaining
 		saveWizardRegistry(reg)
 	}
+}
+
+// resummonViaGatewayFunc is the gateway-mode dispatch seam. cmdResummon
+// calls it when the active tower is gateway-mode so the resummon runs
+// against the gateway endpoint instead of the local Dolt store. Tests
+// swap this to verify routing without standing up a real gateway.
+var resummonViaGatewayFunc = resummonViaGateway
+
+// resummonViaGateway tunnels a resummon call through the active tower's
+// gatewayclient. Renders the post-resummon bead's status to stdout so a
+// gateway-mode invocation looks identical to a local one at the terminal.
+func resummonViaGateway(ctx context.Context, id string) error {
+	t, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("resummon %s: resolve tower: %w", id, err)
+	}
+	if t == nil {
+		return fmt.Errorf("resummon %s: no active tower", id)
+	}
+	c, err := store.NewGatewayClientForTower(t)
+	if err != nil {
+		return fmt.Errorf("resummon %s: %w", id, err)
+	}
+	bead, err := c.ResummonBead(ctx, id)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s resummoned (gateway: status=%s)\n", id, bead.Status)
+	return nil
+}
+
+// dismissBeadViaGatewayFunc is the gateway-mode dispatch seam used by the
+// per-bead dismiss verb in dismiss_bead.go. Tests swap this to verify
+// routing without standing up a real gateway.
+var dismissBeadViaGatewayFunc = dismissBeadViaGateway
+
+// dismissBeadViaGateway tunnels a dismiss call through the active tower's
+// gatewayclient.
+func dismissBeadViaGateway(ctx context.Context, id string) error {
+	t, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("dismiss %s: resolve tower: %w", id, err)
+	}
+	if t == nil {
+		return fmt.Errorf("dismiss %s: no active tower", id)
+	}
+	c, err := store.NewGatewayClientForTower(t)
+	if err != nil {
+		return fmt.Errorf("dismiss %s: %w", id, err)
+	}
+	bead, err := c.DismissBead(ctx, id)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s dismissed (gateway: status=%s)\n", id, bead.Status)
+	return nil
+}
+
+// updateStatusViaGatewayFunc is the gateway-mode dispatch seam used by
+// `spire update --status` against an attached cluster tower.
+var updateStatusViaGatewayFunc = updateStatusViaGateway
+
+// updateStatusViaGateway tunnels an update --status call through the
+// active tower's gatewayclient.
+func updateStatusViaGateway(ctx context.Context, id, to string) error {
+	t, err := activeTowerConfigFunc()
+	if err != nil {
+		return fmt.Errorf("update %s: resolve tower: %w", id, err)
+	}
+	if t == nil {
+		return fmt.Errorf("update %s: no active tower", id)
+	}
+	c, err := store.NewGatewayClientForTower(t)
+	if err != nil {
+		return fmt.Errorf("update %s: %w", id, err)
+	}
+	bead, err := c.UpdateBeadStatus(ctx, id, gatewayclient.UpdateBeadStatusOpts{To: to})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s updated (gateway: status=%s)\n", id, bead.Status)
+	return nil
 }
 
 // hasLabelPrefix returns true if any label on the bead starts with the given prefix.

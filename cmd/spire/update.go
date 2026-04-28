@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -68,6 +69,29 @@ func cmdUpdate(cmd *cobra.Command, args []string) error {
 
 	if d := resolveBeadsDir(); d != "" {
 		os.Setenv("BEADS_DIR", d)
+	}
+
+	// Gateway-mode dispatch for `--status`-only updates: tunnel to the
+	// new POST /api/v1/beads/{id}/update_status endpoint so an attached
+	// cluster tower can fire the same verb. Only `--status` routes
+	// through the gateway today; other field updates (title, description,
+	// priority, labels, parent, --claim) still require direct Dolt access
+	// and remain on the local-mode path.
+	if cmd.Flags().Changed("status") &&
+		!cmd.Flags().Changed("title") &&
+		!cmd.Flags().Changed("description") &&
+		!cmd.Flags().Changed("priority") &&
+		!cmd.Flags().Changed("assignee") &&
+		!cmd.Flags().Changed("owner") &&
+		!cmd.Flags().Changed("claim") &&
+		!cmd.Flags().Changed("defer") &&
+		!cmd.Flags().Changed("add-label") &&
+		!cmd.Flags().Changed("remove-label") &&
+		!cmd.Flags().Changed("parent") {
+		if t, terr := activeTowerConfigFunc(); terr == nil && t != nil && t.IsGateway() {
+			to, _ := cmd.Flags().GetString("status")
+			return updateStatusViaGatewayFunc(context.Background(), id, to)
+		}
 	}
 
 	// Validate bead exists. Closed beads are allowed — reopen and historical
