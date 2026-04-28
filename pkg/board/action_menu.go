@@ -87,6 +87,11 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
 			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
 		)
+	case "awaiting_review":
+		items = append(items,
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
 	case "deferred":
 		items = append(items,
 			MenuAction{Key: 'd', Label: "Undefer", Danger: DangerNone, ActionType: ActionDefer},

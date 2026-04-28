@@ -112,14 +112,12 @@ type Deps struct {
 	// default without attempting a recipe replay.
 	PromotionThreshold func(failureSig string) int
 
-	// CaptureDecideResult is an optional side-channel hook invoked when
-	// the Claude-backed decide path produces a DecideResult. The
-	// executor-side adapter uses this to propagate fields like
-	// expected_outcome into legacy step outputs that aren't on the
-	// RepairPlan surface. Nil means "don't capture". Transitional — the
-	// whole side-channel disappears when Chunk 6 replaces the legacy
-	// outputs with RecoveryOutcome.
-	CaptureDecideResult func(result DecideResult)
+	// CaptureDecideResult is retained as a stub field for backward
+	// compatibility during the cleric-foundation transition (spi-h2d7yn).
+	// The Claude-backed decide path was deleted along with pkg/recovery/decide.go;
+	// callers may still set this field but it will never be invoked. Removed
+	// in the cleric-runtime feature.
+	CaptureDecideResult func(result interface{})
 
 	// CaptureDecideBranch is an optional side-channel hook invoked once
 	// per Decide call with the priority-ladder branch that produced the

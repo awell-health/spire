@@ -74,8 +74,10 @@ func cmdClaim(args []string) error {
 	// for a fresh claim. `in_progress`/`hooked` flow through the reclaim
 	// path below (same-agent identity check in CreateAttemptBeadAtomic).
 	// `open` is allowed for legacy beads that never transitioned to ready.
+	// `awaiting_review` is the cleric-foundation status — claiming it is
+	// equivalent to a human takeover (see SPIRE.md cleric epic).
 	switch target.Status {
-	case "ready", "dispatched", "in_progress", "hooked", "open", "":
+	case "ready", "dispatched", "in_progress", "hooked", "awaiting_review", "open", "":
 		// ok
 	default:
 		return fmt.Errorf("bead %s has unclaimable status %q (expected ready or dispatched)", id, target.Status)

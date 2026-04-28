@@ -659,6 +659,8 @@ func RenderAgentPanel(agents []LocalAgent, maxAgents int) string {
 						icons = append(icons, cyanLG.Render("⏳"))
 					case "hooked":
 						icons = append(icons, yellowLG.Render("⏸"))
+					case "awaiting_review":
+						icons = append(icons, yellowLG.Render("◆"))
 					default:
 						icons = append(icons, dimLG.Render("○"))
 					}
@@ -714,8 +716,8 @@ func RenderCardStr(b BoardBead, clr color.Color, width int, selected ...bool) st
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress, dispatched, and hooked beads.
-	if b.Status == "in_progress" || b.Status == "hooked" || b.Status == "dispatched" {
+	// Show compact DAG pipeline for in-progress, dispatched, hooked, and awaiting_review beads.
+	if b.Status == "in_progress" || b.Status == "hooked" || b.Status == "dispatched" || b.Status == "awaiting_review" {
 		if pipeline := RenderPipelineLipgloss(b.ID); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}
@@ -749,6 +751,8 @@ func RenderPipelineLipgloss(beadID string) string {
 			parts = append(parts, cyanStyle.Render("⏳"))
 		case "hooked":
 			parts = append(parts, yellowStyle.Render("⏸"))
+		case "awaiting_review":
+			parts = append(parts, yellowStyle.Render("◆"))
 		default:
 			parts = append(parts, dimLGStyle.Render("○"))
 		}
@@ -795,6 +799,8 @@ func RenderPipelineFromDAG(dag *DAGProgress) string {
 			parts = append(parts, cyanStyle.Render("⏳"))
 		case "hooked":
 			parts = append(parts, yellowStyle.Render("⏸"))
+		case "awaiting_review":
+			parts = append(parts, yellowStyle.Render("◆"))
 		default:
 			parts = append(parts, dimLGStyle.Render("○"))
 		}
@@ -933,6 +939,8 @@ func RenderAgentPanelSnap(agents []LocalAgent, dagMap map[string]*DAGProgress, m
 						icons = append(icons, cyanLG.Render("⏳"))
 					case "hooked":
 						icons = append(icons, yellowLG.Render("⏸"))
+					case "awaiting_review":
+						icons = append(icons, yellowLG.Render("◆"))
 					default:
 						icons = append(icons, dimLG.Render("○"))
 					}

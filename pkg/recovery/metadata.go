@@ -186,6 +186,53 @@ func GetCrossBeadLearnings(failureClass string, limit int) ([]store.Bead, error)
 	return learnings, nil
 }
 
+// PeerRecoveries returns all recovery beads caused-by sourceBeadID, ordered
+// by created_at descending (most recent first). The cleric reads the chain
+// through `related` deps to load prior proposals, rejections, takeovers, and
+// outcomes; the executor uses this helper to find the most-recent peer to
+// link a freshly filed recovery to. Cleric foundation (spi-h2d7yn).
+//
+// Filters by structured metadata `source_bead == sourceBeadID` rather than
+// dep traversal so the helper works even before the caused-by edge has been
+// committed (the helper is read-only and should not depend on dep ordering).
+func PeerRecoveries(sourceBeadID string) ([]store.Bead, error) {
+	if sourceBeadID == "" {
+		return nil, nil
+	}
+	peers, err := store.ListBeadsByMetadata(
+		map[string]string{
+			KeySourceBead: sourceBeadID,
+		},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Filter to type=recovery beads and sort by CreatedAt desc. ListBeadsByMetadata
+	// returns *all* beads with the matching metadata key, including non-recovery
+	// beads that happened to inherit the metadata via some future code path.
+	var out []store.Bead
+	for _, b := range peers {
+		if b.Type != "recovery" {
+			continue
+		}
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		// store.Bead exposes UpdatedAt but not CreatedAt; for freshly-filed
+		// recovery beads (the common case for peer-linking) UpdatedAt ≈
+		// CreatedAt. Falling back to lexical compare on equal timestamps
+		// keeps the ordering deterministic across test runs.
+		ti, _ := time.Parse(time.RFC3339, out[i].UpdatedAt)
+		tj, _ := time.Parse(time.RFC3339, out[j].UpdatedAt)
+		if ti.Equal(tj) {
+			return out[i].ID > out[j].ID
+		}
+		return ti.After(tj)
+	})
+	return out, nil
+}
+
 // FindMatchingLearning returns the most recent closed recovery bead for
 // sourceBeadID whose failure_class matches fc, or nil if none found.
 func FindMatchingLearning(sourceBeadID string, fc FailureClass) (*store.Bead, error) {

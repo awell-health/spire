@@ -5,6 +5,15 @@ const (
 	StepKindOp       = "op"       // executor runs an opcode directly
 	StepKindDispatch = "dispatch" // executor dispatches child beads
 	StepKindCall     = "call"     // executor calls a nested graph or flow
+	// StepKindWait declares a step that does not dispatch any work — its
+	// completion is driven externally. The interpreter treats the step as
+	// pending until every key declared in `produces` has a value in
+	// outputs. Wait steps must declare `produces` with at least one key;
+	// validation rejects empty-produce wait steps. Cleric foundation
+	// (spi-h2d7yn) introduces this so the future cleric formula's
+	// wait_for_gate step can be parked until the gateway sets the
+	// approve / reject / takeover output.
+	StepKindWait = "wait"
 )
 
 // Opcodes — the minimum executor action set.
@@ -52,7 +61,7 @@ func ValidStepKind(kind string) bool {
 	if kind == "" {
 		return true
 	}
-	return kind == StepKindOp || kind == StepKindDispatch || kind == StepKindCall
+	return kind == StepKindOp || kind == StepKindDispatch || kind == StepKindCall || kind == StepKindWait
 }
 
 // Var types — constrains the runtime type of formula variables.

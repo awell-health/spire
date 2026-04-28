@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -68,5 +70,10 @@ func init() {
 }
 
 func cmdDebugRecoveryDispatch(cmd *cobra.Command, args []string) error {
-	return cmdDebugRecoveryDispatchImpl(cmd, args)
+	// Cleric foundation (spi-h2d7yn): the foreground dispatcher and inline
+	// recovery cycle are gone. Until the cleric runtime feature ships, the
+	// debug command no longer has a runtime to drive — return a clear
+	// not-implemented error so operators see a friendly message instead of
+	// a panic.
+	return fmt.Errorf("debug recovery dispatch is unavailable in the cleric foundation (spi-h2d7yn): inline recovery cycle is removed; cleric runtime ships in spi-hhkozk")
 }

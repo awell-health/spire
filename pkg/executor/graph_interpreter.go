@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -113,12 +112,11 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 		e.log("warning: create graph step beads: %s", err)
 	}
 
-	// Resume any in-flight recovery cycles that were interrupted by a prior
-	// wizard crash. This runs after branch/state resolution so the resume
-	// policy has full context; it is a no-op on fresh starts.
-	if err := e.resumeInFlightRepairs(context.Background(), state); err != nil {
-		e.log("warning: resume in-flight repairs: %s", err)
-	}
+	// Cleric foundation (spi-h2d7yn): inline recovery cycle has been
+	// replaced with hook-and-exit. There is no in-flight repair state to
+	// resume — recovery beads filed by EscalateGraphStepFailure live
+	// independently of graph state and are picked up by the steward (or a
+	// human) for cleric-driven recovery in the future runtime feature.
 
 	// Record the executor's own top-level run before any child spawns,
 	// so e.currentRunID is available as ParentRunID for child agent runs.
@@ -300,64 +298,19 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				continue
 			}
 
-			// In-wizard recovery dispatch: before parking the step as hooked,
-			// attempt an inline recovery cycle. runRecoveryCycle runs
-			// diagnose/decide/execute against the wizard's own workspace and
-			// returns a RecoveryOutcomeKind telling us whether the repair
-			// landed, the step should escalate, the round budget is
-			// exhausted, or the failure cleared (noop). Full background in
-			// pkg/executor/recovery_dispatch.go.
+			// Hook-and-exit: when a step fails, the wizard transitions its
+			// source bead to `hooked`, files a recovery bead via
+			// EscalateGraphStepFailure (which sets caused-by → source +
+			// related → most-recent peer recovery), and exits cleanly. The
+			// inline recovery cycle (runRecoveryCycle / pkg/recovery.Decide)
+			// is gone — recovery is now an open-loop, steward-orchestrated
+			// flow with a one-shot cleric agent and a human gate. See the
+			// design at spi-1s5w0o and the foundation feature at spi-h2d7yn.
 			//
-			// Hook invariant (spi-gdzd7d acceptance #6): `Status = "hooked"`
-			// below is only reachable when either
-			//   (a) the cycle ran and returned RecoveryEscalated /
-			//       RecoveryBudgetExhausted / RecoveryFailed, or
-			//   (b) recoveryDisabled() explicitly skipped the cycle
-			//       (kill-switch on, or the recovery formulas themselves
-			//       — which would otherwise recurse).
-			// There is no static control flow from `result.Error != nil`
-			// to hook that bypasses both branches.
-			if !e.recoveryDisabled() {
-				e.log("recovery: step %s failed — entering recovery cycle (pre-cycle)", stepName)
-				stepCopy := state.Steps[stepName]
-				outcome, recErr := e.runRecoveryCycle(&stepCopy, stepName, state, result.Error)
-				if recErr != nil {
-					e.log("recovery: cycle error for step %s: %s (continuing to hook)", stepName, recErr)
-				}
-				switch outcome {
-				case RecoveryRepaired, RecoveryNoop:
-					// Rewind the step to pending so the interpreter loop
-					// re-dispatches it (seam 11/12). This branch does NOT
-					// reach the hook path — the invariant holds because
-					// `continue` returns to the top of the loop.
-					rewound := state.Steps[stepName]
-					rewound.Status = "pending"
-					rewound.Outputs = nil
-					rewound.StartedAt = ""
-					rewound.CompletedAt = ""
-					state.Steps[stepName] = rewound
-					state.ActiveStep = ""
-					graphStore.Save(e.agentName, state)
-					e.log("recovery: step %s rewound to pending after %s outcome", stepName, outcome)
-					continue
-				case RecoveryEscalated, RecoveryBudgetExhausted, RecoveryFailed:
-					// Post-cycle log so operators can see the exact
-					// outcome before the step parks. Fall through to the
-					// hook-and-escalate block below.
-					e.log("recovery: step %s cycle closed with outcome=%s — parking (post-cycle)",
-						stepName, outcome)
-				default:
-					// Defensive: unknown outcome. Log loudly and treat as
-					// failed so we don't silently diverge from the
-					// documented invariant.
-					e.log("recovery: step %s cycle returned unexpected outcome=%s — parking as RecoveryFailed",
-						stepName, outcome)
-				}
-			}
-
-			// Park the step as hooked (not failed) so the resolve→steward→
-			// re-summon flow can retry it. The graph loop will detect hooked
-			// steps and exit gracefully without a second escalation.
+			// Park the step as hooked (not failed) so the steward can dispatch
+			// a cleric (when the runtime ships) or a human can take over
+			// directly. The graph loop detects hooked steps and exits without
+			// double-escalating.
 			ss = state.Steps[stepName]
 			ss.Status = "hooked"
 			// Do NOT set CompletedAt — the step is parked, not completed.
@@ -1041,10 +994,15 @@ func (e *Executor) resolveGraphBranchState(graph *FormulaStepGraph, state *Graph
 
 	e.log("branch state resolved: repo=%s base=%s staging=%s",
 		state.RepoPath, state.BaseBranch, state.StagingBranch)
-	e.log("recovery budget: max_merge_attempts=%d recovery_budget=%d",
-		spgit.MaxMergeAttempts(), maxRecoveryAttempts(nil))
+	e.log("merge budget: max_merge_attempts=%d", spgit.MaxMergeAttempts())
 	return nil
 }
+
+// maxStepLoopCount caps how many times a single step can loop_to back to an
+// earlier step before the executor escalates. Cleric foundation (spi-h2d7yn)
+// hoists this constant out of the deleted recovery_dispatch.go so the
+// loop-safety valve in RunGraph still has a bound.
+const maxStepLoopCount = 25
 
 // findBaseBranchInParentChain walks up the bead's parent chain looking for a
 // base-branch: label. Returns the branch name from the first bead that has one,

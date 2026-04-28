@@ -128,14 +128,18 @@ func UnmarshalRecipe(raw string) (*MechanicalRecipe, error) {
 // degrading.
 //
 // Only builtin recipes are dispatchable today; sequence recipes fall
-// through to an empty Action, matching the recipeDispatch behavior used by
-// the decide step's promotion path.
+// through to an empty Action.
 func (r *MechanicalRecipe) ToRepairPlan() RepairPlan {
 	plan := RepairPlan{Mode: RepairModeRecipe}
 	if r == nil {
 		return plan
 	}
-	action, params := recipeDispatch(r)
+	var action string
+	var params map[string]string
+	if r.Kind == RecipeKindBuiltin {
+		action = r.Action
+		params = r.Params
+	}
 	plan.Action = action
 	plan.Confidence = 1.0
 	if action != "" {

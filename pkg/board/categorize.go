@@ -128,6 +128,8 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		switch b.Status {
 		case "hooked":
 			c.Hooked = append(c.Hooked, b)
+		case "awaiting_review":
+			c.Hooked = append(c.Hooked, b)
 		case "deferred":
 			if isWorkBoardBead(b) {
 				c.Backlog = append(c.Backlog, b)
@@ -201,6 +203,8 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 
 		switch b.Status {
 		case "hooked":
+			c.Hooked = append(c.Hooked, b)
+		case "awaiting_review":
 			c.Hooked = append(c.Hooked, b)
 		case "deferred":
 			if isWorkBoardBead(b) {

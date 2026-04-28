@@ -263,10 +263,26 @@ func createOrUpdateRecoveryBead(parentID, agentName, failureType, message, nodeC
 		return
 	}
 
-	// Link via caused-by dep.
+	// Link via caused-by dep to the source TOP-level bead. Cleric foundation
+	// (spi-h2d7yn) constrains caused-by to point at the wizard's source bead,
+	// not the failed step bead — clerics reason about the overall task, not
+	// the step in isolation.
 	if recoveryID != "" && deps.AddDepTyped != nil {
 		if derr := deps.AddDepTyped(recoveryID, parentID, "caused-by"); derr != nil {
 			fmt.Fprintf(os.Stderr, "warning: add caused-by dep %s→%s: %s\n", recoveryID, parentID, derr)
+		}
+	}
+
+	// Link via related dep to the most-recent peer recovery bead on the same
+	// source (if any). The cleric reads the chain through `related` to load
+	// prior proposals, rejections, takeovers, and outcomes as context. We
+	// link only to the most-recent peer; traversal across older peers is
+	// linear via successive related edges.
+	if recoveryID != "" && deps.AddDepTyped != nil {
+		if peerID := mostRecentPeerRecovery(parentID, recoveryID); peerID != "" {
+			if derr := deps.AddDepTyped(recoveryID, peerID, "related"); derr != nil {
+				fmt.Fprintf(os.Stderr, "warning: add related dep %s→%s: %s\n", recoveryID, peerID, derr)
+			}
 		}
 	}
 
@@ -412,6 +428,27 @@ func seedRecoveryMetadata(recoveryID, parentID, failureType, nodeCtx string) {
 	if err := meta.Apply(recoveryID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seed recovery metadata on %s: %s\n", recoveryID, err)
 	}
+}
+
+// mostRecentPeerRecovery returns the ID of the most recently created recovery
+// bead caused-by sourceBeadID, excluding excludeID (the bead we're currently
+// creating, which would otherwise self-reference). Returns "" if no peer
+// exists. Cleric foundation (spi-h2d7yn) uses this to link a fresh recovery
+// to its predecessor via a `related` dep so the cleric can walk the history
+// of prior proposals, rejections, takeovers, and outcomes.
+func mostRecentPeerRecovery(sourceBeadID, excludeID string) string {
+	peers, err := recovery.PeerRecoveries(sourceBeadID)
+	if err != nil || len(peers) == 0 {
+		return ""
+	}
+	// peers are sorted most-recent first by PeerRecoveries.
+	for _, p := range peers {
+		if p.ID == excludeID {
+			continue
+		}
+		return p.ID
+	}
+	return ""
 }
 
 func buildRecoveryComment(parentID, agentName, failureType, message, nodeCtx string) string {

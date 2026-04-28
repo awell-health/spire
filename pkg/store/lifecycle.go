@@ -158,6 +158,10 @@ func stampStatusTransitionBestEffort(beadID, newStatus string) {
 		err = StampStarted(beadID, now)
 	case "closed":
 		err = StampClosed(beadID, now)
+	case "awaiting_review":
+		// No dedicated lifecycle stamp yet — review-time observability is
+		// surfaced via recovery-bead metadata. Future work may add a column.
+		return
 	default:
 		return
 	}

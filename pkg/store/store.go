@@ -213,6 +213,45 @@ func FindParentID(deps []*beads.Dependency) string {
 // because the beads library has it in internal/types but does not re-export it.
 const StatusHooked beads.Status = "hooked"
 
+// StatusAwaitingReview is the "awaiting_review" bead status — a recovery bead
+// the cleric has annotated with a ProposedAction and is now blocked on a
+// human gate (approve / reject+comment / takeover). Allowed transitions are
+// in_progress → awaiting_review → {closed, in_progress}. Cleric foundation
+// (spi-h2d7yn) adds the literal; the cleric runtime (future) is the only
+// path that transitions a bead into it.
+const StatusAwaitingReview beads.Status = "awaiting_review"
+
+// AllowedStatusTransitions maps each known status to the set of statuses it
+// may transition into. The map is intentionally NOT exhaustive on the source
+// side — only entries that participate in cleric foundation transitions are
+// pinned here. ValidStatusTransition treats unlisted source statuses as
+// permissive (returns true) so this map is purely an additive contract for
+// statuses that have explicit invariants the cleric epic depends on.
+var AllowedStatusTransitions = map[beads.Status]map[beads.Status]bool{
+	beads.StatusInProgress: {
+		StatusAwaitingReview: true,
+	},
+	StatusAwaitingReview: {
+		beads.StatusClosed:     true,
+		beads.StatusInProgress: true,
+	},
+}
+
+// ValidStatusTransition reports whether a status transition is permitted by
+// the constrained-transition map. Source statuses without a constraint entry
+// are treated as permissive so existing untyped transitions keep working.
+// Same-status writes (no-op transitions) are always allowed.
+func ValidStatusTransition(from, to beads.Status) bool {
+	if from == to {
+		return true
+	}
+	allowed, ok := AllowedStatusTransitions[from]
+	if !ok {
+		return true
+	}
+	return allowed[to]
+}
+
 // --- Filter helpers ---
 
 // StatusPtr returns a pointer to a beads.Status value.
@@ -240,6 +279,8 @@ func ParseStatus(s string) beads.Status {
 		return beads.StatusClosed
 	case "hooked":
 		return StatusHooked
+	case "awaiting_review":
+		return StatusAwaitingReview
 	default:
 		return beads.StatusOpen
 	}

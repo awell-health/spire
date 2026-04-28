@@ -182,6 +182,12 @@ func ValidateGraph(graph *FormulaStepGraph) error {
 		if step.Action != "" && !ValidOpcode(step.Action) {
 			return fmt.Errorf("step %q: invalid action %q", name, step.Action)
 		}
+		// wait steps are externally driven: completion is gated on every key
+		// declared in `produces` having a value in outputs. A wait step with
+		// no produced keys can never complete, so reject at validation time.
+		if step.Kind == StepKindWait && len(step.Produces) == 0 {
+			return fmt.Errorf("step %q: kind=wait requires at least one produces key", name)
+		}
 		if step.Workspace != "" && graph.Workspaces != nil {
 			if _, ok := graph.Workspaces[step.Workspace]; !ok {
 				return fmt.Errorf("step %q: workspace %q not declared", name, step.Workspace)

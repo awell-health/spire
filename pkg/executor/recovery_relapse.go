@@ -32,30 +32,18 @@ func defaultRelapseDeps(deps *Deps) relapseDeps {
 	}
 }
 
-// mergedListLearnings combines bead-metadata and SQL-sourced recovery learnings
-// so that relapse detection sees human-authored learnings from `spire resolve`.
+// mergedListLearnings returns bead-metadata-sourced recovery learnings for
+// relapse detection. The legacy SQL-row merge from the deleted
+// pkg/executor/recovery_phase.go is gone; relapse now keys off bead metadata
+// only, which is the surface `spire resolve` writes through. Cleric
+// foundation (spi-h2d7yn) keeps relapse alive as a recovery-bead-creation
+// signal even though the inline recovery cycle is gone.
 func mergedListLearnings(filter store.RecoveryLookupFilter) ([]store.RecoveryLearning, error) {
 	metaLearnings, err := store.ListClosedRecoveryBeads(filter)
 	if err != nil {
-		metaLearnings = nil
+		return nil, err
 	}
-
-	var sqlRows []store.RecoveryLearningRow
-	if filter.SourceBead != "" && filter.FailureClass != "" {
-		sqlRows, _ = store.GetBeadLearningsAuto(filter.SourceBead, filter.FailureClass)
-	} else if filter.FailureClass != "" {
-		limit := filter.Limit
-		if limit <= 0 {
-			limit = 5
-		}
-		sqlRows, _ = store.GetCrossBeadLearningsAuto(filter.FailureClass, limit)
-	}
-
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	return mergeLearnings(metaLearnings, sqlRows, limit), nil
+	return metaLearnings, nil
 }
 
 // checkAndMarkRelapse detects when a prior "clean" recovery for the same source

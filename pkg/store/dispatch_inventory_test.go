@@ -225,6 +225,7 @@ var nonDispatchableAPIs = []string{
 	"StatusPtr",
 	"IssueTypePtr",
 	"ParseStatus",
+	"ValidStatusTransition",
 	"ParseIssueType",
 	"ParseIssueTypeOrTask",
 
