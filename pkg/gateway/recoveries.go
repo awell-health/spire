@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/cleric"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -70,6 +69,13 @@ var (
 	recoveriesGetDepsFunc          = store.GetDepsWithMeta
 	recoveriesSetMetadataFunc      = store.SetBeadMetadataMap
 
+	// recoveriesUnhookStepBeadFunc transitions a hooked step bead back to
+	// open. The gate handler calls this when it resets a parked
+	// wait_for_gate step so the interpreter can re-activate the step on
+	// the next dispatch — without it, graph_interpreter.go filters
+	// hooked steps out of the ready set and the formula stays parked.
+	recoveriesUnhookStepBeadFunc = store.UnhookStepBead
+
 	// recoveriesGraphStateLoadFunc / recoveriesGraphStateSaveFunc are the
 	// per-test-overridable seams for reading and writing the cleric agent's
 	// GraphState. Production wires the file-backed store; tests inject an
@@ -95,8 +101,14 @@ var (
 
 // loadGraphStateLocal loads from the file-backed graph state store using
 // the same ConfigDir resolution as the local executor. Cluster-mode
-// towers persist graph state in Dolt; that path is not exercised by the
-// gate endpoint in v1 — the desktop is local-native today.
+// towers persist graph state in Dolt; cluster-native installs must
+// inject a DoltGraphStateStore via configureGraphStateStore at server
+// construction (or fail closed).
+//
+// Spi-skfsia finding 4: the prior implementation defaulted to ~/.spire,
+// which silently diverged from the executor's ~/.config/spire. The fix
+// routes through config.Dir() — the same resolver pkg/executor uses so
+// gateway and executor see the same runtime directory.
 func loadGraphStateLocal(agentName string) (*executor.GraphState, error) {
 	fs := &executor.FileGraphStateStore{ConfigDir: configDirFn}
 	return fs.Load(agentName)
@@ -107,18 +119,12 @@ func saveGraphStateLocal(agentName string, gs *executor.GraphState) error {
 	return fs.Save(agentName, gs)
 }
 
-// configDirFn resolves the spire config dir for the current process. We
-// avoid importing pkg/config directly so the gateway stays decoupled
-// from the steward's config plumbing.
-var configDirFn = func() (string, error) {
-	// pkg/executor.GraphStatePath uses configDirFn to assemble
-	// <dir>/runtime/<agent>/graph_state.json. Reuse the same env var the
-	// CLI uses (SPIRE_CONFIG_DIR) when set; fall back to ~/.spire.
-	if d := envSpireConfigDir(); d != "" {
-		return d, nil
-	}
-	return defaultSpireConfigDir()
-}
+// configDirFn resolves the spire config dir for the current process.
+// Defaults to pkg/config.Dir, which honors SPIRE_CONFIG_DIR and
+// otherwise returns ~/.config/spire — the canonical local-native dir
+// the executor and steward both read/write. Tests override this var
+// to point at a t.TempDir.
+var configDirFn = config.Dir
 
 // sanitizeAgentNameLocal mirrors pkg/steward.SanitizeK8sLabel exactly.
 // Inlined to avoid the gateway → steward import (steward depends on
@@ -585,38 +591,43 @@ func (s *Server) handleRecoveryGate(w http.ResponseWriter, r *http.Request, id s
 	// Locate the cleric agent's GraphState. The cleric's name follows
 	// the steward dispatch convention: "cleric-" + sanitized recovery
 	// bead ID (see pkg/steward/steward.go:1822).
+	//
+	// Spi-skfsia finding 4: prefer the injected GraphStateStore (set
+	// by cmd/spire at startup with the same store the executor uses)
+	// so cluster-native installs hit Dolt and local-native installs
+	// land in pkg/config.Dir's runtime path. The package-level
+	// load/save seam is the test-overridable fallback.
 	agentName := "cleric-" + recoveriesSanitizeAgentName(id)
-	gs, err := recoveriesGraphStateLoadFunc(agentName)
+	loadFn := recoveriesGraphStateLoadFunc
+	saveFn := recoveriesGraphStateSaveFunc
+	if s.graphStateStore != nil {
+		loadFn = s.graphStateStore.Load
+		saveFn = s.graphStateStore.Save
+	}
+	gs, err := loadFn(agentName)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load graph state: " + err.Error()})
 		return
 	}
 	if gs == nil {
-		// No persisted GraphState yet — this happens when the recovery
-		// bead reached awaiting_review through a path that didn't go
-		// through the cleric formula (e.g. a manually-filed proposal
-		// during HITL bring-up). The desktop's gate is still useful:
-		// we record the decision via metadata + status flip so the
-		// next steward sweep / cleric dispatch picks it up. The wait
-		// step output will be set lazily by the cleric runtime when
-		// it materializes a GraphState for the bead.
-		s.log.Printf("[gateway] gate %s: no graph state for agent %q — recording gate via metadata only", id, agentName)
-	} else if step, ok := gs.Steps[stepWaitForGate]; ok {
-		if step.Outputs == nil {
-			step.Outputs = map[string]string{}
-		}
-		step.Outputs[outputKeyGate] = body.Gate
-		if body.Gate == cleric.GateReject {
-			step.Outputs[outputKeyRejectionComment] = body.Comment
-		} else {
-			delete(step.Outputs, outputKeyRejectionComment)
-		}
-		gs.Steps[stepWaitForGate] = step
-		if err := recoveriesGraphStateSaveFunc(agentName, gs); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "save graph state: " + err.Error()})
-			return
-		}
-	} else {
+		// No persisted GraphState. The cleric formula is the only way a
+		// recovery bead reaches awaiting_review on the formula-driven
+		// path; without graph state the decision has nowhere to land
+		// because no executor path rehydrates cleric_gate metadata into
+		// steps.wait_for_gate.outputs. Returning 409 keeps the operator
+		// in the loop rather than silently writing metadata that the
+		// formula will ignore on the next dispatch.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf(
+				"recovery %s has no graph state for cleric agent %q — gate cannot be applied. "+
+					"This typically means the cleric formula has not run for this recovery yet. "+
+					"Wait for steward to dispatch the cleric, then retry the gate request.",
+				id, agentName),
+		})
+		return
+	}
+	step, ok := gs.Steps[stepWaitForGate]
+	if !ok {
 		// GraphState exists but the wait_for_gate step is absent. This
 		// would mean the cleric formula was edited and an old in-flight
 		// recovery referenced the legacy step layout. Surface as 409
@@ -625,6 +636,54 @@ func (s *Server) handleRecoveryGate(w http.ResponseWriter, r *http.Request, id s
 			"error": fmt.Sprintf("recovery %s graph state has no %q step — formula may be out of date", id, stepWaitForGate),
 		})
 		return
+	}
+	if step.Outputs == nil {
+		step.Outputs = map[string]string{}
+	}
+	step.Outputs[outputKeyGate] = body.Gate
+	if body.Gate == cleric.GateReject {
+		step.Outputs[outputKeyRejectionComment] = body.Comment
+	} else {
+		delete(step.Outputs, outputKeyRejectionComment)
+	}
+	// Reset the wait_for_gate step from `hooked` (the parked runtime
+	// state set by the wait dispatcher) back to `pending` so the
+	// interpreter's hooked filter (graph_interpreter.go:147) lets it
+	// re-evaluate. Without this, the gate output is set but the step
+	// stays parked and the formula never advances.
+	if step.Status == "hooked" {
+		step.Status = "pending"
+	}
+	gs.Steps[stepWaitForGate] = step
+	// Reject path: clear any stale prior proposal/publish state by
+	// resetting decide and publish to pending too. The formula's
+	// cleric.reject step also declares resets=[decide,publish,
+	// wait_for_gate], but doing it here ensures the rejection_comment
+	// is paired with a fresh round even before cleric.reject runs.
+	if body.Gate == cleric.GateReject {
+		for _, sn := range []string{"decide", "publish"} {
+			if ss, ok := gs.Steps[sn]; ok {
+				ss.Status = "pending"
+				ss.Outputs = nil
+				ss.CompletedAt = ""
+				ss.StartedAt = ""
+				gs.Steps[sn] = ss
+			}
+		}
+	}
+	if err := saveFn(agentName, gs); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "save graph state: " + err.Error()})
+		return
+	}
+	// Reopen the wait_for_gate step bead if one is tracked. The graph
+	// interpreter's reactivation logic checks the step bead's status on
+	// the next dispatch and refuses to advance while the bead remains
+	// hooked. Failures are non-fatal — graph state has already been
+	// updated and the steward's hooked-sweep will eventually reconcile.
+	if stepBeadID, ok := gs.StepBeadIDs[stepWaitForGate]; ok && stepBeadID != "" {
+		if err := recoveriesUnhookStepBeadFunc(stepBeadID); err != nil {
+			s.log.Printf("[gateway] gate %s: unhook step bead %s: %v", id, stepBeadID, err)
+		}
 	}
 
 	// Stamp the gate decision onto the recovery bead's metadata so the
@@ -708,17 +767,3 @@ func stampActionsArchmageInline(r *http.Request, id string, bead *store.Bead, ad
 	}
 }
 
-// envSpireConfigDir returns SPIRE_CONFIG_DIR if set, else "".
-func envSpireConfigDir() string {
-	return strings.TrimSpace(os.Getenv("SPIRE_CONFIG_DIR"))
-}
-
-// defaultSpireConfigDir returns ~/.spire (or the OS-equivalent). Pulled
-// out as a stub so tests can override without touching real ~/.
-var defaultSpireConfigDir = func() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(home, ".spire"), nil
-}

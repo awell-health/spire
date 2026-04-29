@@ -34,6 +34,7 @@ import (
 	"github.com/awell-health/spire/pkg/alerts"
 	"github.com/awell-health/spire/pkg/bd"
 	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/cleric"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/executor"
@@ -2106,17 +2107,27 @@ func clericDispatchPhase() string {
 
 // recoveryShouldResume reports whether the steward should unhook the
 // source bead and re-summon the wizard given a closed recovery bead.
-// True iff the cleric's outcome was approve+executed (cleric runtime)
-// OR the legacy recovery cycle wrote a DecisionResume outcome. A
-// takeover outcome (source carries needs-manual label and no outcome
-// here) returns false — the human is expected to fix and unhook
-// manually.
+// True iff cleric.execute recorded a real success AND cleric.finish
+// stamped approve+executed (cleric runtime), OR the legacy recovery
+// cycle wrote a DecisionResume outcome. A takeover outcome (source
+// carries needs-manual label and no outcome here) returns false — the
+// human is expected to fix and unhook manually. A failed cleric.execute
+// (stub gateway, gateway error, non-success result) yields
+// cleric_outcome=approve+failed and execute_success="false"; both gate
+// checks reject so the source bead is left hooked for human takeover.
+//
+// The two conditions (outcome string + strict success marker) are both
+// required: the outcome string is the historical contract and remains
+// the primary check, but the strict marker (spi-skfsia finding 2) is
+// the authoritative signal because it is set ONLY by cleric.Execute on
+// real gateway success. Defending in depth here so any future audit /
+// listing path that also writes the outcome string (without running
+// execute) cannot accidentally trigger a resume.
 func recoveryShouldResume(bead store.Bead) bool {
-	// New cleric runtime (spi-hhkozk): cleric.finish stamps
-	// cleric_outcome=approve+executed when the formula reaches its
-	// finish step. cleric.takeover does NOT stamp this key — the
-	// recovery is closed but the source still carries needs-manual.
-	if bead.Meta("cleric_outcome") == "approve+executed" {
+	// New cleric runtime (spi-hhkozk + spi-skfsia): both the outcome
+	// string AND the strict success marker must agree before resuming.
+	if bead.Meta(cleric.MetadataKeyOutcome) == "approve+executed" &&
+		bead.Meta(cleric.MetadataKeyExecuteSuccess) == "true" {
 		return true
 	}
 	// Legacy in-wizard recovery cycle (pre-foundation): the

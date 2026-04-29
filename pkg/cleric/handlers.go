@@ -254,18 +254,25 @@ func Execute(recoveryBeadID string, deps Deps) HandlerResult {
 
 	now := deps.now().Format(time.RFC3339)
 	resultMeta := map[string]string{
-		"cleric_executed_at": now,
+		"cleric_executed_at":   now,
 		"cleric_executed_verb": pa.Verb,
+		// Default: not successful. Only the success branch below
+		// flips this to "true". cleric.finish and steward's
+		// recoveryShouldResume key on this strict marker rather than
+		// the broader cleric_outcome string.
+		MetadataKeyExecuteSuccess: "false",
 	}
 	successFlag := "false"
 	switch {
 	case gerr == nil && res.Success:
 		resultMeta[MetadataKeyExecuteResult] = res.Message
+		resultMeta[MetadataKeyExecuteSuccess] = "true"
 		successFlag = "true"
 	case gerr == nil && !res.Success:
 		resultMeta[MetadataKeyExecuteResult] = "gateway: " + res.Message
 	case errors.Is(gerr, ErrGatewayUnimplemented):
 		// Stub gateway — record so the human reviewer can take over.
+		// NOT a success: the action never ran.
 		resultMeta[MetadataKeyExecuteResult] = "unimplemented: " + res.Message
 	default:
 		resultMeta[MetadataKeyExecuteResult] = "error: " + gerr.Error()
@@ -408,6 +415,15 @@ func Reject(recoveryBeadID string, deps Deps) HandlerResult {
 //     because the wizard's post-action success isn't known yet — the
 //     wizard observer fills that in when the source bead's next-step
 //     transition fires.
+//
+// Strict success contract (spi-skfsia finding 2): cleric_outcome is
+// only stamped as `approve+executed` when cleric.execute previously
+// recorded MetadataKeyExecuteSuccess="true". A stub gateway, gateway
+// error, or non-success result yields outcome=`approve+failed` instead;
+// pkg/steward.recoveryShouldResume keys on the strict success marker so
+// the source bead is NOT re-summoned in the failure path. The recovery
+// bead still closes — the human reviewer is expected to take over from
+// the failure metadata or file a fresh recovery.
 func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 	if err := requireSeams(deps, "Finish",
 		deps.GetBead, deps.SetBeadMetadata, deps.CloseBead); err != nil {
@@ -422,10 +438,15 @@ func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 	verb := bead.Meta("cleric_proposal_verb")
 	failureClass := bead.Meta("cleric_proposal_failure_class")
 	executeResult := bead.Meta(MetadataKeyExecuteResult)
+	executeSuccess := bead.Meta(MetadataKeyExecuteSuccess)
 	now := deps.now().Format(time.RFC3339)
 
+	outcomeValue := "approve+failed"
+	if executeSuccess == "true" {
+		outcomeValue = "approve+executed"
+	}
 	outcome := map[string]string{
-		MetadataKeyOutcome:              "approve+executed",
+		MetadataKeyOutcome:              outcomeValue,
 		"cleric_outcome_verb":           verb,
 		"cleric_outcome_failure_class":  failureClass,
 		"cleric_outcome_execute_result": executeResult,
@@ -437,8 +458,10 @@ func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 
 	// Record a pending outcome row for the learning loop. The wizard
 	// observer finalizes wizard_post_action_success when the source
-	// bead's next step transitions.
-	if deps.RecordOutcome != nil && verb != "" && failureClass != "" {
+	// bead's next step transitions. Only record on real success — a
+	// failed action shouldn't seed a streak that the observer will then
+	// have to refute.
+	if executeSuccess == "true" && deps.RecordOutcome != nil && verb != "" && failureClass != "" {
 		sourceID, _ := SourceBeadID(recoveryBeadID, deps)
 		targetStep := proposalTargetStep(bead, verb)
 		// Best-effort: don't fail the handler on outcome-write errors.
@@ -456,7 +479,7 @@ func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 
 	if deps.AddComment != nil {
 		_ = deps.AddComment(recoveryBeadID,
-			fmt.Sprintf("cleric.finish: outcome=approve+executed verb=%s failure_class=%s", verb, failureClass))
+			fmt.Sprintf("cleric.finish: outcome=%s verb=%s failure_class=%s", outcomeValue, verb, failureClass))
 	}
 
 	if err := deps.CloseBead(recoveryBeadID); err != nil {
@@ -465,9 +488,10 @@ func Finish(recoveryBeadID string, deps Deps) HandlerResult {
 
 	return HandlerResult{
 		Outputs: map[string]string{
-			"status":        "finished",
-			"verb":          verb,
-			"failure_class": failureClass,
+			"status":          "finished",
+			"verb":            verb,
+			"failure_class":   failureClass,
+			"execute_success": executeSuccess,
 		},
 	}
 }

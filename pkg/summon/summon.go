@@ -96,10 +96,18 @@ func ValidateDispatch(dispatch string) error {
 	return fmt.Errorf("invalid dispatch mode %q: must be sequential, wave, or direct", dispatch)
 }
 
-// Run fetches the bead, gates it on status, transitions open/ready/hooked to
-// in_progress, then delegates to SpawnWizard. Used by the HTTP gateway.
-// Callers with their own candidate-selection logic (e.g. the CLI) should
-// call SpawnWizard directly with an already-gated bead.
+// Run fetches the bead, gates it on status + ownership, transitions
+// open/ready/hooked to in_progress, then delegates to SpawnWizard. Used
+// by the HTTP gateway. Callers with their own candidate-selection logic
+// (e.g. the CLI) should call SpawnWizard directly with an already-gated
+// bead.
+//
+// Atomic guards (spi-skfsia finding 5): the open-recovery and duplicate-
+// live-wizard checks run BEFORE the status mutation. Pre-fix, a hooked
+// bead could flip to in_progress and then get rejected by a downstream
+// guard, leaving the bead stuck in_progress with no wizard alive. The
+// new ordering means a guard failure is observable at the bead level
+// only as "bead unchanged" — exactly what callers expect.
 func Run(beadID, dispatch string) (Result, error) {
 	if err := ValidateDispatch(dispatch); err != nil {
 		return Result{}, err
@@ -116,6 +124,40 @@ func Run(beadID, dispatch string) (Result, error) {
 		return Result{}, fmt.Errorf("target %s is closed — reopen it first (bd update %s --status open)", beadID, beadID)
 	case "deferred":
 		return Result{}, fmt.Errorf("target %s is deferred — set to open or ready first (bd update %s --status open)", beadID, beadID)
+	}
+
+	// Open-recovery guard runs BEFORE the status mutation so a guard
+	// failure leaves the source bead unchanged (still hooked, still open,
+	// still ready — whatever it was). The cleric runtime's single-owner
+	// invariant requires that wizard and cleric never simultaneously
+	// own the same source bead.
+	if has, recoveryID, herr := hasOpenRecovery(bead.ID); herr != nil {
+		log.Printf("warning: single-owner check for %s failed: %v", bead.ID, herr)
+	} else if has {
+		return Result{}, fmt.Errorf("%w: recovery %s is open for source %s — close or take over the recovery first", ErrRecoveryInFlight, recoveryID, bead.ID)
+	}
+
+	// Duplicate live-wizard guard also runs pre-mutation. Pre-fix,
+	// the duplicate check ran inside SpawnWizard after status had
+	// already been flipped, so a duplicate would leave the bead
+	// stranded in in_progress.
+	if Registry != nil {
+		ctx := context.Background()
+		if entries, lerr := Registry.List(ctx); lerr == nil {
+			for _, w := range entries {
+				if w.BeadID != bead.ID {
+					continue
+				}
+				alive, _ := Registry.IsAlive(ctx, w.ID)
+				if !alive {
+					continue
+				}
+				return Result{WizardName: w.ID}, fmt.Errorf("%w: %s for %s", ErrAlreadyRunning, w.ID, bead.ID)
+			}
+		}
+	}
+
+	switch bead.Status {
 	case "hooked":
 		if err := UpdateBeadFunc(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
 			return Result{}, fmt.Errorf("transition hooked bead %s to in_progress: %w", beadID, err)

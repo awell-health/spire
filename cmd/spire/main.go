@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/awell-health/spire/pkg/cleric"
+	"github.com/awell-health/spire/pkg/clericexec"
 	"github.com/awell-health/spire/pkg/gateway"
 	"github.com/spf13/cobra"
 )
@@ -14,6 +16,15 @@ func init() {
 	// Propagate the binary's version string into the gateway so the
 	// desktop app's /api/v1/tower response surfaces the real release.
 	gateway.Version = version
+
+	// Wire the production cleric.GatewayClient (spi-skfsia finding 2):
+	// without this, cleric.execute calls the stubGateway which returns
+	// ErrGatewayUnimplemented for every verb, and approved actions are
+	// recorded as `approve+executed` even though nothing ran. The
+	// in-process adapter dispatches to summon.Run / reset.ResetBead /
+	// pkg/close.RunLifecycle / pkg/store directly so cleric.execute
+	// actually applies the proposal in local-native mode.
+	cleric.DefaultGatewayClient = clericexec.New()
 
 	// --- Simple commands (no flags or minimal) ---
 	rootCmd.AddCommand(registerCmd)

@@ -33,6 +33,7 @@ import (
 	closepkg "github.com/awell-health/spire/pkg/close"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/graph"
 	"github.com/awell-health/spire/pkg/metrics/report"
 	"github.com/awell-health/spire/pkg/olap"
@@ -66,6 +67,16 @@ type Server struct {
 	dataDir  string
 	apiToken string
 
+	// graphStateStore, when non-nil, is the executor.GraphStateStore the
+	// recoveries handler reads/writes for the cleric agent's GraphState.
+	// Spi-skfsia finding 4: injected here so the gateway uses the same
+	// store / config-dir resolution as the executor and steward
+	// (cluster-native: DoltGraphStateStore; local-native: file-backed by
+	// pkg/config.Dir). Nil falls back to the package-level
+	// recoveriesGraphStateLoadFunc/SaveFunc seam, which uses configDirFn
+	// (pkg/config.Dir by default).
+	graphStateStore executor.GraphStateStore
+
 	devModeLogOnce sync.Once
 }
 
@@ -85,6 +96,18 @@ func NewServer(addr string, target Triggerable, logger *log.Logger, dataDir stri
 		dataDir:  dataDir,
 		apiToken: apiToken,
 	}
+}
+
+// SetGraphStateStore injects the executor.GraphStateStore the recoveries
+// handler uses to read/write cleric agent GraphState. Called by cmd/spire
+// at startup with the same store the executor / steward use, so the
+// gate handler can advance the cleric formula instead of looking at a
+// different runtime dir (spi-skfsia finding 4).
+//
+// Pass nil to clear the override and fall back to the package-level
+// load/save seam (which uses pkg/config.Dir by default).
+func (s *Server) SetGraphStateStore(store executor.GraphStateStore) {
+	s.graphStateStore = store
 }
 
 // Run blocks on the HTTP server until ctx is done, then shuts down with a

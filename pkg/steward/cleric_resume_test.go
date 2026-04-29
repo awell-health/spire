@@ -10,7 +10,13 @@ import (
 // Test the recoveryShouldResume helper used by SweepHookedSteps to
 // distinguish closed-recovery beads that should resume the wizard from
 // those that should not (takeover, no outcome). Cleric runtime
-// (spi-hhkozk).
+// (spi-hhkozk) + strict success contract (spi-skfsia finding 2).
+//
+// The strict contract requires BOTH cleric_outcome=approve+executed AND
+// cleric_execute_success=true. The two-key check defends against an
+// audit/listing path that writes the outcome string without the action
+// having actually run; only cleric.Execute (on real success) sets the
+// strict marker.
 func TestRecoveryShouldResume(t *testing.T) {
 	cases := []struct {
 		name string
@@ -18,9 +24,25 @@ func TestRecoveryShouldResume(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "cleric finish outcome triggers resume",
-			meta: map[string]string{"cleric_outcome": "approve+executed"},
+			name: "cleric finish + execute success triggers resume",
+			meta: map[string]string{
+				"cleric_outcome":         "approve+executed",
+				"cleric_execute_success": "true",
+			},
 			want: true,
+		},
+		{
+			name: "outcome approve+executed without success marker does NOT resume",
+			meta: map[string]string{"cleric_outcome": "approve+executed"},
+			want: false,
+		},
+		{
+			name: "outcome approve+failed even with success marker does NOT resume",
+			meta: map[string]string{
+				"cleric_outcome":         "approve+failed",
+				"cleric_execute_success": "true",
+			},
+			want: false,
 		},
 		{
 			name: "cleric takeover does not resume",

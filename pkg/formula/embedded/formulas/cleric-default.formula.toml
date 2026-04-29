@@ -49,10 +49,17 @@ needs = ["decide"]
 title = "Publish proposal to recovery bead"
 
 # Step 3: Park until gateway sets gate output.
+#
+# Only `gate` is required to unpark this step — approve/takeover paths
+# never produce a rejection_comment, and the produced-output enforcement
+# in pkg/executor/graph_actions.go would otherwise block them. Reject
+# paths still write rejection_comment to outputs; downstream readers
+# (cleric.reject, the new cleric prompt-builder) treat its presence as
+# optional context.
 [steps.wait_for_gate]
 kind = "wait"
 needs = ["publish"]
-produces = ["gate", "rejection_comment"]
+produces = ["gate"]
 title = "Wait for human gate"
 
 # Step 4a: Execute the approved action (approve path).

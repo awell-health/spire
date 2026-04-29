@@ -33,6 +33,19 @@ const MetadataKeyOutcome = "cleric_outcome"
 // error message) so the desktop surface can show what happened.
 const MetadataKeyExecuteResult = "cleric_execute_result"
 
+// MetadataKeyExecuteSuccess is the strict, machine-checkable success
+// marker cleric.execute writes when the gateway returned a real
+// success (Success=true, no error). cleric.finish refuses to stamp
+// `cleric_outcome=approve+executed` unless this key reads "true";
+// pkg/steward.recoveryShouldResume keys on this marker to decide
+// whether to unhook + re-summon the source bead.
+//
+// This is the post-fix contract for spi-skfsia: a stub gateway
+// (ErrGatewayUnimplemented) or any gateway error must NOT produce a
+// successful resume. The marker is only set by cleric.Execute on real
+// success — no audit/listing path writes it.
+const MetadataKeyExecuteSuccess = "cleric_execute_success"
+
 // MetadataKeyGate, MetadataKeyGateSetAt, and MetadataKeyGateComment are
 // written by the gateway's POST /api/v1/recoveries/{id}/gate handler
 // (pkg/gateway, spi-sn0qg3) to record the human reviewer's decision. The

@@ -322,6 +322,26 @@ func resolveGlobalGraphStateStore() (executor.GraphStateStore, error) {
 	return resolveGraphStateStoreForCLI("")
 }
 
+// resolveGlobalGraphStateStoreOrLocal mirrors
+// resolveGraphStateStoreOrLocal but for the tower-global resolver — used
+// by the gateway server constructor where a missing tower binding must
+// not crash the gateway. Spi-skfsia finding 4: gateway needs to share
+// the executor/steward graph-state store so the cleric HITL gate hits
+// the canonical runtime dir; falling back to a bare FileGraphStateStore
+// keyed by configDir is acceptable because the gate handler itself
+// surfaces 409 when a particular agent's graph state is missing.
+func resolveGlobalGraphStateStoreOrLocal() executor.GraphStateStore {
+	store, err := resolveGlobalGraphStateStore()
+	if err == nil {
+		return store
+	}
+	fmt.Fprintf(os.Stderr,
+		"[spire] gateway graph-state store running in local-only mode: %s\n",
+		friendlyIdentityError(err),
+	)
+	return &executor.FileGraphStateStore{ConfigDir: configDir}
+}
+
 // friendlyIdentityError converts the typed errors from
 // resolveRepoIdentity / ResolveGraphStateStore into messages suitable
 // for end-user CLI output.

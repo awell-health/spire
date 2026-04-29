@@ -202,6 +202,12 @@ func TestExecute_CallsGatewayAndRecordsOutcome(t *testing.T) {
 	if rec := fs.beadsByID["spi-rec"]; rec.Metadata[MetadataKeyExecuteResult] == "" {
 		t.Error("execute result not persisted")
 	}
+	// Strict success marker (spi-skfsia finding 2): execute writes
+	// MetadataKeyExecuteSuccess so finish + recoveryShouldResume can
+	// gate on a single, machine-checkable signal.
+	if got := fs.beadsByID["spi-rec"].Metadata[MetadataKeyExecuteSuccess]; got != "true" {
+		t.Errorf("MetadataKeyExecuteSuccess = %q, want \"true\" on real success", got)
+	}
 }
 
 func TestExecute_GatewayUnimplementedSurfacesAsRecorded(t *testing.T) {
@@ -227,6 +233,12 @@ func TestExecute_GatewayUnimplementedSurfacesAsRecorded(t *testing.T) {
 	rec := fs.beadsByID["spi-rec"]
 	if got := rec.Metadata[MetadataKeyExecuteResult]; !strings.HasPrefix(got, "unimplemented:") {
 		t.Errorf("execute_result = %q; want prefix unimplemented:", got)
+	}
+	// Strict success marker (spi-skfsia finding 2): execute MUST write
+	// "false" on unimplemented so finish + recoveryShouldResume reject
+	// the resume-success path.
+	if got := rec.Metadata[MetadataKeyExecuteSuccess]; got != "false" {
+		t.Errorf("MetadataKeyExecuteSuccess = %q, want \"false\" on unimplemented", got)
 	}
 }
 
@@ -262,6 +274,10 @@ func TestFinish_PersistsOutcomeAndCloses(t *testing.T) {
 			"cleric_proposal_verb":          "resummon",
 			"cleric_proposal_failure_class": "build-error",
 			MetadataKeyExecuteResult:        "applied",
+			// Strict success marker (spi-skfsia finding 2):
+			// finish only stamps approve+executed when execute
+			// recorded a real success.
+			MetadataKeyExecuteSuccess: "true",
 		},
 	}
 	res := Finish("spi-rec", fs.toDeps())
@@ -274,6 +290,62 @@ func TestFinish_PersistsOutcomeAndCloses(t *testing.T) {
 	}
 	if got := rec.Metadata[MetadataKeyOutcome]; got != "approve+executed" {
 		t.Errorf("outcome = %q, want approve+executed", got)
+	}
+}
+
+// TestFinish_RefusesApproveExecutedOnFailedExecution pins the strict
+// success contract (spi-skfsia finding 2): cleric.execute reporting
+// gateway-unimplemented or gateway-error must NOT result in
+// cleric_outcome=approve+executed. The recovery still closes (humans
+// audit failures from the bead's metadata) but the outcome is
+// approve+failed so steward.recoveryShouldResume refuses to re-summon.
+func TestFinish_RefusesApproveExecutedOnFailedExecution(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID: "spi-rec",
+		Metadata: map[string]string{
+			"cleric_proposal_verb":          "resummon",
+			"cleric_proposal_failure_class": "build-error",
+			MetadataKeyExecuteResult:        "unimplemented: stub gateway",
+			MetadataKeyExecuteSuccess:       "false",
+		},
+	}
+	res := Finish("spi-rec", fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("finish err: %v", res.Err)
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if rec.Status != StatusClosed {
+		t.Errorf("recovery status = %q, want closed (finish always closes)", rec.Status)
+	}
+	if got := rec.Metadata[MetadataKeyOutcome]; got != "approve+failed" {
+		t.Errorf("outcome = %q, want approve+failed (execute did not succeed)", got)
+	}
+}
+
+// TestFinish_RefusesApproveExecutedWithoutMarker covers the missing-
+// marker case: an old recovery bead that never had MetadataKeyExecuteSuccess
+// written (e.g. a legacy code path or partially-migrated state) must
+// also be treated as not-successful — the absence of the strict marker
+// is read as "execute did not succeed" rather than as "default to true".
+func TestFinish_RefusesApproveExecutedWithoutMarker(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID: "spi-rec",
+		Metadata: map[string]string{
+			"cleric_proposal_verb":          "resummon",
+			"cleric_proposal_failure_class": "build-error",
+			MetadataKeyExecuteResult:        "applied",
+			// No MetadataKeyExecuteSuccess.
+		},
+	}
+	res := Finish("spi-rec", fs.toDeps())
+	if res.Err != nil {
+		t.Fatalf("finish err: %v", res.Err)
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if got := rec.Metadata[MetadataKeyOutcome]; got != "approve+failed" {
+		t.Errorf("outcome = %q, want approve+failed (no success marker)", got)
 	}
 }
 
@@ -442,6 +514,7 @@ func TestFinish_RecordsPendingOutcome(t *testing.T) {
 			"cleric_proposal_verb":          "resummon",
 			"cleric_proposal_failure_class": "step-failure:implement",
 			MetadataKeyExecuteResult:        "applied",
+			MetadataKeyExecuteSuccess:       "true",
 			MetadataKeyProposal:             `{"verb":"resummon","reasoning":"r","failure_class":"step-failure:implement"}`,
 			"source_step":                   "implement",
 		},

@@ -87,6 +87,11 @@ func runDaemon(interval, debounce time.Duration, once bool, database, remote, br
 		wireGatewayLogArtifactReader(ctx)
 		go func() {
 			srv := gateway.NewServer(serve, d, nil, "", "")
+			// Spi-skfsia finding 4: inject the same graph-state store
+			// the executor / steward use so the cleric's HITL gate
+			// hits the canonical runtime dir (~/.config/spire by
+			// default) instead of the legacy ~/.spire fallback.
+			srv.SetGraphStateStore(resolveGlobalGraphStateStoreOrLocal())
 			if err := srv.Run(ctx); err != nil {
 				log.Printf("[gateway] exited: %s", err)
 			}

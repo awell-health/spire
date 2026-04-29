@@ -156,6 +156,11 @@ func cmdServe(args []string) error {
 		wireGatewayLogArtifactReader(ctx)
 		go func() {
 			srv := gateway.NewServer(apiAddr, nil, log.Default(), dataDir, apiToken)
+			// Spi-skfsia finding 4: inject the same graph-state store
+			// the executor / steward use so the cleric's HITL gate
+			// hits the canonical runtime dir (~/.config/spire by
+			// default) instead of the legacy ~/.spire fallback.
+			srv.SetGraphStateStore(resolveGlobalGraphStateStoreOrLocal())
 			if err := srv.Run(ctx); err != nil && err != context.Canceled {
 				log.Printf("[gateway/api] exited: %s", err)
 			}

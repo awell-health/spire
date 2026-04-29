@@ -29,6 +29,7 @@ type recoveryStubs struct {
 	setMetadataCalls  []setMetadataCall
 	graphLoads        []string
 	graphSaves        []graphSaveCall
+	unhookStepBead    []string
 }
 
 type labelCall struct{ id, label string }
@@ -83,6 +84,7 @@ func withRecoveryStubs(t *testing.T, env *recoveryEnv) {
 	prevGraphSave := recoveriesGraphStateSaveFunc
 	prevNow := recoveriesNowFunc
 	prevSanitize := recoveriesSanitizeAgentName
+	prevUnhook := recoveriesUnhookStepBeadFunc
 
 	recoveriesStoreEnsureFunc = func(string) error { return nil }
 	recoveriesGetBeadFunc = func(id string) (store.Bead, error) {
@@ -176,6 +178,10 @@ func withRecoveryStubs(t *testing.T, env *recoveryEnv) {
 	}
 	recoveriesNowFunc = func() time.Time { return env.now }
 	recoveriesSanitizeAgentName = sanitizeAgentNameLocal
+	recoveriesUnhookStepBeadFunc = func(stepID string) error {
+		env.calls.unhookStepBead = append(env.calls.unhookStepBead, stepID)
+		return nil
+	}
 
 	t.Cleanup(func() {
 		recoveriesStoreEnsureFunc = prevEnsure
@@ -192,6 +198,7 @@ func withRecoveryStubs(t *testing.T, env *recoveryEnv) {
 		recoveriesGraphStateSaveFunc = prevGraphSave
 		recoveriesNowFunc = prevNow
 		recoveriesSanitizeAgentName = prevSanitize
+		recoveriesUnhookStepBeadFunc = prevUnhook
 	})
 }
 
@@ -755,12 +762,14 @@ func TestHandleRecoveryGate_TakeoverHappyPath(t *testing.T) {
 	}
 }
 
-// TestHandleRecoveryGate_NoGraphState_StillRecordsGate covers the
-// transient case where a recovery bead reaches awaiting_review without a
-// persisted GraphState (e.g. manually-filed during HITL bring-up). The
-// handler should still record the gate via metadata + status flip so the
-// next dispatch can pick it up.
-func TestHandleRecoveryGate_NoGraphState_StillRecordsGate(t *testing.T) {
+// TestHandleRecoveryGate_NoGraphState_Returns409 covers the case where
+// a recovery bead reaches awaiting_review without a persisted GraphState.
+// The cleric formula is the only path to awaiting_review — without graph
+// state the human's gate decision has nowhere to land because no executor
+// path rehydrates the metadata into wait_for_gate.outputs. Returning 409
+// keeps the operator in the loop rather than silently writing metadata
+// the formula will ignore on the next dispatch (spi-skfsia finding 3).
+func TestHandleRecoveryGate_NoGraphState_Returns409(t *testing.T) {
 	env := newRecoveryEnv()
 	env.beads["spi-r1"] = store.Bead{Type: "recovery", Status: "awaiting_review"}
 	// Note: env.graph["cleric-spi-r1"] is not set
@@ -771,20 +780,19 @@ func TestHandleRecoveryGate_NoGraphState_StillRecordsGate(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/recoveries/spi-r1/gate", body)
 	rec := httptest.NewRecorder()
 	s.handleRecoveryGate(rec, req, "spi-r1")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body=%q)", rec.Code, rec.Body.String())
 	}
 
-	// No graph save expected.
+	// No graph save, no metadata write, no status flip.
 	if len(env.calls.graphSaves) != 0 {
 		t.Errorf("graphSaves = %d, want 0 (no GraphState present)", len(env.calls.graphSaves))
 	}
-	// Metadata + status flip still happened.
-	if len(env.calls.setMetadataCalls) == 0 {
-		t.Errorf("setMetadata not called")
+	if len(env.calls.setMetadataCalls) != 0 {
+		t.Errorf("setMetadata called %d times; want 0 — handler must refuse on missing graph state", len(env.calls.setMetadataCalls))
 	}
-	if len(env.calls.updateBeadCalls) == 0 || env.calls.updateBeadCalls[0]["status"] != "in_progress" {
-		t.Errorf("status flip missing or wrong: %+v", env.calls.updateBeadCalls)
+	if len(env.calls.updateBeadCalls) != 0 {
+		t.Errorf("updateBead called %d times; want 0 — bead status must not flip on 409", len(env.calls.updateBeadCalls))
 	}
 }
 
@@ -900,6 +908,151 @@ func TestHandleRecoveryByID_UnknownAction(t *testing.T) {
 	s.handleRecoveryByID(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestHandleRecoveryGate_ParkedApproveAdvancesToExecute pins the
+// regression for spi-skfsia finding 1: the gate handler must reset the
+// wait_for_gate step status from `hooked` (the realistic post-park
+// state) back to `pending` so the interpreter's hooked-filter
+// (graph_interpreter.go:147) lets the formula re-evaluate the wait step
+// and advance to execute on the next dispatch. Pre-fix the step would
+// remain parked because its outputs were updated but its status stayed
+// hooked.
+func TestHandleRecoveryGate_ParkedApproveAdvancesToExecute(t *testing.T) {
+	env := newRecoveryEnv()
+	env.beads["spi-r1"] = store.Bead{Type: "recovery", Status: "awaiting_review"}
+	env.graph["cleric-spi-r1"] = &executor.GraphState{
+		BeadID: "spi-r1",
+		Steps: map[string]executor.StepState{
+			"decide":        {Status: "completed"},
+			"publish":       {Status: "completed"},
+			stepWaitForGate: {Status: "hooked", Outputs: map[string]string{}},
+		},
+		StepBeadIDs: map[string]string{
+			stepWaitForGate: "spi-r1-wait",
+		},
+	}
+	withRecoveryStubs(t, env)
+	s := newTestServer(&fakeTrigger{})
+
+	body := bytes.NewReader([]byte(`{"gate":"approve"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/recoveries/spi-r1/gate", body)
+	rec := httptest.NewRecorder()
+	s.handleRecoveryGate(rec, req, "spi-r1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+
+	if len(env.calls.graphSaves) != 1 {
+		t.Fatalf("graphSaves = %d, want 1", len(env.calls.graphSaves))
+	}
+	saved := env.calls.graphSaves[0].state.Steps[stepWaitForGate]
+	if saved.Status != "pending" {
+		t.Errorf("wait_for_gate.Status = %q, want pending (must reset from hooked so interpreter re-evaluates)", saved.Status)
+	}
+	if saved.Outputs["gate"] != "approve" {
+		t.Errorf("wait_for_gate.outputs.gate = %q, want approve", saved.Outputs["gate"])
+	}
+
+	// Step bead must be unhooked too so the interpreter's reactivation
+	// logic doesn't refuse to advance.
+	if len(env.calls.unhookStepBead) != 1 || env.calls.unhookStepBead[0] != "spi-r1-wait" {
+		t.Errorf("unhookStepBead calls = %v, want [spi-r1-wait]", env.calls.unhookStepBead)
+	}
+}
+
+// TestHandleRecoveryGate_ParkedRejectResetsAndPreservesComment pins the
+// reject path: from a parked wait_for_gate state, gate=reject must
+// reset wait_for_gate's step status and the prior decide/publish steps
+// to `pending` so a fresh cleric round starts, and the rejection_comment
+// must land in both the step outputs (where cleric.reject reads it) and
+// the bead metadata (where the audit/listing surfaces read it).
+func TestHandleRecoveryGate_ParkedRejectResetsAndPreservesComment(t *testing.T) {
+	env := newRecoveryEnv()
+	env.beads["spi-r1"] = store.Bead{Type: "recovery", Status: "awaiting_review"}
+	env.graph["cleric-spi-r1"] = &executor.GraphState{
+		BeadID: "spi-r1",
+		Steps: map[string]executor.StepState{
+			"decide":        {Status: "completed", Outputs: map[string]string{"result": "stale"}},
+			"publish":       {Status: "completed", Outputs: map[string]string{"status": "awaiting_review"}},
+			stepWaitForGate: {Status: "hooked", Outputs: map[string]string{}},
+		},
+	}
+	withRecoveryStubs(t, env)
+	s := newTestServer(&fakeTrigger{})
+
+	body := bytes.NewReader([]byte(`{"gate":"reject","comment":"try a different approach"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/recoveries/spi-r1/gate", body)
+	rec := httptest.NewRecorder()
+	s.handleRecoveryGate(rec, req, "spi-r1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+
+	saved := env.calls.graphSaves[0].state
+	wfg := saved.Steps[stepWaitForGate]
+	if wfg.Status != "pending" {
+		t.Errorf("wait_for_gate.Status = %q, want pending", wfg.Status)
+	}
+	if wfg.Outputs["gate"] != "reject" {
+		t.Errorf("wait_for_gate.outputs.gate = %q, want reject", wfg.Outputs["gate"])
+	}
+	if wfg.Outputs["rejection_comment"] != "try a different approach" {
+		t.Errorf("wait_for_gate.outputs.rejection_comment = %q, want %q",
+			wfg.Outputs["rejection_comment"], "try a different approach")
+	}
+	if dec := saved.Steps["decide"]; dec.Status != "pending" || dec.Outputs != nil {
+		t.Errorf("decide reset to wrong state: status=%q outputs=%v; want pending/nil", dec.Status, dec.Outputs)
+	}
+	if pub := saved.Steps["publish"]; pub.Status != "pending" || pub.Outputs != nil {
+		t.Errorf("publish reset to wrong state: status=%q outputs=%v; want pending/nil", pub.Status, pub.Outputs)
+	}
+
+	// Metadata records the comment too.
+	if env.calls.setMetadataCalls[0].meta[cleric.MetadataKeyGateComment] != "try a different approach" {
+		t.Errorf("metadata %s = %q; want %q",
+			cleric.MetadataKeyGateComment,
+			env.calls.setMetadataCalls[0].meta[cleric.MetadataKeyGateComment],
+			"try a different approach")
+	}
+}
+
+// TestHandleRecoveryGate_ParkedTakeoverUnparks pins the takeover-from-
+// parked-state path: the gate handler resets the wait_for_gate step
+// status to `pending` so the formula advances to handle_takeover (which
+// labels source needs-manual + closes recovery). Without the reset the
+// step stays hooked and the formula never reaches the takeover branch.
+func TestHandleRecoveryGate_ParkedTakeoverUnparks(t *testing.T) {
+	env := newRecoveryEnv()
+	env.beads["spi-r1"] = store.Bead{Type: "recovery", Status: "awaiting_review"}
+	env.graph["cleric-spi-r1"] = &executor.GraphState{
+		BeadID: "spi-r1",
+		Steps: map[string]executor.StepState{
+			stepWaitForGate: {Status: "hooked"},
+		},
+	}
+	withRecoveryStubs(t, env)
+	s := newTestServer(&fakeTrigger{})
+
+	body := bytes.NewReader([]byte(`{"gate":"takeover"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/recoveries/spi-r1/gate", body)
+	rec := httptest.NewRecorder()
+	s.handleRecoveryGate(rec, req, "spi-r1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+
+	saved := env.calls.graphSaves[0].state.Steps[stepWaitForGate]
+	if saved.Status != "pending" {
+		t.Errorf("wait_for_gate.Status = %q, want pending", saved.Status)
+	}
+	if saved.Outputs["gate"] != "takeover" {
+		t.Errorf("wait_for_gate.outputs.gate = %q, want takeover", saved.Outputs["gate"])
+	}
+	// rejection_comment must NOT be present on takeover.
+	if _, ok := saved.Outputs["rejection_comment"]; ok {
+		t.Errorf("rejection_comment present on takeover; want absent")
 	}
 }
 
