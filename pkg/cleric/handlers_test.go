@@ -638,6 +638,126 @@ func TestReject_RecordsFinalizedRejectOutcome(t *testing.T) {
 	}
 }
 
+// --- End-to-end happy path (spi-skfsia acceptance) ---
+
+// TestE2E_PublishApproveExecuteFinishResumes pins the spi-skfsia
+// acceptance criterion that calls for at least one end-to-end
+// local-native flow: cleric proposal → human approve → action
+// executes → source bead is eligible to resume. The chain assertion
+// is the key value here — each link is also unit-tested in isolation
+// elsewhere, but only this test proves they compose into the
+// approve+executed contract that pkg/steward.recoveryShouldResume
+// keys on.
+//
+// The gate-write step (which lives in pkg/gateway and resets the
+// wait_for_gate step status) is exercised in pkg/gateway tests; here
+// we represent it as the metadata side-effect that downstream cleric
+// handlers actually read.
+func TestE2E_PublishApproveExecuteFinishResumes(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+	gw := &fakeGateway{result: ExecuteResult{Success: true, Message: "resummoned wizard-spi-src"}}
+	fs.gateway = gw
+
+	// 1. Cleric proposes (Publish).
+	proposalJSON := `{"verb":"resummon","reasoning":"transient flake","failure_class":"build-error"}`
+	if res := Publish("spi-rec", proposalJSON, fs.toDeps()); res.Err != nil {
+		t.Fatalf("publish err: %v", res.Err)
+	}
+	if got := fs.beadsByID["spi-rec"].Status; got != StatusAwaitingReview {
+		t.Fatalf("after publish: status = %q, want %q", got, StatusAwaitingReview)
+	}
+
+	// 2. Human approves (gate handler, simulated by transitioning
+	//    the recovery bead back to in_progress — which mirrors what
+	//    the gateway does after writing the wait_for_gate output).
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID:       "spi-rec",
+		Status:   StatusInProgress,
+		Metadata: fs.beadsByID["spi-rec"].Metadata,
+	}
+
+	// 3. Cleric executes the approved action.
+	if res := Execute("spi-rec", fs.toDeps()); res.Err != nil {
+		t.Fatalf("execute err: %v", res.Err)
+	}
+	if len(gw.called) != 1 {
+		t.Fatalf("gateway called %d times, want 1", len(gw.called))
+	}
+	rec := fs.beadsByID["spi-rec"]
+	if got := rec.Metadata[MetadataKeyExecuteSuccess]; got != "true" {
+		t.Errorf("after execute: %s = %q, want \"true\"", MetadataKeyExecuteSuccess, got)
+	}
+
+	// 4. Cleric finishes; recovery closes with approve+executed.
+	if res := Finish("spi-rec", fs.toDeps()); res.Err != nil {
+		t.Fatalf("finish err: %v", res.Err)
+	}
+	rec = fs.beadsByID["spi-rec"]
+	if rec.Status != StatusClosed {
+		t.Errorf("after finish: status = %q, want %q", rec.Status, StatusClosed)
+	}
+	if got := rec.Metadata[MetadataKeyOutcome]; got != "approve+executed" {
+		t.Errorf("after finish: %s = %q, want \"approve+executed\"", MetadataKeyOutcome, got)
+	}
+
+	// 5. Resume contract: recoveryShouldResume keys on BOTH the
+	//    outcome string AND the strict success marker. Both must
+	//    agree for the source bead to be eligible to resume; the
+	//    individual recoveryShouldResume test in pkg/steward
+	//    validates the gate logic itself.
+	if rec.Metadata[MetadataKeyOutcome] != "approve+executed" ||
+		rec.Metadata[MetadataKeyExecuteSuccess] != "true" {
+		t.Errorf("resume contract not satisfied: outcome=%q success=%q",
+			rec.Metadata[MetadataKeyOutcome], rec.Metadata[MetadataKeyExecuteSuccess])
+	}
+}
+
+// TestE2E_UnimplementedExecuteDoesNotResume pins the failure-path
+// counterpart: a stub gateway returning ErrGatewayUnimplemented yields
+// approve+failed, and the resume contract is not satisfied — the
+// source bead must stay hooked for human takeover.
+func TestE2E_UnimplementedExecuteDoesNotResume(t *testing.T) {
+	fs := newFakeStore()
+	fs.beadsByID["spi-rec"] = store.Bead{ID: "spi-rec", Status: StatusInProgress}
+	fs.beadsByID["spi-src"] = store.Bead{ID: "spi-src", Status: "hooked"}
+	fs.linkCausedBy("spi-rec", "spi-src")
+	gw := &fakeGateway{result: ExecuteResult{Message: "stub"}, err: ErrGatewayUnimplemented}
+	fs.gateway = gw
+
+	proposalJSON := `{"verb":"resummon","reasoning":"transient","failure_class":"build-error"}`
+	if res := Publish("spi-rec", proposalJSON, fs.toDeps()); res.Err != nil {
+		t.Fatalf("publish err: %v", res.Err)
+	}
+	fs.beadsByID["spi-rec"] = store.Bead{
+		ID:       "spi-rec",
+		Status:   StatusInProgress,
+		Metadata: fs.beadsByID["spi-rec"].Metadata,
+	}
+	if res := Execute("spi-rec", fs.toDeps()); res.Err != nil {
+		t.Fatalf("execute err: %v", res.Err)
+	}
+	if res := Finish("spi-rec", fs.toDeps()); res.Err != nil {
+		t.Fatalf("finish err: %v", res.Err)
+	}
+
+	rec := fs.beadsByID["spi-rec"]
+	if got := rec.Metadata[MetadataKeyOutcome]; got != "approve+failed" {
+		t.Errorf("outcome = %q, want approve+failed (stub gateway)", got)
+	}
+	if got := rec.Metadata[MetadataKeyExecuteSuccess]; got != "false" {
+		t.Errorf("%s = %q, want \"false\"", MetadataKeyExecuteSuccess, got)
+	}
+	// Source bead must NOT have moved out of hooked: the resume
+	// contract isn't satisfied, so steward.recoveryShouldResume
+	// returns false and the source stays hooked for human takeover.
+	if src := fs.beadsByID["spi-src"]; src.Status != "hooked" {
+		t.Errorf("source status = %q, want hooked (resume contract not satisfied)", src.Status)
+	}
+}
+
 // helpers
 
 func containsString(haystack []string, needle string) bool {
