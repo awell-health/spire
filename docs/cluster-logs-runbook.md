@@ -410,20 +410,20 @@ restarting.
 kubectl logs <pod> -c spire-log-exporter --previous
 
 # Common terminal errors (sidecar exits 1 only on misconfiguration):
-#   "config: SPIRE_LOG_ROOT env is required"
-#   "config: SPIRE_TOWER env is required"
+#   "config: logexport: Config.Root is required"
+#   "SPIRE_TOWER env is required"
 #   "dolt: ping <host>:<port>/<tower>: ..."
-#   "store: NewGCS: bucket ...: storage: bucket doesn't exist"
+#   "store: logartifact: bucket \"<name>\" does not exist; create it with: gsutil mb gs://<name>"
 ```
 
 **Causes and fixes:**
 
 | Terminal error | Cause | Fix |
 |----------------|-------|-----|
-| `SPIRE_LOG_ROOT env is required` | Operator did not stamp the env. | Confirm the operator pod's image has the `LogExporterEnabled` plumbing (spi-k1cnof). Roll the operator: `kubectl rollout restart deploy/spire-operator -n spire`. |
-| `SPIRE_TOWER env is required` | Same, but for tower. | Same fix. |
+| `config: logexport: Config.Root is required` | The pod's `SPIRE_LOG_ROOT` env was not stamped, so the tailer has no shared directory to read. | Confirm the operator pod's image has the `LogExporterEnabled` plumbing (spi-k1cnof). Roll the operator: `kubectl rollout restart deploy/spire-operator -n spire`. |
+| `SPIRE_TOWER env is required` | Tower env not stamped on the agent pod. | Same fix. |
 | `dolt: ping ...` | Dolt is not reachable from the pod. | Check `BEADS_DOLT_SERVER_HOST/PORT` env on the failing pod; confirm the `spire-dolt` Service resolves; check NetworkPolicy. |
-| `bucket doesn't exist` | `LOGSTORE_GCS_BUCKET` points at a missing bucket. | Confirm `logStore.gcs.bucket` value matches a real bucket; create the bucket and re-roll. |
+| `store: logartifact: bucket "<name>" does not exist` | `LOGSTORE_GCS_BUCKET` points at a missing bucket (caught at construction by the `Attrs` probe in `pkg/logartifact.NewGCS`). | Confirm `logStore.gcs.bucket` value matches a real bucket; create the bucket and re-roll. |
 
 The exporter exits **0** for runtime upload/manifest failures — those
 do *not* crashloop the sidecar. Crashloops are misconfiguration only,
