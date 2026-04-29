@@ -43,6 +43,25 @@ for the server/client matrix.
 
 ---
 
+## Awell GKE log setup checklist
+
+Dense one-liner-per-step checklist for the cluster log path. Detail
+for every item lives in [cluster-logs-runbook.md](cluster-logs-runbook.md);
+verification lives in [cluster-logs-smoke-test.md](cluster-logs-smoke-test.md).
+
+- [ ] Create three **distinct** GCS buckets — bundle / backup / log — with the right storage classes (Standard / Nearline-or-Coldline / Standard-or-Nearline). [Runbook § 2](cluster-logs-runbook.md#2-the-three-buckets--do-not-reuse).
+- [ ] Apply a GCS lifecycle rule on the log bucket matching `logStore.retentionDays` (default 90 days). [Runbook § 3](cluster-logs-runbook.md#3-bucket-setup).
+- [ ] Bind the Workload Identity GSA with `roles/storage.objectAdmin` on **all three** buckets — not just the bundle bucket. [Runbook § 4](cluster-logs-runbook.md#4-iam).
+- [ ] Annotate the `spire-operator` and `spire-gateway` KSAs with the GSA email so the operator can stamp pods and the gateway can read GCS. [Runbook § 4](cluster-logs-runbook.md#workload-identity-binding).
+- [ ] In your overlay, set `logStore.backend=gcs`, `logStore.gcs.bucket=<your log bucket>`, `logStore.gcs.prefix=<optional per-tower>`, and `logExporter.enabled=true`. [Runbook § 5](cluster-logs-runbook.md#5-helm-values-reference).
+- [ ] Confirm `gcp.serviceAccountJson` is supplied at install time (or `gcp.secretName` references an external Secret) — every GCP-consuming feature reuses the same credential. [§ 4 of this doc](#4-provision-gcp-resources).
+- [ ] Raise Cloud Logging retention on `_Default` if your team relies on it for forensic search beyond 30 days (`gcloud logging buckets update _Default --location=global --retention-days=N`). [Runbook § 6](cluster-logs-runbook.md#6-retention--three-independent-axes).
+- [ ] Run `helm upgrade --install` and watch the rollout — render is fail-fast on missing log bucket / GCP auth. [§ 5 of this doc](#5-first-helm-install).
+- [ ] Run [cluster-logs-smoke-test.md](cluster-logs-smoke-test.md) end-to-end against a real bead. PASS = sidecar uploads + manifest rows + gateway list + CLI pretty + board parity.
+- [ ] Bookmark [cluster-logs-runbook.md § 7](cluster-logs-runbook.md#7-troubleshooting) for missing-bucket / missing-IAM / exporter-crash / 410-Gone / redacted-or-denied recoveries.
+
+---
+
 ## 1. Prerequisites
 
 This runbook assumes a clean GCP project. Set a shell variable for the project ID — every command below references it.

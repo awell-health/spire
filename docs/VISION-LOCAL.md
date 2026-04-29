@@ -43,3 +43,38 @@ A local-native tower can sync to a DoltHub remote for team coordination, attach 
 - **No managed ops** — you are the SRE
 
 For any of those, see [VISION-CLUSTER.md](VISION-CLUSTER.md).
+
+## Migrating local `spire logs` workflows to cluster mode
+
+Local-native log behaviour is unchanged. `spire logs <wizard>`,
+`spire logs pretty <bead>`, and the board's Logs tab continue to read
+files under `~/.local/share/spire/wizards/<wizard-name>/...` exactly
+as before. If your tower is local-native, nothing about this section
+applies — keep using the commands you already use.
+
+What changes when you attach a laptop to a **cluster-as-truth** tower
+(`spire tower attach-cluster --tower <name> --url https://<gateway> --token <bearer>`):
+
+- `spire logs pretty <bead-id>` resolves through the gateway against
+  the tower manifest, not the local filesystem. The CLI sets
+  `X-Spire-Scope: engineer` automatically so engineer-only artifacts
+  render raw (mirroring local-native behaviour).
+- `spire logs <wizard-name>` (the legacy file-tail) is local-only and
+  will report no logs in cluster-attach mode — the cluster wizard's
+  files live under an ephemeral pod filesystem that no longer exists.
+  Use `spire logs pretty <bead-id>` to read provider transcripts and
+  the board's Logs tab to browse the full artifact list.
+- `~/.local/share/spire/wizards/...` is empty in cluster-attach mode.
+  Old transcripts captured during prior local-native runs stay where
+  they were — read them with `spire logs pretty` against a
+  local-native tower (`spire tower use <local-tower-name>`) or with
+  `tail -f` on the file directly.
+- The board's empty-state on a fresh cluster bead is explicit ("no
+  logs yet") and the same gateway path populates as the bead runs —
+  it is not a regression.
+
+The architectural decision behind this split lives in design bead
+spi-7wzwk2. The operator-facing setup, retention model, and failure
+modes are documented in
+[cluster-logs-runbook.md](cluster-logs-runbook.md) and
+[cluster-logs-smoke-test.md](cluster-logs-smoke-test.md).

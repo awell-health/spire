@@ -321,6 +321,30 @@ wants to drive *remote execution* from a local control plane is in
 attached mode, not cluster-native (see
 [VISION-ATTACHED.md](VISION-ATTACHED.md)).
 
+## Logs and observability
+
+Cluster-native log persistence and read paths are documented in their
+own runbook because the operator surface is non-trivial: a dedicated
+GCS bucket, the passive `spire-log-exporter` sidecar on every agent
+pod, the gateway as the single user-facing read surface, and three
+independent retention axes (Cloud Logging / GCS / tower manifest).
+
+- [cluster-logs-runbook.md](cluster-logs-runbook.md) — operator
+  reference: bucket setup, IAM, Helm values, retention, and the
+  failure modes operators actually hit.
+- [cluster-logs-smoke-test.md](cluster-logs-smoke-test.md) — manual
+  end-to-end verification proving board / CLI / gateway parity for a
+  completed cluster bead.
+- Design rationale: bead **spi-7wzwk2** ("Persistent cloud-native log
+  export for cluster mode").
+
+Local-native and cluster-native share the same `pkg/logartifact`
+abstraction; the difference is whether bytes live on a laptop
+filesystem or in a GCS bucket. Desktop, board, and CLI clients of a
+cluster-attach tower never read from Kubernetes, GCS, or pod
+filesystems directly — every log read goes through
+`/api/v1/beads/{id}/logs[/...]`.
+
 ## How it connects to the other modes
 
 The coordination protocol is identical across modes. The steward code in the cluster is the same code that runs locally. The wizard pod spec is derived from the same canonical pod builder used by the local k8s backend. Every invariant is enforced once, in code, and exercised in tests across both surfaces.
