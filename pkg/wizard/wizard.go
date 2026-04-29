@@ -600,18 +600,19 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	// Signal handler — registry cleanup is no longer done here; the entry
 	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
 	//
-	// Forensic dump: when this wizard/apprentice gets SIGTERM/SIGINT, write
-	// a snapshot of the system process state to a known location BEFORE
-	// os.Exit so we can identify who killed us. Operators have observed
-	// recurring mid-stream apprentice deaths with no clear sender (steward
-	// off, spire down/shutdown not invoked, no jetsam). The forensic
-	// snapshot captures the parent process, PGID, and full ps aux at the
-	// moment the signal arrives — the sender's command line should be
-	// visible in that snapshot if it is still running.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
+	// SIGTERM is the legitimate shutdown signal (from `spire dismiss` /
+	// `spire shutdown` via Backend.TerminateBead). We exit cleanly on
+	// SIGTERM. SIGINT we now SURVIVE — a recurring kill source we have
+	// not been able to identify is delivering SIGINT to apprentices on
+	// long-running implements; the apprentice has no business dying on
+	// it (no controlling tty, never invoked from an interactive shell).
+	// For both signals we still write a forensic dump so an operator can
+	// triage the source from the captured ps snapshot.
+	//
+	// Forensic dump: snapshot signal name, our PID/PPID/PGID, parent
+	// process info, and full `ps axo` output. The sender's command line
+	// should be visible in that snapshot if it is still alive.
+	dumpForensics := func(sig os.Signal) string {
 		pid := os.Getpid()
 		ppid := os.Getppid()
 		pgid, _ := syscall.Getpgid(pid)
@@ -634,7 +635,20 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			f.Close()
 		}
 		log("APPRENTICE SIGNAL: received %v (pid=%d ppid=%d pgid=%d), forensics: %s", sig, pid, ppid, pgid, forensicPath)
-		os.Exit(1)
+		return forensicPath
+	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for sig := range sigCh {
+			dumpForensics(sig)
+			if sig == syscall.SIGTERM {
+				// Legitimate shutdown — exit.
+				os.Exit(1)
+			}
+			// SIGINT (or anything else we Notify on): survive.
+			log("APPRENTICE SIGNAL: surviving %v — continuing implement", sig)
+		}
 	}()
 
 	// 5. Claim the bead (skip if --review-fix or --apprentice — already claimed by executor)
