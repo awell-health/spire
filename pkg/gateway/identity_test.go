@@ -277,12 +277,14 @@ func TestPostBeadComment_NoIdentityFallsBackToActor(t *testing.T) {
 // rule: header identity overrides any body.From the desktop sent. Pins
 // the audit-trust contract in the plan.
 func TestSendMessage_HeaderWinsOverBodyFrom(t *testing.T) {
-	// store.Ensure inside sendMessage will fail on an empty data dir;
-	// short-circuit by capturing the identity resolution before we hit
-	// the storage path. We do this by replacing the dataDir with a
-	// non-existent path and reading the log line we added.
+	// Pin dataDir to t.TempDir so effectiveDataDir does not silently
+	// fall back to BEADS_DIR from the environment — that fallback would
+	// route this test's writes into whatever real beads store the
+	// developer / CI host has configured. The handler still aborts at
+	// store.Ensure on the empty temp dir before reaching CreateBead,
+	// which is enough to exercise the identity-resolution log line.
 	var logBuf bytes.Buffer
-	s := &Server{log: log.New(&logBuf, "", 0)}
+	s := &Server{log: log.New(&logBuf, "", 0), dataDir: t.TempDir()}
 
 	body := strings.NewReader(`{"to":"wizard","message":"hi","from":"daemon"}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/messages", body)
@@ -341,12 +343,12 @@ func TestAppendArchmageLabels_StampsIdentity(t *testing.T) {
 // underlying bead carries the calling archmage on the dolt commit and
 // the message audit row.
 func TestSendMessage_AuthorAndFromUseHeader(t *testing.T) {
-	// Same as TestSendMessage_HeaderWinsOverBodyFrom: log-driven assertion
-	// because the underlying store.CreateBead would need a real beads
-	// store to reach the author-stamp step. We verify the in-handler
-	// resolution that runs before store access.
+	// Same as TestSendMessage_HeaderWinsOverBodyFrom — pin dataDir to a
+	// temp dir so the BEADS_DIR env-var fallback in effectiveDataDir
+	// cannot route writes to a real beads store. store.Ensure on the
+	// empty temp dir still fails before CreateBead.
 	var logBuf bytes.Buffer
-	s := &Server{log: log.New(&logBuf, "", 0)}
+	s := &Server{log: log.New(&logBuf, "", 0), dataDir: t.TempDir()}
 
 	body := strings.NewReader(`{"to":"wizard","message":"hi"}`)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/messages", body)
