@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // LogArtifactRecord is the JSON projection of one manifest row served on
@@ -99,6 +100,53 @@ func (c *Client) ListAllBeadLogs(ctx context.Context, beadID string) ([]LogArtif
 			break
 		}
 		cursor = page.NextCursor
+	}
+	return out, nil
+}
+
+// LogEvent mirrors pkg/gateway.LogEvent — the JSON projection of one
+// log line returned by the bead-logs follow endpoint. The artifact ID
+// + sequence pair uniquely identifies the line; clients use the pair
+// for dedup when merging multiple polls.
+type LogEvent struct {
+	Sequence   uint64    `json:"sequence"`
+	Timestamp  time.Time `json:"timestamp,omitempty"`
+	Stream     string    `json:"stream"`
+	Line       string    `json:"line"`
+	ArtifactID string    `json:"artifact_id"`
+}
+
+// FollowResponse is the envelope for GET /api/v1/beads/{id}/logs?follow=true.
+// Cursor is opaque base64 — clients pass it back verbatim on the next
+// request. Done is true when the bead has terminated and no more
+// events will appear; clients stop polling on done=true.
+type FollowResponse struct {
+	Events []LogEvent `json:"events"`
+	Cursor string     `json:"cursor,omitempty"`
+	Done   bool       `json:"done"`
+}
+
+// FollowBeadLogs calls GET /api/v1/beads/{id}/logs?follow=true&cursor=<...>
+// and returns the response envelope. cursor is the opaque value
+// returned by a prior call (or "" for an initial fetch).
+//
+// Returns ErrNotFound when the bead is missing on the server side.
+// Other non-2xx statuses surface as *HTTPError. The caller is
+// responsible for the polling loop — typical cadence is once per
+// second until Done=true.
+func (c *Client) FollowBeadLogs(ctx context.Context, beadID, cursor string) (FollowResponse, error) {
+	if beadID == "" {
+		return FollowResponse{}, errors.New("gatewayclient: bead ID is required")
+	}
+	q := url.Values{}
+	q.Set("follow", "true")
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	path := "/api/v1/beads/" + beadID + "/logs?" + q.Encode()
+	var out FollowResponse
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return FollowResponse{}, err
 	}
 	return out, nil
 }

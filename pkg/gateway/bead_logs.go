@@ -173,9 +173,18 @@ func (s *Server) handleBeadLogsRoute(w http.ResponseWriter, r *http.Request, bea
 // land alongside the rows without a header-only contract. Empty bead
 // returns 200 with an empty list — callers distinguish "no logs yet"
 // from "bead missing" via the bead-resolve 404.
+//
+// When the request carries ?follow=true, control is handed to the
+// follow handler which serves a different envelope (events instead of
+// manifest rows). The shared path keeps URL surface tight so clients
+// only need to remember /logs.
 func (s *Server) listBeadLogs(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if isFollowRequest(r) {
+		s.followBeadLogs(w, r, id)
 		return
 	}
 	if err := logsStoreEnsureFunc(s.effectiveDataDir()); err != nil {

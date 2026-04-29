@@ -2,23 +2,35 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/awell-health/spire/pkg/board/logstream"
+	"github.com/awell-health/spire/pkg/gateway"
+	"github.com/awell-health/spire/pkg/gatewayclient"
+	"github.com/awell-health/spire/pkg/logartifact"
 	"github.com/awell-health/spire/pkg/observability"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+// signalNotify is overridable so tests can drive the contextOnInterrupt
+// goroutine without sending real signals to the test process.
+var signalNotify = func(ch chan os.Signal) {
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+}
 
 var logsCmd = &cobra.Command{
 	Use:   "logs [name]",
@@ -67,6 +79,17 @@ var logsPrettyCmd = &cobra.Command{
 	},
 }
 
+var logsFollowCmd = &cobra.Command{
+	Use:   "follow <bead-id>",
+	Short: "Follow live log events for a bead through the gateway",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		interval, _ := cmd.Flags().GetDuration("interval")
+		streamFilter, _ := cmd.Flags().GetString("stream")
+		return runLogsFollow(args[0], interval, streamFilter)
+	},
+}
+
 func init() {
 	logsCmd.Flags().Bool("daemon", false, "Tail the daemon log")
 	logsCmd.Flags().Bool("dolt", false, "Tail the dolt server log")
@@ -80,6 +103,10 @@ func init() {
 	logsPrettyCmd.Flags().String("provider", "", "Limit to a single provider (claude, codex)")
 	logsPrettyCmd.Flags().Bool("expand", false, "Render long bodies in full instead of truncating")
 	logsCmd.AddCommand(logsPrettyCmd)
+
+	logsFollowCmd.Flags().Duration("interval", time.Second, "Poll cadence (e.g. 1s, 500ms); minimum 200ms")
+	logsFollowCmd.Flags().String("stream", "", "Limit to a single stream (stdout, stderr, transcript)")
+	logsCmd.AddCommand(logsFollowCmd)
 }
 
 func cmdLogs(args []string) error {
@@ -399,6 +426,201 @@ func resolveLogSource() (logstream.Source, bool, error) {
 		return logstream.NewGatewaySource(client, true), true, nil
 	}
 	return logstream.NewLocalSource(filepath.Join(doltGlobalDir(), "wizards")), false, nil
+}
+
+// runLogsFollow polls the bead-logs follow endpoint for live events
+// and prints them to stdout one line per event. Cluster-attach mode
+// hits the remote gateway; local-native opens a LocalStore against
+// the active dolt instance and calls FollowOnce in-process so the
+// user gets the same UX without a running gateway.
+//
+// The polling loop terminates when the gateway returns done=true
+// (typically pod exit / bead close) or the user interrupts. On HTTP
+// error the loop retries with exponential backoff up to 30s and the
+// last cursor is reused so no events are dropped on transient
+// failures.
+func runLogsFollow(beadID string, interval time.Duration, streamFilter string) error {
+	if d := resolveBeadsDir(); d != "" {
+		os.Setenv("BEADS_DIR", d)
+	}
+	if interval < 200*time.Millisecond {
+		interval = 200 * time.Millisecond
+	}
+
+	ctx, cancel := contextOnInterrupt()
+	defer cancel()
+
+	gatewayPoll, localPoll, err := resolveFollowSource(beadID)
+	if err != nil {
+		return err
+	}
+
+	cursor := ""
+	backoff := interval
+	for {
+		var events []gatewayclient.LogEvent
+		var nextCursor string
+		var done bool
+		var pollErr error
+		switch {
+		case gatewayPoll != nil:
+			var resp gatewayclient.FollowResponse
+			resp, pollErr = gatewayPoll(ctx, cursor)
+			events = resp.Events
+			nextCursor = resp.Cursor
+			done = resp.Done
+		case localPoll != nil:
+			events, nextCursor, done, pollErr = localPoll(ctx, cursor)
+		default:
+			return fmt.Errorf("no follow source available")
+		}
+		if pollErr != nil {
+			if errors.Is(pollErr, context.Canceled) || errors.Is(pollErr, context.DeadlineExceeded) {
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "follow: poll error: %s (retrying in %s)\n", pollErr, backoff)
+			if !sleepCtx(ctx, backoff) {
+				return nil
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+			}
+			continue
+		}
+		backoff = interval
+
+		for _, ev := range events {
+			if streamFilter != "" && ev.Stream != streamFilter {
+				continue
+			}
+			fmt.Println(ev.Line)
+		}
+		cursor = nextCursor
+
+		if done {
+			return nil
+		}
+		if !sleepCtx(ctx, interval) {
+			return nil
+		}
+	}
+}
+
+// resolveFollowSource picks the live-follow backend for the active
+// tower. Gateway-mode towers return a closure that hits the remote
+// gateway's /logs?follow=true endpoint; local-native returns a
+// closure that runs the same FollowOnce logic in-process against a
+// LocalStore.
+//
+// Exactly one of the two return values is non-nil on success.
+func resolveFollowSource(beadID string) (
+	func(ctx context.Context, cursor string) (gatewayclient.FollowResponse, error),
+	func(ctx context.Context, cursor string) ([]gatewayclient.LogEvent, string, bool, error),
+	error,
+) {
+	if t, err := activeTowerConfigFunc(); err == nil && t != nil && t.IsGateway() {
+		client, cerr := store.NewGatewayClientForTower(t)
+		if cerr != nil {
+			return nil, nil, fmt.Errorf("logs follow: build gateway client: %w", cerr)
+		}
+		return func(ctx context.Context, cursor string) (gatewayclient.FollowResponse, error) {
+			return client.FollowBeadLogs(ctx, beadID, cursor)
+		}, nil, nil
+	}
+
+	// Local-native path. Open a LocalStore against the active dolt
+	// instance and call FollowOnce in-process. Same wire shape as the
+	// gateway path so the polling loop above does not branch on it.
+	if _, err := ensureStore(); err != nil {
+		return nil, nil, fmt.Errorf("logs follow: ensure store: %w", err)
+	}
+	db, ok := store.ActiveDB()
+	if !ok || db == nil {
+		return nil, nil, fmt.Errorf("logs follow: active dolt DB unavailable")
+	}
+	root := filepath.Join(doltGlobalDir(), "wizards")
+	localStore, err := logartifact.NewLocal(root, db)
+	if err != nil {
+		return nil, nil, fmt.Errorf("logs follow: local store: %w", err)
+	}
+
+	return nil, func(ctx context.Context, cursor string) ([]gatewayclient.LogEvent, string, bool, error) {
+		bead, gerr := store.GetBead(beadID)
+		if gerr != nil {
+			return nil, "", false, gerr
+		}
+		events, nextCursor, done, ferr := gateway.FollowOnce(
+			ctx, localStore, gateway.NoopLiveTail(),
+			logartifact.ScopeEngineer,
+			beadID, cursor,
+			beadStatusTerminal(bead.Status),
+		)
+		if ferr != nil {
+			return nil, "", false, ferr
+		}
+		// Re-shape gateway.LogEvent into gatewayclient.LogEvent so the
+		// polling loop has one consumer type. Field set is identical.
+		out := make([]gatewayclient.LogEvent, len(events))
+		for i, ev := range events {
+			out[i] = gatewayclient.LogEvent{
+				Sequence:   ev.Sequence,
+				Timestamp:  ev.Timestamp,
+				Stream:     ev.Stream,
+				Line:       ev.Line,
+				ArtifactID: ev.ArtifactID,
+			}
+		}
+		return out, nextCursor, done, nil
+	}, nil
+}
+
+// beadStatusTerminal mirrors pkg/gateway's predicate so the local CLI
+// path computes done with the same rules the gateway uses.
+func beadStatusTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "closed", "done", "merged", "discarded", "completed":
+		return true
+	}
+	return false
+}
+
+// sleepCtx blocks for d or until ctx is cancelled, whichever first.
+// Returns true on completion of the full duration, false if ctx
+// fired. Used by the follow loop so SIGINT terminates promptly even
+// during a long inter-poll wait.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// contextOnInterrupt returns a cancellable context that fires when
+// the process receives SIGINT or SIGTERM. The cancel function must
+// be called by the caller to release the signal handler — defer it
+// at the call site.
+func contextOnInterrupt() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signalNotify(ch)
+		select {
+		case <-ch:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // runLogsPretty discovers the latest transcript for a bead and renders

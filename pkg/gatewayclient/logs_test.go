@@ -150,6 +150,80 @@ func TestFetchBeadLogRaw_AsEngineerSetsHeader(t *testing.T) {
 	}
 }
 
+// TestFollowBeadLogs_RoundTrip exercises the follow endpoint client.
+// The server response decodes into a FollowResponse, the request URL
+// stamps follow=true and any cursor the caller provides, and the
+// returned cursor + done flag round-trip unchanged.
+func TestFollowBeadLogs_RoundTrip(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.Path + "?" + r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(FollowResponse{
+			Events: []LogEvent{
+				{ArtifactID: "log-a", Sequence: 0, Stream: "transcript", Line: "alpha"},
+				{ArtifactID: "log-a", Sequence: 6, Stream: "transcript", Line: "beta"},
+			},
+			Cursor: "next-cursor",
+			Done:   false,
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	resp, err := c.FollowBeadLogs(context.Background(), "spi-x", "prev-cursor")
+	if err != nil {
+		t.Fatalf("FollowBeadLogs: %v", err)
+	}
+	if !strings.Contains(gotURL, "follow=true") {
+		t.Errorf("URL %q missing follow=true", gotURL)
+	}
+	if !strings.Contains(gotURL, "cursor=prev-cursor") {
+		t.Errorf("URL %q missing cursor=prev-cursor", gotURL)
+	}
+	if len(resp.Events) != 2 || resp.Events[0].Line != "alpha" {
+		t.Errorf("events = %+v, want alpha+beta", resp.Events)
+	}
+	if resp.Cursor != "next-cursor" || resp.Done {
+		t.Errorf("cursor/done = %q,%v want next-cursor,false", resp.Cursor, resp.Done)
+	}
+}
+
+// TestFollowBeadLogs_DoneTerminatesPolling guards the contract that a
+// done=true response signals the client to stop polling. The cursor
+// may or may not be set on a done response.
+func TestFollowBeadLogs_DoneTerminatesPolling(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(FollowResponse{
+			Events: []LogEvent{},
+			Done:   true,
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	resp, err := c.FollowBeadLogs(context.Background(), "spi-x", "")
+	if err != nil {
+		t.Fatalf("FollowBeadLogs: %v", err)
+	}
+	if !resp.Done {
+		t.Errorf("done = false, want true")
+	}
+}
+
+// TestFollowBeadLogs_NotFoundMapsToErrNotFound matches the 404
+// behavior of ListBeadLogs so error handling stays uniform across
+// the bead-logs surface.
+func TestFollowBeadLogs_NotFoundMapsToErrNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"bead not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	_, err := c.FollowBeadLogs(context.Background(), "spi-nope", "")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
 // TestFetchBeadLogRaw_404MapsToErrNotFound and 410 (artifact bytes
 // removed by lifecycle) also surface as ErrNotFound — both mean
 // "you can't read this artifact" and the caller treats them the same.
