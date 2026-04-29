@@ -51,7 +51,51 @@ func ParseLogRecords(resourceLogs []*logspb.ResourceLogs, defaultTower string) L
 				case "tool_decision", "user_prompt":
 					result.ToolEvents = append(result.ToolEvents, parseGenericToolEvent(lr, provider, kind, res, tower, ts))
 				default:
-					log.Printf("[otel] skipping unknown log event: %s", eventName)
+					// Don't silently discard the event body. claude_code (and
+					// other providers) report internal_error / mcp_server_*
+					// / hook_execution_* / compaction / etc. via OTLP — the
+					// names are unfamiliar to spire's parser, but the bodies
+					// carry the diagnostic payload (error messages, stack
+					// traces, hook IDs). Log the full record so an operator
+					// tailing daemon.error.log can see what the provider
+					// actually reported, and so we have ground truth when an
+					// apprentice dies and we need to correlate.
+					var fields []string
+					fields = append(fields, fmt.Sprintf("event=%s", eventName))
+					fields = append(fields, fmt.Sprintf("provider=%s", provider))
+					fields = append(fields, fmt.Sprintf("tower=%s", tower))
+					fields = append(fields, fmt.Sprintf("ts=%s", ts.UTC().Format(time.RFC3339Nano)))
+					if sev := lr.GetSeverityText(); sev != "" {
+						fields = append(fields, fmt.Sprintf("severity=%s", sev))
+					}
+					if sevNum := lr.GetSeverityNumber(); sevNum != 0 {
+						fields = append(fields, fmt.Sprintf("severity_number=%d", sevNum))
+					}
+					if tid := lr.GetTraceId(); len(tid) > 0 {
+						fields = append(fields, fmt.Sprintf("trace_id=%x", tid))
+					}
+					if sid := lr.GetSpanId(); len(sid) > 0 {
+						fields = append(fields, fmt.Sprintf("span_id=%x", sid))
+					}
+					if b := lr.GetBody(); b != nil {
+						if sv := b.GetStringValue(); sv != "" {
+							fields = append(fields, fmt.Sprintf("body=%q", sv))
+						} else if kvl := b.GetKvlistValue(); kvl != nil {
+							var bodyKVs []string
+							for _, kv := range kvl.GetValues() {
+								bodyKVs = append(bodyKVs, fmt.Sprintf("%s=%s", kv.GetKey(), kvStringValue(kv)))
+							}
+							fields = append(fields, fmt.Sprintf("body={%s}", strings.Join(bodyKVs, " ")))
+						}
+					}
+					for _, kv := range lr.GetAttributes() {
+						k := kv.GetKey()
+						if k == "log.event.name" || k == "event.name" {
+							continue
+						}
+						fields = append(fields, fmt.Sprintf("%s=%s", k, kvStringValue(kv)))
+					}
+					log.Printf("[otel] unparsed log event %s", strings.Join(fields, " "))
 				}
 			}
 		}

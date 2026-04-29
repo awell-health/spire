@@ -599,10 +599,41 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	// Signal handler — registry cleanup is no longer done here; the entry
 	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
+	//
+	// Forensic dump: when this wizard/apprentice gets SIGTERM/SIGINT, write
+	// a snapshot of the system process state to a known location BEFORE
+	// os.Exit so we can identify who killed us. Operators have observed
+	// recurring mid-stream apprentice deaths with no clear sender (steward
+	// off, spire down/shutdown not invoked, no jetsam). The forensic
+	// snapshot captures the parent process, PGID, and full ps aux at the
+	// moment the signal arrives — the sender's command line should be
+	// visible in that snapshot if it is still running.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
+		sig := <-sigCh
+		pid := os.Getpid()
+		ppid := os.Getppid()
+		pgid, _ := syscall.Getpgid(pid)
+		forensicPath := filepath.Join(os.TempDir(), fmt.Sprintf("spire-apprentice-signal-%d-%d.log", pid, time.Now().Unix()))
+		if f, err := os.Create(forensicPath); err == nil {
+			fmt.Fprintf(f, "=== apprentice signal capture ===\n")
+			fmt.Fprintf(f, "time:        %s\n", time.Now().Format(time.RFC3339Nano))
+			fmt.Fprintf(f, "signal:      %v\n", sig)
+			fmt.Fprintf(f, "wizard_name: %s\n", wizardName)
+			fmt.Fprintf(f, "bead_id:     %s\n", beadID)
+			fmt.Fprintf(f, "pid:         %d\n", pid)
+			fmt.Fprintf(f, "ppid:        %d\n", ppid)
+			fmt.Fprintf(f, "pgid:        %d\n", pgid)
+			if out, err := exec.Command("ps", "-o", "pid,ppid,pgid,state,command", "-p", strconv.Itoa(ppid)).CombinedOutput(); err == nil {
+				fmt.Fprintf(f, "\n--- parent process (ppid=%d) ---\n%s", ppid, out)
+			}
+			if out, err := exec.Command("ps", "axo", "pid,ppid,pgid,state,etime,command").CombinedOutput(); err == nil {
+				fmt.Fprintf(f, "\n--- ps axo (full snapshot) ---\n%s", out)
+			}
+			f.Close()
+		}
+		log("APPRENTICE SIGNAL: received %v (pid=%d ppid=%d pgid=%d), forensics: %s", sig, pid, ppid, pgid, forensicPath)
 		os.Exit(1)
 	}()
 
