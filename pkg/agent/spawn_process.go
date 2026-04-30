@@ -128,6 +128,7 @@ func (h *ProcessHandle) Signal(sig os.Signal) error {
 	if h.cmd.Process == nil {
 		return fmt.Errorf("process not started")
 	}
+	auditSendSignal(h.cmd.Process, sig, "agent.ProcessHandle.Signal:"+h.name)
 	return h.cmd.Process.Signal(sig)
 }
 

@@ -188,6 +188,7 @@ func removeResummonRegistryEntries(reg wizardRegistry, beadID string) {
 		removed = true
 		if w.PID > 0 && processAlive(w.PID) {
 			if proc, err := os.FindProcess(w.PID); err == nil {
+				auditSendSignal(proc, syscall.SIGTERM, "resummon.removeResummonRegistryEntries.term")
 				proc.Signal(syscall.SIGTERM)
 				deadline := time.Now().Add(3 * time.Second)
 				for time.Now().Before(deadline) {
@@ -197,6 +198,7 @@ func removeResummonRegistryEntries(reg wizardRegistry, beadID string) {
 					}
 				}
 				if processAlive(w.PID) {
+					auditSendSignal(proc, syscall.SIGKILL, "resummon.removeResummonRegistryEntries.kill")
 					proc.Signal(syscall.SIGKILL)
 				}
 			}

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	rt "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -600,18 +601,16 @@ func CmdWizardRun(args []string, deps *Deps) error {
 	// Signal handler — registry cleanup is no longer done here; the entry
 	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
 	//
-	// SIGTERM is the legitimate shutdown signal (from `spire dismiss` /
-	// `spire shutdown` via Backend.TerminateBead). We exit cleanly on
-	// SIGTERM. SIGINT we now SURVIVE — a recurring kill source we have
-	// not been able to identify is delivering SIGINT to apprentices on
-	// long-running implements; the apprentice has no business dying on
-	// it (no controlling tty, never invoked from an interactive shell).
-	// For both signals we still write a forensic dump so an operator can
-	// triage the source from the captured ps snapshot.
+	// We exit on SIGINT and SIGTERM (revert from spi-x5ehbs's survival
+	// experiment — confirmed SIGINT was a killer, but a second uncaught
+	// kill mechanism still fires after; need to identify both sources
+	// rather than mask the first). Dumps forensics including a goroutine
+	// stack so we know where the apprentice was when the signal arrived,
+	// plus a full ps snapshot so the sender (if still alive) shows up.
 	//
-	// Forensic dump: snapshot signal name, our PID/PPID/PGID, parent
-	// process info, and full `ps axo` output. The sender's command line
-	// should be visible in that snapshot if it is still alive.
+	// Listens for a wider signal set (SIGINT/TERM/HUP/USR1/USR2/QUIT) to
+	// log any unexpected signal — broadens the capture net so we don't
+	// miss a sender using e.g. SIGUSR1.
 	dumpForensics := func(sig os.Signal) string {
 		pid := os.Getpid()
 		ppid := os.Getppid()
@@ -626,6 +625,13 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			fmt.Fprintf(f, "pid:         %d\n", pid)
 			fmt.Fprintf(f, "ppid:        %d\n", ppid)
 			fmt.Fprintf(f, "pgid:        %d\n", pgid)
+			// Goroutine stack — tells us where the apprentice was when the
+			// signal arrived. If it's blocked on cmd.Run / handle.Wait /
+			// network I/O, we know the apprentice was healthy; if it's in
+			// some weird code path, that's a clue.
+			stackBuf := make([]byte, 64*1024)
+			n := rt.Stack(stackBuf, true)
+			fmt.Fprintf(f, "\n--- all goroutines stack ---\n%s\n", stackBuf[:n])
 			if out, err := exec.Command("ps", "-o", "pid,ppid,pgid,state,command", "-p", strconv.Itoa(ppid)).CombinedOutput(); err == nil {
 				fmt.Fprintf(f, "\n--- parent process (ppid=%d) ---\n%s", ppid, out)
 			}
@@ -638,17 +644,11 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		return forensicPath
 	}
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGQUIT)
 	go func() {
-		for sig := range sigCh {
-			dumpForensics(sig)
-			if sig == syscall.SIGTERM {
-				// Legitimate shutdown — exit.
-				os.Exit(1)
-			}
-			// SIGINT (or anything else we Notify on): survive.
-			log("APPRENTICE SIGNAL: surviving %v — continuing implement", sig)
-		}
+		sig := <-sigCh
+		dumpForensics(sig)
+		os.Exit(1)
 	}()
 
 	// 5. Claim the bead (skip if --review-fix or --apprentice — already claimed by executor)

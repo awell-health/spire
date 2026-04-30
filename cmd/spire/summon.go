@@ -863,6 +863,7 @@ func dismissLocal(count int, all bool, targets []string) error {
 			alive := w.PID > 0 && processAlive(w.PID)
 			if alive {
 				if proc, err := os.FindProcess(w.PID); err == nil {
+					auditSendSignal(proc, os.Interrupt, "summon.dismissLocal.targets")
 					proc.Signal(os.Interrupt)
 				}
 			}
@@ -905,6 +906,7 @@ func dismissLocal(count int, all bool, targets []string) error {
 		alive := w.PID > 0 && processAlive(w.PID)
 		if alive {
 			if proc, err := os.FindProcess(w.PID); err == nil {
+				auditSendSignal(proc, os.Interrupt, "summon.dismissLocal.count")
 				proc.Signal(os.Interrupt)
 			}
 		}

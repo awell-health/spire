@@ -67,7 +67,7 @@ func StopProcess(pidPath string) (bool, error) {
 		return false, nil
 	}
 
-	proc.Signal(syscall.SIGTERM)
+	_ = AuditSendSignal(proc, syscall.SIGTERM, "process.StopProcess.term")
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -78,7 +78,7 @@ func StopProcess(pidPath string) (bool, error) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	proc.Signal(syscall.SIGKILL)
+	_ = AuditSendSignal(proc, syscall.SIGKILL, "process.StopProcess.kill")
 	time.Sleep(500 * time.Millisecond)
 	os.Remove(pidPath)
 	return true, nil
