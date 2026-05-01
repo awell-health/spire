@@ -72,7 +72,7 @@ var summonCmd = &cobra.Command{
 
 var dismissCmd = &cobra.Command{
 	Use:   "dismiss <N|--all> [flags]",
-	Short: "Dismiss wizards (--all, --targets)",
+	Short: "Dismiss wizards (--all, --targets, --allow-cross-group)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var fullArgs []string
 		if all, _ := cmd.Flags().GetBool("all"); all {
@@ -88,6 +88,9 @@ var dismissCmd = &cobra.Command{
 		}
 		if target != "" {
 			fullArgs = append(fullArgs, "--targets", target)
+		}
+		if cross, _ := cmd.Flags().GetBool("allow-cross-group"); cross {
+			fullArgs = append(fullArgs, "--allow-cross-group")
 		}
 		fullArgs = append(fullArgs, args...)
 		return cmdDismiss(fullArgs)
@@ -106,6 +109,7 @@ func init() {
 	dismissCmd.Flags().Bool("all", false, "Dismiss all wizards")
 	dismissCmd.Flags().String("targets", "", "Comma-separated bead IDs to dismiss")
 	dismissCmd.Flags().String("target", "", "Alias for --targets")
+	dismissCmd.Flags().Bool("allow-cross-group", false, "Override the PGID sandbox and signal wizards in different process groups (operator escape hatch — required when wizards detached from the caller's PGID, e.g. ones spawned by a previous CLI invocation)")
 
 	// Route pkg/summon's seams through the cmd/spire-level mock points so
 	// existing summon_test.go tests that reassign the CLI vars still intercept
@@ -415,10 +419,11 @@ func lookupRemoteForPrefix(prefix string) string {
 
 func cmdDismiss(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spire dismiss <N|--all> [--targets <ids>]")
+		return fmt.Errorf("usage: spire dismiss <N|--all> [--targets <ids>] [--allow-cross-group]")
 	}
 
 	dismissAll := false
+	allowCrossGroup := false
 	count := 0
 	var targets string
 
@@ -426,6 +431,8 @@ func cmdDismiss(args []string) error {
 		switch args[i] {
 		case "--all":
 			dismissAll = true
+		case "--allow-cross-group":
+			allowCrossGroup = true
 		case "--targets":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--targets requires comma-separated bead IDs")
@@ -435,7 +442,7 @@ func cmdDismiss(args []string) error {
 		default:
 			n, err := strconv.Atoi(args[i])
 			if err != nil {
-				return fmt.Errorf("expected a number, --all, or --targets, got %q", args[i])
+				return fmt.Errorf("expected a number, --all, --targets, or --allow-cross-group, got %q", args[i])
 			}
 			count = n
 		}
@@ -480,7 +487,7 @@ func cmdDismiss(args []string) error {
 		}
 		return dismissK8s(count, dismissAll)
 	case config.DeploymentModeLocalNative:
-		return dismissLocal(count, dismissAll, targetIDs)
+		return dismissLocal(count, dismissAll, targetIDs, allowCrossGroup)
 	case config.DeploymentModeAttachedReserved:
 		return fmt.Errorf("dismiss: attached-reserved mode is not yet supported")
 	case config.DeploymentModeUnknown:
@@ -862,7 +869,24 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 	return nil
 }
 
-func dismissLocal(count int, all bool, targets []string) error {
+// dismissLocal signals SIGINT to local wizard processes and resets their
+// bead state.
+//
+// PGID sandbox (spi-e16f5t): unless allowCrossGroup is true, dismissLocal
+// refuses to signal any wizard whose PGID does not match the calling
+// process's PGID. The caller's right to signal a process correlates with
+// process-group membership; tests that fail to isolate via
+// SPIRE_CONFIG_DIR=t.TempDir() read the operator's real registry and
+// would otherwise SIGINT live production wizards on the developer's box
+// (the spi-od41sr class of bug). Skipped wizards stay in the registry.
+//
+// Production note: pkg/agent spawns wizards with SysProcAttr.Setpgid=true
+// (see pkg/agent/spawn_process_unix.go applyDetachAttrs), so each wizard
+// owns its own PGID and the operator's CLI invocation has a different
+// PGID. Operators dismissing wizards from the CLI must therefore pass
+// --allow-cross-group; programmatic callers like the board UI that
+// represent an authorized operator action wire allowCrossGroup=true.
+func dismissLocal(count int, all bool, targets []string, allowCrossGroup bool) error {
 	reg := loadWizardRegistry()
 	// Don't clean dead wizards first — we need them to clean up bead state.
 
@@ -887,6 +911,8 @@ func dismissLocal(count int, all bool, targets []string) error {
 		}
 	}
 
+	selfPGID := callerPGID()
+
 	// When --targets is given, dismiss exactly those wizards by BeadID.
 	if len(targets) > 0 {
 		targetSet := make(map[string]bool, len(targets))
@@ -899,6 +925,11 @@ func dismissLocal(count int, all bool, targets []string) error {
 		for _, w := range scoped {
 			if !targetSet[w.BeadID] {
 				remaining = append(remaining, w)
+				continue
+			}
+			if skipForPGID(w, selfPGID, allowCrossGroup) {
+				remaining = append(remaining, w)
+				delete(targetSet, w.BeadID)
 				continue
 			}
 			alive := w.PID > 0 && processAlive(w.PID)
@@ -939,10 +970,15 @@ func dismissLocal(count int, all bool, targets []string) error {
 		return nil
 	}
 
-	// Dismiss from the end of scoped list.
+	// Dismiss from the end of scoped list. Track which entries were
+	// actually dismissed so we can leave skipped wizards in the registry.
+	dismissedNames := make(map[string]bool)
 	for i := 0; i < count; i++ {
 		idx := len(scoped) - 1 - i
 		w := scoped[idx]
+		if skipForPGID(w, selfPGID, allowCrossGroup) {
+			continue
+		}
 		alive := w.PID > 0 && processAlive(w.PID)
 		if alive {
 			if proc, err := os.FindProcess(w.PID); err == nil {
@@ -955,15 +991,44 @@ func dismissLocal(count int, all bool, targets []string) error {
 		} else {
 			fmt.Printf("  %s%s%s dismissed (was dead)\n", dim, w.Name, reset)
 		}
+		dismissedNames[w.Name] = true
 	}
 
-	// Rebuild: keep other tower wizards + remaining scoped wizards.
+	// Rebuild: keep other tower wizards + scoped wizards we didn't dismiss
+	// (either outside the dismiss window, or skipped by the PGID sandbox).
 	remaining := other
-	remaining = append(remaining, scoped[:len(scoped)-count]...)
+	for _, w := range scoped {
+		if !dismissedNames[w.Name] {
+			remaining = append(remaining, w)
+		}
+	}
 	reg.Wizards = remaining
 	saveWizardRegistry(reg)
-	fmt.Printf("\n%d wizard(s) dismissed.\n", count)
+	fmt.Printf("\n%d wizard(s) dismissed.\n", len(dismissedNames))
 	return nil
+}
+
+// skipForPGID returns true when the PGID sandbox refuses to signal w.
+// The sandbox is bypassed when allowCrossGroup is true, when the
+// platform doesn't expose process groups, or when the caller's own PGID
+// could not be resolved (selfPGID == 0).
+//
+// Logs a single grep-friendly skip line per refusal so operators
+// debugging "why didn't dismiss kill my wizard?" can find the reason.
+func skipForPGID(w localWizard, selfPGID int, allowCrossGroup bool) bool {
+	if allowCrossGroup {
+		return false
+	}
+	if !pgidCheckSupported() || selfPGID == 0 {
+		return false
+	}
+	wPGID, err := pgidForPID(w.PID)
+	if err != nil || wPGID != selfPGID {
+		log.Printf("dismissLocal: skipping wizard %q (pid=%d, pgid=%d): not in caller's process group (caller pgid=%d) — pass --allow-cross-group to override",
+			w.Name, w.PID, wPGID, selfPGID)
+		return true
+	}
+	return false
 }
 
 // dismissCleanupBead removes the owner label and reopens the bead if it's still in_progress.

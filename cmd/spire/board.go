@@ -335,7 +335,11 @@ func executeInlineAction(action board.PendingAction, beadID string) error {
 	case board.ActionResummon:
 		return cmdResummon([]string{beadID})
 	case board.ActionUnsummon:
-		return cmdDismiss([]string{"1", "--targets", beadID})
+		// Board UI represents an authorized operator action; pass
+		// --allow-cross-group so the PGID sandbox in dismissLocal
+		// doesn't refuse to signal wizards detached via Setpgid
+		// (spi-e16f5t).
+		return cmdDismiss([]string{"1", "--targets", beadID, "--allow-cross-group"})
 	case board.ActionResetSoft:
 		return cmdReset([]string{beadID})
 	case board.ActionResetHard:
