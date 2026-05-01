@@ -471,6 +471,11 @@ func TestSummonLocal_TransitionsReadyToInProgress(t *testing.T) {
 
 // TestSummonLocal_TransitionFailurePropagates verifies that when BeginWork
 // fails, summonLocal aborts with a wrapped error mentioning the bead.
+//
+// Uses synthHeaderAuth so SelectAuth (now in pass 1, ahead of BeginWork per
+// spi-c13c4w) succeeds and the test can exercise BeginWork's failure path.
+// Pre-c13c4w the order was inverted, so a no-flags SelectFlags{} happened
+// to work — but that ordering was the bug under repair, not a contract.
 func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("SPIRE_CONFIG_DIR", tmp)
@@ -489,7 +494,7 @@ func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
 		return "", fmt.Errorf("db down")
 	}
 
-	err := summonLocal(1, []string{"spi-open"}, "", wizard.SelectFlags{})
+	err := summonLocal(1, []string{"spi-open"}, "", synthHeaderAuth)
 	if err == nil {
 		t.Fatal("expected error when BeginWork fails")
 	}
@@ -498,6 +503,86 @@ func TestSummonLocal_TransitionFailurePropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "db down") {
 		t.Fatalf("expected wrapped BeginWork error, got: %v", err)
+	}
+}
+
+// TestSummonLocal_AuthFailureSkipsBeginWork is the regression test for
+// spi-c13c4w. Pre-fix, summon ran BeginWork (orphan sweep + attempt
+// creation + status flip to in_progress) before SelectAuth in the spawn
+// loop, so an auth-failure invocation left an orphan attempt bead behind
+// that the next summon's OrphanSweep had to clean up — labeling the
+// source bead `dead-letter:orphan` for runs that never started. After
+// the fix, SelectAuth runs in a pre-flight pass; auth errors abort the
+// summon BEFORE BeginWork is ever called.
+//
+// We assert the absence of state mutation by counting BeginWork calls
+// (the sole producer of the attempt bead and status transition under
+// summonLocal). Counter must be 0 on auth-failure paths.
+func TestSummonLocal_AuthFailureSkipsBeginWork(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", tmp)
+
+	// Auth config has subscription only — a P0 bead under rule 5
+	// (priority-0 → api-key required) will fail SelectAuth.
+	prevRead := selectAuthReadConfig
+	defer func() { selectAuthReadConfig = prevRead }()
+	selectAuthReadConfig = func() (*config.AuthConfig, error) {
+		return &config.AuthConfig{
+			AutoPromoteOn429: true,
+			Subscription:     &config.AuthCredential{Slot: config.AuthSlotSubscription, Secret: "tok"},
+		}, nil
+	}
+
+	origGet := storeGetBeadFunc
+	origBegin := summonBeginWorkFunc
+	origSpawn := summonSpawnFunc
+	defer func() {
+		storeGetBeadFunc = origGet
+		summonBeginWorkFunc = origBegin
+		summonSpawnFunc = origSpawn
+	}()
+	storeGetBeadFunc = func(id string) (Bead, error) {
+		return Bead{ID: id, Status: "open", Title: "p0", Priority: 0}, nil
+	}
+	beginCalls := 0
+	summonBeginWorkFunc = func(_ beadlifecycle.Deps, _ wizardregistry.Registry, _ string, _ beadlifecycle.BeginOpts) (string, error) {
+		beginCalls++
+		return "att-should-not-be-created", nil
+	}
+	spawnCalls := 0
+	summonSpawnFunc = func(AgentBackend, SpawnConfig) (agent.Handle, error) {
+		spawnCalls++
+		return nil, fmt.Errorf("spawn must not be called on auth-failure path")
+	}
+
+	err := summonLocal(1, []string{"spi-p0"}, "", wizard.SelectFlags{})
+	if err == nil {
+		t.Fatal("expected auth error for P0 bead with no api-key configured")
+	}
+
+	// Error parity with the user-visible message (per acceptance criteria
+	// and the bug report's reproduction): the wrapper prefix is unchanged.
+	if !strings.Contains(err.Error(), "auth selection for spi-p0") {
+		t.Errorf("error must keep the `auth selection for <id>` prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "api-key slot required") {
+		t.Errorf("error must mention the unconfigured slot, got: %v", err)
+	}
+
+	// Core regression assertions: no BeginWork → no attempt bead, no
+	// status transition, no orphan label.
+	if beginCalls != 0 {
+		t.Errorf("BeginWork called %d times; expected 0 — auth failure must abort before BeginWork", beginCalls)
+	}
+	if spawnCalls != 0 {
+		t.Errorf("spawn called %d times; expected 0 — auth failure must abort before spawn", spawnCalls)
+	}
+
+	// No graph_state.json should have been written either: attachAuthToRunState
+	// runs in pass 3, after auth has already succeeded.
+	gsPath := filepath.Join(tmp, "runtime", "wizard-spi-p0", "graph_state.json")
+	if _, err := os.Stat(gsPath); !os.IsNotExist(err) {
+		t.Errorf("graph_state.json must not be written on auth-failure path, stat err = %v", err)
 	}
 }
 

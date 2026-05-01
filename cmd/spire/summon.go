@@ -660,9 +660,31 @@ func deleteWizardGuildCR(name string) error {
 
 // --- Local mode ---
 
-func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizard.SelectFlags) error {
-	var candidates []Bead
+// summonTarget pairs a candidate bead with the auth context resolved for it
+// during the pre-flight pass. It exists so the three summon passes
+// (pre-flight → BeginWork → SpawnWizard) can share state without
+// re-resolving and so SelectAuth is invoked exactly once per bead per
+// summon call.
+type summonTarget struct {
+	bead    Bead
+	authCtx *config.AuthContext
+}
 
+// summonLocal drives the local-mode summon pipeline as three passes:
+//
+//  1. Resolve and validate every candidate, then call SelectAuth. This is
+//     a pure read pass — no state mutation. If auth selection fails for
+//     any candidate, we abort here, BEFORE any attempt bead is created or
+//     any source bead transitions to in_progress. Fixes spi-c13c4w: the
+//     prior shape ran BeginWork (which creates the attempt + flips state
+//     + runs OrphanSweep) before SelectAuth, leaving an orphan attempt
+//     behind on auth-failure paths.
+//  2. For each target, run BeginWork (targeted path only — creates the
+//     attempt bead and transitions the source bead). The no-targets path
+//     leaves attempt creation to ClaimWork in the spawned wizard.
+//  3. For each target, attach the resolved auth to graph state and call
+//     SpawnWizard.
+func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizard.SelectFlags) error {
 	// Resolve the auth config once for the whole summon call — SelectAuth is
 	// pure so the same config serves every candidate. Errors reading the
 	// config file are fatal: if the operator has credentials configured but
@@ -681,14 +703,10 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 	// (called inside BeginWork), so we skip the old cleanDeadWizards pass.
 	reg := loadWizardRegistry()
 
-	// BeginWork runs OrphanSweep + creates attempt bead + transitions to in_progress.
-	// This replaces the old reconcileOrphanAttempts call and the per-bead status
-	// transitions below. The wizard calling `spire claim` will reclaim the
-	// existing attempt created here (same agent name, reclaim path in ClaimWork).
-	// spi-6pmit1: beadlifecycle.BeginWork is the canonical local-summon path.
-
+	// Phase 0: Gather candidate beads. For the targeted path this also
+	// validates each bead's status. No state mutation here.
+	var candidates []Bead
 	if len(targetIDs) > 0 {
-		// Look up each target bead directly.
 		for _, id := range targetIDs {
 			bead, err := storeGetBeadFunc(id)
 			if err != nil {
@@ -703,29 +721,8 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 			case "deferred":
 				return fmt.Errorf("target %s is deferred — set to open or ready first (bd update %s --status open)", id, id)
 			case "hooked", "open", "ready", "in_progress", "":
-				// BeginWork handles the status transition, orphan sweep, attempt creation,
-				// and registry placeholder entry. The wizard name is deterministic: wizard-<id>.
-				// NOTE: The registry entry's PID is 0 here (wizard not yet spawned).
-				// SpawnWizard stamps the real PID after spawn via registry.Update.
-				wizardName := "wizard-" + id
-				worktree := filepath.Join(os.TempDir(), "spire-wizard", wizardName, id)
-				towerName := ""
-				if tc, err2 := activeTowerConfig(); err2 == nil && tc != nil {
-					towerName = tc.Name
-				} else if t2 := os.Getenv("SPIRE_TOWER"); t2 != "" {
-					towerName = t2
-				}
-				if _, berr := summonBeginWorkFunc(newLifecycleDeps(), newLocalRegistryAdapter(), id, beadlifecycle.BeginOpts{
-					Mode:      beadlifecycle.ModeLocal,
-					AgentName: wizardName,
-					Worktree:  worktree,
-					Tower:     towerName,
-				}); berr != nil {
-					return fmt.Errorf("begin work for %s: %w", id, berr)
-				}
-				bead.Status = "in_progress"
+				candidates = append(candidates, bead)
 			}
-			candidates = append(candidates, bead)
 		}
 		count = len(candidates)
 	} else {
@@ -760,20 +757,57 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 		count = len(candidates)
 	}
 
-	logDir := filepath.Join(doltGlobalDir(), "wizards")
-
-	spawned := 0
+	// Pass 1: pre-flight auth selection. Pure read — no state mutation.
+	// SelectAuth is invoked exactly once per bead and the result is stashed
+	// on summonTarget for pass 3. If selection fails, abort the whole summon
+	// before any BeginWork has run so we don't leave orphan attempts behind.
+	targets := make([]summonTarget, 0, count)
 	for i := 0; i < count; i++ {
 		bead := candidates[i]
-
-		// Resolve the auth slot for this bead now so the user sees the
-		// outcome before we hand off to SpawnWizard. Errors here mean a
-		// required slot isn't configured, so the user gets actionable
-		// guidance and we don't half-spawn.
 		authCtx, authErr := wizard.SelectAuth(authCfg, bead.Priority, authFlags)
 		if authErr != nil {
 			return fmt.Errorf("auth selection for %s: %w", bead.ID, authErr)
 		}
+		targets = append(targets, summonTarget{bead: bead, authCtx: authCtx})
+	}
+
+	// Pass 2: BeginWork (targeted path only). Creates the attempt bead,
+	// runs OrphanSweep, transitions the source bead to in_progress, and
+	// upserts a registry placeholder. The wizard subprocess's `spire claim`
+	// reclaims this attempt via ClaimWork's same-agent reclaim path.
+	// The no-targets path skips this — ClaimWork in the spawned wizard
+	// creates the attempt itself, matching prior behavior.
+	if len(targetIDs) > 0 {
+		towerName := ""
+		if tc, err := activeTowerConfig(); err == nil && tc != nil {
+			towerName = tc.Name
+		} else if t := os.Getenv("SPIRE_TOWER"); t != "" {
+			towerName = t
+		}
+		for i := range targets {
+			id := targets[i].bead.ID
+			wizardName := "wizard-" + id
+			worktree := filepath.Join(os.TempDir(), "spire-wizard", wizardName, id)
+			if _, berr := summonBeginWorkFunc(newLifecycleDeps(), newLocalRegistryAdapter(), id, beadlifecycle.BeginOpts{
+				Mode:      beadlifecycle.ModeLocal,
+				AgentName: wizardName,
+				Worktree:  worktree,
+				Tower:     towerName,
+			}); berr != nil {
+				return fmt.Errorf("begin work for %s: %w", id, berr)
+			}
+			targets[i].bead.Status = "in_progress"
+		}
+	}
+
+	// Pass 3: spawn wizards using the auth context resolved in pass 1.
+	logDir := filepath.Join(doltGlobalDir(), "wizards")
+
+	spawned := 0
+	for _, tgt := range targets {
+		bead := tgt.bead
+		authCtx := tgt.authCtx
+
 		setBeadAuthContext(bead.ID, authCtx)
 		fmt.Printf("  %s → auth: %s%s\n", bead.ID, authCtx.SlotName(), ephemeralSuffix(authCtx))
 
@@ -782,16 +816,6 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 		// whether to resume from graph state.
 		existingGraphState, _ := executor.LoadGraphState("wizard-"+bead.ID, configDir)
 
-		// Pick the auth slot for this run and stash it on the (pre-spawn)
-		// graph state so the wizard subprocess picks it up when it loads
-		// or materializes its state. SelectAuth is per-bead because the
-		// P0 rule depends on bead priority. Abort the whole summon on
-		// selection error so the operator sees every issue at once rather
-		// than spawning some wizards and failing others mid-loop.
-		authCtx, err := wizard.SelectAuth(authCfg, bead.Priority, authFlags)
-		if err != nil {
-			return fmt.Errorf("select auth for %s: %w", bead.ID, err)
-		}
 		if err := attachAuthToRunState("wizard-"+bead.ID, authCtx, existingGraphState); err != nil {
 			return fmt.Errorf("attach auth to %s run state: %w", bead.ID, err)
 		}
