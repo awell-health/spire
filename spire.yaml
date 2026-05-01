@@ -5,7 +5,19 @@ runtime:
   # so it must stay narrow. Cross-module drift (operator submodule, pkg/*
   # integration suites) is covered by ci_test below and by CI workflows —
   # NOT by this command. See spi-q3lfd3 for the scope split rationale.
-  test: go test ./cmd/spire/ -timeout=60s
+  # NOTE: temporary diagnostic wiring for the apprentice-SIGINT mystery
+  # (spi-kn3e8f). cgo SA_SIGINFO + eslogger have identified spire.test as
+  # the sender, but the audit-wrapped signal-send sites in cmd/spire and
+  # pkg/* show ZERO hits — meaning the killer goes through a path we
+  # don't wrap. The dylib at tools/diagnostics/kill_audit.c interposes
+  # libsystem kill(2) and logs every call (target PID, signal, caller PID,
+  # mach thread id, C backtrace) to /tmp/spire-kill-audit-<pid>.log. On
+  # macOS, dyld interpose only works for dylibs preloaded via
+  # DYLD_INSERT_LIBRARIES — the in-binary cgo approach is a dead end
+  # (verified empirically). The trailing grep surfaces sig=2 (SIGINT)
+  # records straight into the apprentice's tool output. Revert once the
+  # killer is identified; see spi-kn3e8f for the investigation.
+  test: clang -dynamiclib tools/diagnostics/kill_audit.c -o /tmp/libspire_kill_audit.dylib 2>/dev/null; DYLD_INSERT_LIBRARIES=/tmp/libspire_kill_audit.dylib go test -v ./cmd/spire/ -timeout=60s > /tmp/spire-test-trace.log 2>&1; tail -50 /tmp/spire-test-trace.log; echo "===kill-audit sig=2 (SIGINT) records==="; grep -B1 -A6 "sig=2 " /tmp/spire-kill-audit-*.log 2>/dev/null | head -200
   # ci_test is the broad surface: full module tree + operator submodule.
   # Invoked by CI/build tooling (not apprentice pods) to catch the drift
   # class that spi-w9qicf was filed against. Callers that want the broad
