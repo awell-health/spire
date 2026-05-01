@@ -248,6 +248,12 @@ func TestCmdSummon_DispatchValidModes(t *testing.T) {
 	// immediate open error) instead of hanging on a dolt connection.
 	tmp := t.TempDir()
 	t.Setenv("BEADS_DIR", tmp)
+	// Isolate SPIRE_CONFIG_DIR for the same spi-od41sr reason as the
+	// gateway dismiss test: cmdSummon → summonLocal → loadWizardRegistry
+	// reads ~/.config/spire/wizards.json by default, and scanOrphanedBeads
+	// walks ~/.config/spire/runtime/. Without this the test reads the
+	// operator's live wizard state.
+	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
 	resetStore()
 
 	// Drive dispatch through a fake local-native tower so cmdSummon
@@ -1003,6 +1009,10 @@ func TestCmdSummon_K8sCountStillWorks(t *testing.T) {
 func TestCmdSummon_LocalNative_IgnoresK8sReachability(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("BEADS_DIR", tmp)
+	// Isolate SPIRE_CONFIG_DIR for the same spi-od41sr reason as the
+	// gateway dismiss test: cmdSummon → summonLocal reads the wizard
+	// registry and scans the runtime directory under ~/.config/spire/.
+	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
 	resetStore()
 
 	origTower := activeTowerConfigFunc
