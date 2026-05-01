@@ -130,17 +130,29 @@ func TestCmdDismiss_GatewayMode_TargetsRoutesPerID(t *testing.T) {
 // through the bead-level gateway endpoint — counts have no mapping to
 // a per-bead URL, so they stay on the wizard-pool path.
 func TestCmdDismiss_GatewayMode_NoTargetsBypassesGateway(t *testing.T) {
-	// CRITICAL: this test reaches dismissLocal — TowerConfig.DeploymentMode
-	// is unset on the tower below, and EffectiveDeploymentMode defaults
-	// empty to LocalNative (pkg/config/tower.go), so bare-count dispatch
-	// hits the local-native case, calls loadWizardRegistry, and signals
-	// every PID it finds. Without SPIRE_CONFIG_DIR isolation the test
-	// reads the operator's real ~/.config/spire/wizards.json and SIGINT-
-	// kills every live wizard on the box (apprentices, sages, anything
-	// registered). This was spi-od41sr — every `go test ./cmd/spire/`
-	// run from an apprentice's worktree was murdering its own wizard.
-	// Pin the registry to a temp dir so the loadWizardRegistry call sees
-	// an empty registry and dismissLocal has nothing to signal.
+	// CRITICAL (spi-od41sr): this test originally reached dismissLocal —
+	// TowerConfig.DeploymentMode is unset on the tower below, and prior
+	// to spi-eep81n EffectiveDeploymentMode silently defaulted empty to
+	// LocalNative (pkg/config/tower.go), so bare-count dispatch hit the
+	// local-native case, called loadWizardRegistry, and signaled every
+	// PID it found. Without SPIRE_CONFIG_DIR isolation the test read the
+	// operator's real ~/.config/spire/wizards.json and SIGINT-killed
+	// every live wizard on the box (apprentices, sages, anything
+	// registered) — every `go test ./cmd/spire/` run from an apprentice's
+	// worktree was murdering its own wizard.
+	//
+	// Two independent fixes now block the bug:
+	//   - spi-eep81n: EffectiveDeploymentMode returns DeploymentModeUnknown
+	//     for an unset field, and cmdDismiss errors at the explicit
+	//     Unknown branch instead of silently dispatching to dismissLocal.
+	//   - This t.Setenv: pins the registry to a temp dir so even if the
+	//     Unknown guard is ever relaxed, loadWizardRegistry sees an empty
+	//     registry and dismissLocal has nothing to signal.
+	//
+	// Keep the t.Setenv as belt-and-braces — a missing call here is the
+	// shape of the original spi-od41sr bug, and per-test isolation makes
+	// any regression visible in the diff instead of a silent global
+	// default.
 	t.Setenv("SPIRE_CONFIG_DIR", t.TempDir())
 
 	restore := stubDismissGateway(t)
@@ -155,10 +167,12 @@ func TestCmdDismiss_GatewayMode_NoTargetsBypassesGateway(t *testing.T) {
 	}
 
 	// Bare count without --targets falls through to the deployment-mode
-	// switch. With no DeploymentMode set on the tower the switch lands
-	// on the LocalNative branch (EffectiveDeploymentMode default), and
-	// dismissLocal walks the (now-empty, see Setenv above) registry —
-	// the assertion remains that the gateway seam is not invoked.
+	// switch. With no DeploymentMode set on the tower the switch now
+	// hits the Unknown branch (post-spi-eep81n) and cmdDismiss returns
+	// an error rather than dispatching to dismissLocal — the assertion
+	// remains that the gateway seam is not invoked. The error itself is
+	// intentionally ignored here; the Unknown-branch error shape is
+	// covered by TestCmdDismiss_UnknownModeErrors in summon_test.go.
 	_ = cmdDismiss([]string{"1"})
 }
 
