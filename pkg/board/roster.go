@@ -538,6 +538,12 @@ func LiveRoster(ctx context.Context, mode config.DeploymentMode, timeout time.Du
 		return RosterFromClusterRegistry(ctx, timeout)
 	case config.DeploymentModeAttachedReserved:
 		return nil, ErrAttachedRosterNotImplemented
+	case config.DeploymentModeUnknown:
+		// spi-eep81n: an in-memory TowerConfig{} bypassing LoadTowerConfig
+		// surfaces Unknown here. Refusing the call keeps roster from
+		// silently reading the local wizard registry on behalf of a tower
+		// whose topology was never declared.
+		return nil, fmt.Errorf("live roster: tower has no DeploymentMode set; configure deployment_mode in the tower JSON")
 	default:
 		return nil, fmt.Errorf("live roster: unsupported deployment mode %q", mode)
 	}

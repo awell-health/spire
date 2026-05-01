@@ -71,9 +71,12 @@ type TowerConfig struct {
 
 	// DeploymentMode names the control-plane topology for this tower
 	// (local-native / cluster-native / attached-reserved). Empty resolves to
-	// Default() via LoadTowerConfig and the EffectiveDeploymentMode accessor.
-	// See pkg/config/deployment_mode.go for the semantics and the explicit
-	// orthogonality to worker backend and sync transport.
+	// Default() inside LoadTowerConfig (so on-disk configs without the field
+	// keep the legacy LocalNative behavior), but in-memory TowerConfig{}
+	// values that bypass LoadTowerConfig surface as DeploymentModeUnknown
+	// through EffectiveDeploymentMode and require callers to error
+	// explicitly. See pkg/config/deployment_mode.go for the semantics and
+	// the explicit orthogonality to worker backend and sync transport.
 	DeploymentMode DeploymentMode `toml:"deployment_mode" yaml:"deployment_mode" json:"deployment_mode,omitempty"`
 
 	// Mode selects how the local CLI talks to this tower. Empty and
@@ -109,16 +112,25 @@ func (t TowerConfig) IsDirect() bool {
 	return t.Mode == "" || t.Mode == TowerModeDirect
 }
 
-// EffectiveDeploymentMode returns the tower's control-plane topology, falling
-// back to Default() when the field is unset. Callers MUST use this accessor
-// rather than reading TowerConfig.DeploymentMode directly so legacy tower
-// configs that predate the field behave as local-native. The method name
-// follows the codebase pattern (see EffectiveTransport, EffectiveRemoteKind)
-// and is required here because a method cannot share a name with the struct
-// field it reads.
+// EffectiveDeploymentMode returns the tower's control-plane topology, or
+// DeploymentModeUnknown when the field is unset. Callers MUST use this
+// accessor rather than reading TowerConfig.DeploymentMode directly, AND
+// MUST handle DeploymentModeUnknown explicitly — typically by erroring
+// with a clear "tower X has no DeploymentMode set" message — instead of
+// letting a missing mode silently dispatch through LocalNative
+// machinery. Returning Unknown (rather than Default()) is what
+// distinguishes the spi-od41sr regression class: in-memory TowerConfig{}
+// values that bypass LoadTowerConfig (which fills Default() on read for
+// legacy on-disk configs) now surface as Unknown so the dispatch site
+// fails loudly instead of running LocalNative side effects (notably
+// dismissLocal, which signals every PID in the wizard registry).
+//
+// The method name follows the codebase pattern (see EffectiveTransport,
+// EffectiveRemoteKind) and is required here because a method cannot
+// share a name with the struct field it reads.
 func (t TowerConfig) EffectiveDeploymentMode() DeploymentMode {
 	if t.DeploymentMode == "" {
-		return Default()
+		return DeploymentModeUnknown
 	}
 	return t.DeploymentMode
 }

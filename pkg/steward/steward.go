@@ -493,7 +493,11 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 
 	// Branch on deployment mode. Local-native runs the existing direct-
 	// spawn loop; cluster-native emits WorkloadIntents; attached-reserved
-	// is a typed not-implemented surface that skips dispatch entirely.
+	// is a typed not-implemented surface that skips dispatch entirely;
+	// unknown surfaces a loud skip rather than silently routing to local
+	// dispatch (spi-eep81n — the previous default:LocalNative case meant a
+	// TowerConfig{} bypassing LoadTowerConfig would still spawn local
+	// wizards, the exact silent-routing class spi-od41sr exposed).
 	spawned := 0
 	switch deploymentMode {
 	case config.DeploymentModeAttachedReserved:
@@ -504,7 +508,12 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		cycleCfg.ClusterDispatch = cycleClusterDispatch
 		spawned = dispatchClusterNative(context.Background(), prefix, schedulable, cycleCfg)
 
-	default: // DeploymentModeLocalNative — the unchanged historical path
+	case config.DeploymentModeUnknown:
+		log.Printf("[steward] %sdispatch skipped: tower %q has no DeploymentMode set; "+
+			"configure it in ~/.config/spire/towers/%s.json (deployment_mode = "+
+			"\"local-native\" | \"cluster-native\")", prefix, towerName, towerName)
+
+	case config.DeploymentModeLocalNative:
 		for _, bead := range schedulable {
 			// Filter by repo bind state: only spawn for prefixes bound on this instance.
 			beadPrefix := beadRepoPrefix(bead.ID)

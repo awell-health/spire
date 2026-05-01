@@ -43,6 +43,19 @@ const (
 	// "not implemented" error rather than silently falling back to another
 	// mode.
 	DeploymentModeAttachedReserved DeploymentMode = "attached-reserved"
+
+	// DeploymentModeUnknown is the sentinel returned by
+	// TowerConfig.EffectiveDeploymentMode when the tower has no
+	// DeploymentMode set. Callers that switch on the deployment mode MUST
+	// handle this case explicitly — typically by erroring with a clear
+	// "tower X has no DeploymentMode set; configure it in
+	// ~/.config/spire/towers/X.json" message — rather than letting a
+	// missing mode silently dispatch through LocalNative machinery.
+	// Filed under spi-eep81n; the recurring spi-od41sr-class regression
+	// (in-memory TowerConfig{} bypassing LoadTowerConfig fell into the
+	// LocalNative branch and SIGINT-killed every wizard in the local
+	// registry) is the motivating incident.
+	DeploymentModeUnknown DeploymentMode = "unknown"
 )
 
 // Default returns the canonical default deployment mode (local-native). This

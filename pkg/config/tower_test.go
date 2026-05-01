@@ -652,18 +652,24 @@ func TestInstance_GatewayFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTowerConfig_EffectiveDeploymentMode covers the accessor directly so
-// downstream packages have a reliable fallback even when constructing a
-// TowerConfig value outside the loader path (tests, in-memory tower).
+// TestTowerConfig_EffectiveDeploymentMode pins the contract that the
+// accessor surfaces DeploymentModeUnknown for in-memory TowerConfig{}
+// values without a DeploymentMode set, instead of silently routing into
+// LocalNative machinery. The empty case here is the spi-od41sr
+// regression class: callers that switch on the result MUST add an
+// explicit DeploymentModeUnknown branch and error loudly rather than
+// fall through to the LocalNative behavior. See pkg/config/tower.go
+// EffectiveDeploymentMode comment and bead spi-eep81n.
 func TestTowerConfig_EffectiveDeploymentMode(t *testing.T) {
 	cases := []struct {
 		name string
 		in   DeploymentMode
 		want DeploymentMode
 	}{
-		{name: "empty falls back to default", in: "", want: DeploymentModeLocalNative},
+		{name: "empty surfaces unknown sentinel", in: "", want: DeploymentModeUnknown},
 		{name: "local-native passes through", in: DeploymentModeLocalNative, want: DeploymentModeLocalNative},
 		{name: "cluster-native passes through", in: DeploymentModeClusterNative, want: DeploymentModeClusterNative},
+		{name: "attached-reserved passes through", in: DeploymentModeAttachedReserved, want: DeploymentModeAttachedReserved},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -672,5 +678,12 @@ func TestTowerConfig_EffectiveDeploymentMode(t *testing.T) {
 				t.Fatalf("EffectiveDeploymentMode() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+
+	// Zero-value TowerConfig literal — the canonical "test author
+	// forgot DeploymentMode" shape from spi-od41sr — must surface
+	// Unknown rather than LocalNative.
+	if got := (TowerConfig{}).EffectiveDeploymentMode(); got != DeploymentModeUnknown {
+		t.Fatalf("(TowerConfig{}).EffectiveDeploymentMode() = %q, want %q", got, DeploymentModeUnknown)
 	}
 }

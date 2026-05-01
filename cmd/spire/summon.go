@@ -315,6 +315,12 @@ func cmdSummon(args []string) error {
 		return summonLocal(count, targetIDs, dispatch, authFlags)
 	case config.DeploymentModeAttachedReserved:
 		return fmt.Errorf("summon: attached-reserved mode is not yet supported")
+	case config.DeploymentModeUnknown:
+		return fmt.Errorf(
+			"summon: tower %q has no DeploymentMode set; configure it in "+
+				"~/.config/spire/towers/%s.json (deployment_mode = "+
+				"\"local-native\" | \"cluster-native\") and retry",
+			tower.Name, tower.Name)
 	default:
 		return fmt.Errorf("summon: unknown deployment mode %q on tower %q",
 			tower.EffectiveDeploymentMode(), tower.Name)
@@ -477,6 +483,17 @@ func cmdDismiss(args []string) error {
 		return dismissLocal(count, dismissAll, targetIDs)
 	case config.DeploymentModeAttachedReserved:
 		return fmt.Errorf("dismiss: attached-reserved mode is not yet supported")
+	case config.DeploymentModeUnknown:
+		// spi-od41sr: bare-count dismiss against an in-memory tower with no
+		// DeploymentMode used to fall through to dismissLocal and SIGINT
+		// every wizard in the local registry. Reject Unknown explicitly so
+		// future test fixtures (and any tower JSON missing the field) hit
+		// a clear error instead of the silent local-native side effect.
+		return fmt.Errorf(
+			"dismiss: tower %q has no DeploymentMode set; configure it in "+
+				"~/.config/spire/towers/%s.json (deployment_mode = "+
+				"\"local-native\" | \"cluster-native\") and retry",
+			tower.Name, tower.Name)
 	default:
 		return fmt.Errorf("dismiss: unknown deployment mode %q on tower %q",
 			tower.EffectiveDeploymentMode(), tower.Name)

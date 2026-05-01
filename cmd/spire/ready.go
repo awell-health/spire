@@ -197,6 +197,19 @@ func runReady(cmd *cobra.Command, args []string) error {
 			fmt.Printf("ready: %s (queued for cluster steward/operator dispatch on tower %q)\n", id, info.towerName)
 		case info.mode == config.DeploymentModeLocalNative:
 			fmt.Printf("ready: %s (mode=local-native, local steward will pick up)\n", id)
+		case info.mode == config.DeploymentModeUnknown:
+			// spi-eep81n: tower exists but has no DeploymentMode set.
+			// Surface the mismatch loudly on stderr so the operator can
+			// fix the tower config; the ready transition itself stays in
+			// place because the bead is already moved to ready and the
+			// fix is purely on the dispatch side.
+			fmt.Fprintf(os.Stderr,
+				"warning: tower %q has no DeploymentMode set; configure it in "+
+					"~/.config/spire/towers/%s.json (deployment_mode = "+
+					"\"local-native\" | \"cluster-native\") so dispatch knows "+
+					"where to run %s\n",
+				info.towerName, info.towerName, id)
+			fmt.Printf("ready: %s\n", id)
 		default:
 			fmt.Printf("ready: %s\n", id)
 		}
