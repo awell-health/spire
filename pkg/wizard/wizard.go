@@ -598,6 +598,20 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		log("warning: registry stamp for %s: %v", wizardName, uerr)
 	}
 
+	// Sender-PID capture via SA_SIGINFO (see sigaction_unix.go). MUST be
+	// installed BEFORE Go's signal.Notify so the C handler is on the
+	// kernel-side delivery path and Go's handler chains AFTER ours. The
+	// C handler is async-signal-safe and writes a single line per
+	// signal to the capture log; the Go handler reads it back during
+	// forensic dump so the operator sees who sent the signal alongside
+	// the goroutine stack and ps snapshot.
+	senderCapturePath := filepath.Join(os.TempDir(), fmt.Sprintf("spire-sender-capture-%d.log", os.Getpid()))
+	if err := installSenderCapture(senderCapturePath); err != nil {
+		log("warning: install sender-capture handler: %v (continuing without sender PID detection)", err)
+	} else {
+		log("sender-capture handler installed: %s", senderCapturePath)
+	}
+
 	// Signal handler — registry cleanup is no longer done here; the entry
 	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
 	//
@@ -625,6 +639,17 @@ func CmdWizardRun(args []string, deps *Deps) error {
 			fmt.Fprintf(f, "pid:         %d\n", pid)
 			fmt.Fprintf(f, "ppid:        %d\n", ppid)
 			fmt.Fprintf(f, "pgid:        %d\n", pgid)
+			// Sender capture from the SA_SIGINFO C handler (sigaction_unix.go).
+			// Contains lines of shape "sig=N sender_pid=P sender_uid=U si_code=C ts=T self_pid=S"
+			// — one per signal received. The most recent line is the
+			// signal we are about to die on; si_code=0x10001 (SI_USER on
+			// macOS) means a userspace process called kill(); si_code=0x10000
+			// or similar means kernel-originated.
+			if data, rerr := os.ReadFile(senderCapturePath); rerr == nil {
+				fmt.Fprintf(f, "\n--- sender capture (from C SA_SIGINFO handler) ---\n%s\n", data)
+			} else {
+				fmt.Fprintf(f, "\n--- sender capture not available: %v ---\n", rerr)
+			}
 			// Goroutine stack — tells us where the apprentice was when the
 			// signal arrived. If it's blocked on cmd.Run / handle.Wait /
 			// network I/O, we know the apprentice was healthy; if it's in
