@@ -19,6 +19,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -168,6 +169,121 @@ func Is429Response(output []byte, runErr error) bool {
 		}
 	}
 	return false
+}
+
+// IsMaxTurns reports whether the claude CLI stream-json output contains a
+// terminal `result` event whose stop signal indicates the run hit its
+// configured turn cap. Matches any of:
+//   - result.stop_reason == "max_turns"
+//   - result.subtype == "error_max_turns"
+//   - result.terminal_reason == "max_turns"
+//
+// A true return means the run exited because of a real budget exhaustion,
+// not a transport-layer cut — callers should NOT retry. Returns false on
+// empty input or when no result event is present (see transientStreamCutoff
+// for that case).
+func IsMaxTurns(output []byte) bool {
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || !bytes.Contains(line, []byte(`"type"`)) {
+			continue
+		}
+		var evt struct {
+			Type           string `json:"type"`
+			Subtype        string `json:"subtype"`
+			StopReason     string `json:"stop_reason"`
+			TerminalReason string `json:"terminal_reason"`
+		}
+		if err := json.Unmarshal(line, &evt); err != nil {
+			continue
+		}
+		if evt.Type != "result" {
+			continue
+		}
+		if evt.StopReason == "max_turns" || evt.Subtype == "error_max_turns" || evt.TerminalReason == "max_turns" {
+			return true
+		}
+	}
+	return false
+}
+
+// TransientStreamCutoff reports whether a non-zero claude exit looks like a
+// transport-layer stream interruption rather than a real failure. The
+// signature observed in production is: claude was actively streaming a
+// non-terminal stream event (e.g. an `input_json_delta` mid-tool-input),
+// the HTTPS connection got cut, claude exits non-zero, and no terminal
+// `result` event was ever emitted.
+//
+// Returns true iff ALL of the following hold:
+//   - runErr != nil (the subprocess actually failed)
+//   - Is429Response(output, runErr) is false (rate limits aren't transient)
+//   - IsMaxTurns(output) is false (max_turns is not transient)
+//   - the stream contains NO `type:"result"` event
+//   - the last non-empty line looks like a stream-json event whose top-level
+//     type is neither `result` nor `error`. A truncated final line (one that
+//     fails to parse as JSON but does contain a `"type"` field) is treated
+//     as the strongest cutoff signal: it means claude died mid-line.
+//
+// Returns false on empty output: a subprocess that died before emitting
+// any JSONL line is not enough signal — that is more likely a binary-launch
+// or environment problem than a stream cut, and the caller should fail
+// rather than retry blindly.
+func TransientStreamCutoff(output []byte, runErr error) bool {
+	if runErr == nil {
+		return false
+	}
+	if Is429Response(output, runErr) {
+		return false
+	}
+	if IsMaxTurns(output) {
+		return false
+	}
+	var lastLine []byte
+	hasResultEvent := false
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		lastLine = line
+		if !bytes.Contains(line, []byte(`"type"`)) {
+			continue
+		}
+		var evt struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &evt); err == nil && evt.Type == "result" {
+			hasResultEvent = true
+		}
+	}
+	if hasResultEvent {
+		return false
+	}
+	if len(lastLine) == 0 {
+		return false
+	}
+	if !bytes.HasPrefix(lastLine, []byte("{")) {
+		return false
+	}
+	if !bytes.Contains(lastLine, []byte(`"type"`)) {
+		return false
+	}
+	var lastEvt struct {
+		Type       string `json:"type"`
+		StopReason string `json:"stop_reason"`
+	}
+	if err := json.Unmarshal(lastLine, &lastEvt); err != nil {
+		// Truncated JSON on the last line is a strong cutoff signal:
+		// claude died mid-line while streaming a non-terminal event.
+		return true
+	}
+	if lastEvt.Type == "result" || lastEvt.Type == "error" {
+		return false
+	}
+	if lastEvt.StopReason != "" {
+		return false
+	}
+	return true
 }
 
 // MergeAuthEnv returns a copy of baseEnv with the AuthContext's

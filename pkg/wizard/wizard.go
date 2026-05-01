@@ -1535,13 +1535,27 @@ func openProviderStreamLog(agentResultDir, provider, label string) (*providerStr
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	ts := time.Now().UTC().Format("20060102-150405")
-	stem := fmt.Sprintf("%s-%s", sanitizeClaudeLogLabel(label), ts)
-	stdoutPath := filepath.Join(dir, stem+".jsonl")
-	stderrPath := filepath.Join(dir, stem+".stderr.log")
-
-	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open stdout transcript %s: %w", stdoutPath, err)
+	baseStem := fmt.Sprintf("%s-%s", sanitizeClaudeLogLabel(label), ts)
+	// Two spawns inside the same second (e.g. transient-cutoff retry with a
+	// near-zero backoff in tests, or fast back-to-back invocations in
+	// production) would collide on the second-resolution timestamp and
+	// O_APPEND into the prior attempt's transcript. Probe with O_EXCL and
+	// add a numeric suffix on collision so each attempt gets its own file.
+	stem := baseStem
+	var stdoutPath, stderrPath string
+	var stdout *os.File
+	for i := 1; ; i++ {
+		stdoutPath = filepath.Join(dir, stem+".jsonl")
+		f, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND|os.O_EXCL, 0o644)
+		if err == nil {
+			stdout = f
+			stderrPath = filepath.Join(dir, stem+".stderr.log")
+			break
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("open stdout transcript %s: %w", stdoutPath, err)
+		}
+		stem = fmt.Sprintf("%s-%d", baseStem, i+1)
 	}
 	stderr, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -1577,6 +1591,12 @@ func WizardAgentResultDir(deps *Deps, wizardName string) string {
 // the api-key slot is populated, a 429 from claude triggers an in-memory
 // subscription→api-key swap and a single retry (spi-mdxtww). The swap is
 // sticky for subsequent calls in the same wizard process.
+//
+// On a non-zero exit that looks like a transport-layer stream interruption
+// (no `result` event, no 429, no `max_turns`; see agent.TransientStreamCutoff),
+// the spawn is retried up to maxTransientRetries times with a
+// transientRetryBackoff schedule between attempts. Each attempt opens its
+// own timestamped JSONL transcript so the post-mortem trail is preserved.
 func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -1595,32 +1615,11 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
 
-	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
-	if stream != nil {
-		defer stream.stdout.Close()
-		defer stream.stderr.Close()
-	}
-
-	var buf bytes.Buffer
-	stdoutTee := io.Writer(&buf)
-	if stream != nil {
-		stdoutTee = io.MultiWriter(&buf, stream.stdout)
-	}
-	var stderrTee io.Writer = os.Stderr
-	if stream != nil {
-		stderrTee = io.MultiWriter(os.Stderr, stream.stderr)
-	}
-
-	started := time.Now()
-	res := runWizardClaudeInvoke(ctx, args, worktreeDir, stdoutTee, stderrTee, label)
-	if stream != nil {
-		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", res.Err, time.Since(started))
-	}
-
-	_, metrics := parseClaudeResultJSON(buf.Bytes())
+	out, runErr := runWizardClaudeWithRetry(ctx, args, worktreeDir, agentResultDir, label)
+	_, metrics := parseClaudeResultJSON(out)
 	metrics.MaxTurns = maxTurns
 	metrics.AuthProfileFinal = wizardPromotionSlot()
-	return metrics, res.Err
+	return metrics, runErr
 }
 
 // WizardRunClaudeCapture invokes the claude CLI and captures the text result.
@@ -1631,7 +1630,7 @@ func WizardRunClaude(worktreeDir, promptPath, model, timeout string, maxTurns in
 // <agentResultDir>/claude/<label>-<ts>.jsonl, with a sidecar
 // <label>-<ts>.stderr.log for stderr.
 //
-// Same 429 auto-promote behavior as WizardRunClaude (spi-mdxtww).
+// Same 429 auto-promote and transient-cutoff retry behavior as WizardRunClaude.
 func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxTurns int, agentResultDir, label string) (string, ClaudeMetrics, error) {
 	promptBytes, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -1649,29 +1648,7 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
 
-	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
-	if stream != nil {
-		defer stream.stdout.Close()
-		defer stream.stderr.Close()
-	}
-
-	var buf bytes.Buffer
-	stdoutTee := io.Writer(&buf)
-	if stream != nil {
-		stdoutTee = io.MultiWriter(&buf, stream.stdout)
-	}
-	var stderrTee io.Writer = os.Stderr
-	if stream != nil {
-		stderrTee = io.MultiWriter(os.Stderr, stream.stderr)
-	}
-
-	started := time.Now()
-	res := runWizardClaudeInvoke(ctx, args, worktreeDir, stdoutTee, stderrTee, label)
-	if stream != nil {
-		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", res.Err, time.Since(started))
-	}
-
-	out := buf.Bytes()
+	out, runErr := runWizardClaudeWithRetry(ctx, args, worktreeDir, agentResultDir, label)
 	resultText, metrics := parseClaudeResultJSON(out)
 	metrics.MaxTurns = maxTurns
 	metrics.AuthProfileFinal = wizardPromotionSlot()
@@ -1680,7 +1657,7 @@ func WizardRunClaudeCapture(worktreeDir, promptPath, model, timeout string, maxT
 		resultText = string(out)
 	}
 
-	return resultText, metrics, res.Err
+	return resultText, metrics, runErr
 }
 
 // wizardClaudeCLIRunner is the injected claude-invocation shim. Defaults
@@ -1717,6 +1694,114 @@ func runWizardClaudeInvoke(ctx context.Context, args []string, dir string, stdou
 		recordWizardPromotion(auth.SlotName())
 	}
 	return res
+}
+
+// maxTransientRetries caps how many additional spawn attempts we'll make
+// after a transient stream cutoff is detected (so total attempts =
+// 1 + maxTransientRetries). Tuned from production observations on
+// spi-skfsia and siblings: a single retry usually clears the network
+// blip; two is enough to ride through the rare double-cut.
+const maxTransientRetries = 2
+
+// transientRetryBackoffs are the per-attempt sleep windows between
+// retries. attempt index 0 is the wait BEFORE the second spawn,
+// index 1 is the wait BEFORE the third spawn. Length must equal
+// maxTransientRetries.
+var transientRetryBackoffs = []time.Duration{
+	5 * time.Second,
+	30 * time.Second,
+}
+
+// transientRetryBackoff returns the sleep before the (1+i)-th retry. For
+// indexes outside the configured schedule it returns the last entry — a
+// safety net that should never fire because the caller bounds attempts by
+// maxTransientRetries.
+func transientRetryBackoff(i int) time.Duration {
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(transientRetryBackoffs) {
+		return transientRetryBackoffs[len(transientRetryBackoffs)-1]
+	}
+	return transientRetryBackoffs[i]
+}
+
+// runWizardClaudeWithRetry orchestrates one or more claude CLI invocations
+// for a single phase prompt. Each attempt opens its own timestamped JSONL
+// transcript via openClaudeProviderStream so per-attempt post-mortems are
+// preserved. After every attempt, the outcome is classified in this order:
+//
+//  1. Is429Response — the inner 429 auto-promote already retried once
+//     inside InvokeClaudeWithAuth; treat its final result as authoritative,
+//     no outer retry.
+//  2. IsMaxTurns — genuine budget exhaustion, no retry.
+//  3. TransientStreamCutoff with attempts remaining — sleep the configured
+//     backoff and respawn with the same args/worktree/auth.
+//  4. anything else (success or non-transient error) — return as-is.
+//
+// Returns the stdout bytes and exit error of the FINAL attempt.
+func runWizardClaudeWithRetry(ctx context.Context, args []string, worktreeDir, agentResultDir, label string) ([]byte, error) {
+	beadID := os.Getenv("SPIRE_BEAD_ID")
+	for attempt := 0; ; attempt++ {
+		out, runErr := runWizardClaudeOnce(ctx, args, worktreeDir, agentResultDir, label)
+
+		if runErr == nil {
+			return out, nil
+		}
+		if agent.Is429Response(out, runErr) {
+			return out, runErr
+		}
+		if agent.IsMaxTurns(out) {
+			return out, runErr
+		}
+		if !agent.TransientStreamCutoff(out, runErr) {
+			return out, runErr
+		}
+		if attempt >= maxTransientRetries {
+			fmt.Fprintf(os.Stderr,
+				"[claude] transient stream cut on bead %s, retries exhausted (%d/%d)%s\n",
+				beadID, attempt+1, maxTransientRetries+1,
+				runtime.LogFields(runtime.RunContextFromEnv()))
+			return out, runErr
+		}
+		backoff := transientRetryBackoff(attempt)
+		fmt.Fprintf(os.Stderr,
+			"[claude] transient stream cut on bead %s, retrying (attempt %d/%d) after %s%s\n",
+			beadID, attempt+2, maxTransientRetries+1, backoff,
+			runtime.LogFields(runtime.RunContextFromEnv()))
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return out, ctx.Err()
+		}
+	}
+}
+
+// runWizardClaudeOnce performs a single claude CLI spawn and returns the
+// captured stdout plus the spawn error. A fresh transcript pair is opened
+// per call so retries don't clobber the prior attempt's JSONL — the
+// timestamp in openProviderStreamLog's filename guarantees uniqueness.
+func runWizardClaudeOnce(ctx context.Context, args []string, worktreeDir, agentResultDir, label string) ([]byte, error) {
+	stream := openClaudeProviderStream(agentResultDir, label, worktreeDir, args)
+	if stream != nil {
+		defer stream.stdout.Close()
+		defer stream.stderr.Close()
+	}
+	var buf bytes.Buffer
+	stdoutTee := io.Writer(&buf)
+	if stream != nil {
+		stdoutTee = io.MultiWriter(&buf, stream.stdout)
+	}
+	var stderrTee io.Writer = os.Stderr
+	if stream != nil {
+		stderrTee = io.MultiWriter(os.Stderr, stream.stderr)
+	}
+	started := time.Now()
+	res := runWizardClaudeInvoke(ctx, args, worktreeDir, stdoutTee, stderrTee, label)
+	if stream != nil {
+		fmt.Fprintf(stream.stdout, "\n=== end (err=%v, duration=%s) ===\n", res.Err, time.Since(started))
+	}
+	return buf.Bytes(), res.Err
 }
 
 // writeClaudeLogHeader writes an identifying preamble to the claude

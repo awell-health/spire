@@ -128,6 +128,164 @@ func TestIs429Response(t *testing.T) {
 	}
 }
 
+// --- IsMaxTurns ------------------------------------------------------------
+
+func TestIsMaxTurns(t *testing.T) {
+	cases := []struct {
+		name   string
+		output []byte
+		want   bool
+	}{
+		{
+			name:   "stop_reason max_turns",
+			output: []byte(`{"type":"result","stop_reason":"max_turns","is_error":true}`),
+			want:   true,
+		},
+		{
+			name:   "subtype error_max_turns",
+			output: []byte(`{"type":"result","subtype":"error_max_turns","is_error":true}`),
+			want:   true,
+		},
+		{
+			name:   "terminal_reason max_turns",
+			output: []byte(`{"type":"result","terminal_reason":"max_turns","is_error":true}`),
+			want:   true,
+		},
+		{
+			name:   "clean success",
+			output: bodyOK,
+			want:   false,
+		},
+		{
+			name:   "no result event",
+			output: []byte(`{"type":"stream_event","event":{"type":"input_json_delta"}}`),
+			want:   false,
+		},
+		{
+			name:   "stop_reason end_turn",
+			output: []byte(`{"type":"result","stop_reason":"end_turn"}`),
+			want:   false,
+		},
+		{
+			name:   "empty",
+			output: nil,
+			want:   false,
+		},
+		{
+			name:   "max_turns substring in non-result line is ignored",
+			output: []byte(`{"type":"stream_event","event":{"text":"max_turns is a thing"}}` + "\n" + `{"type":"result","stop_reason":"end_turn"}`),
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsMaxTurns(tc.output); got != tc.want {
+				t.Fatalf("IsMaxTurns = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// --- TransientStreamCutoff -------------------------------------------------
+
+// streamCutFixture reproduces the production death-signature: a stream
+// that's actively emitting an input_json_delta when the connection breaks.
+// No result event, no rate_limit_error, no max_turns — just an incomplete
+// non-terminal stream event as the last line.
+var streamCutFixture = []byte(`{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"id":"msg_x"}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Edit"}}}
+{"type":"stream_event","event":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/tmp/foo"}
+`)
+
+func TestTransientStreamCutoff(t *testing.T) {
+	exitErr := errors.New("exit status 1")
+	cases := []struct {
+		name   string
+		output []byte
+		err    error
+		want   bool
+	}{
+		{
+			name:   "transient cut mid input_json_delta",
+			output: streamCutFixture,
+			err:    exitErr,
+			want:   true,
+		},
+		{
+			name:   "clean stream with result event",
+			output: bodyOK,
+			err:    nil,
+			want:   false,
+		},
+		{
+			name:   "clean stream with result event but non-zero exit",
+			output: append(append([]byte(nil), streamCutFixture...), bodyOK...),
+			err:    exitErr,
+			want:   false,
+		},
+		{
+			name:   "max_turns terminal stream",
+			output: []byte(`{"type":"stream_event","event":{"type":"input_json_delta"}}` + "\n" + `{"type":"result","stop_reason":"max_turns","is_error":true}`),
+			err:    exitErr,
+			want:   false,
+		},
+		{
+			name:   "429 in stream",
+			output: body429,
+			err:    exitErr,
+			want:   false,
+		},
+		{
+			name:   "429 in error string with empty output",
+			output: nil,
+			err:    errors.New("API returned status 429"),
+			want:   false,
+		},
+		{
+			name:   "nil error",
+			output: streamCutFixture,
+			err:    nil,
+			want:   false,
+		},
+		{
+			name:   "empty output with error",
+			output: nil,
+			err:    exitErr,
+			want:   false,
+		},
+		{
+			name:   "last line is non-JSON (treated as not-a-stream-event)",
+			output: []byte(`some plain text trailer`),
+			err:    exitErr,
+			want:   false,
+		},
+		{
+			name:   "stream ends on content_block_delta",
+			output: []byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}}`),
+			err:    exitErr,
+			want:   true,
+		},
+		{
+			// A nested stop_reason inside a stream_event is not a terminal
+			// signal — the claude CLI emits a real `result` line as its
+			// final event. If the CLI died before that, it's still a cutoff
+			// regardless of where the API thought the message ended.
+			name:   "stream_event with nested stop_reason still treated as cutoff",
+			output: []byte(`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}`),
+			err:    exitErr,
+			want:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TransientStreamCutoff(tc.output, tc.err); got != tc.want {
+				t.Fatalf("TransientStreamCutoff = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- MergeAuthEnv ----------------------------------------------------------
 
 func TestMergeAuthEnv_InjectsActiveSlot(t *testing.T) {
