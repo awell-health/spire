@@ -10,6 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Test-replaceable seams for cmdFile (mirrors the alert.go pattern).
+var fileCreateBead = storeCreateBead
+var fileAddDepTyped = storeAddDepTyped
+var fileAddLabel = storeAddLabel
+var fileGetBead = storeGetBead
+
 var fileCmd = &cobra.Command{
 	Use:   "file <title> [flags]",
 	Short: "Create a bead (--prefix, -t type, -p priority)",
@@ -26,13 +32,14 @@ var fileCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("merge-mode"); v != "" {
 			fullArgs = append(fullArgs, "--merge-mode", v)
 		}
-		// --design is an alias for --ref (both create a discovered-from dep).
-		ref, _ := cmd.Flags().GetString("ref")
-		if design, _ := cmd.Flags().GetString("design"); design != "" && ref == "" {
-			ref = design
+		if v, _ := cmd.Flags().GetString("ref"); v != "" {
+			fullArgs = append(fullArgs, "--ref", v)
 		}
-		if ref != "" {
-			fullArgs = append(fullArgs, "--ref", ref)
+		if v, _ := cmd.Flags().GetString("design"); v != "" {
+			fullArgs = append(fullArgs, "--design", v)
+		}
+		if v, _ := cmd.Flags().GetString("caused-by"); v != "" {
+			fullArgs = append(fullArgs, "--caused-by", v)
 		}
 		if v, _ := cmd.Flags().GetString("type"); v != "" {
 			fullArgs = append(fullArgs, "-t", v)
@@ -59,8 +66,9 @@ func init() {
 	fileCmd.Flags().String("prefix", "", "Repo prefix")
 	fileCmd.Flags().String("branch", "", "Base branch override for execution")
 	fileCmd.Flags().String("merge-mode", "", "Merge mode: merge or pr")
-	fileCmd.Flags().String("ref", "", "Design bead ID to link via discovered-from dep")
-	fileCmd.Flags().String("design", "", "Design bead ID (alias for --ref)")
+	fileCmd.Flags().String("ref", "", "Bead ID to link via discovered-from dep (unvalidated)")
+	fileCmd.Flags().String("design", "", "Design bead ID (validated: must be type=design)")
+	fileCmd.Flags().String("caused-by", "", "Bead ID this bead was caused by (adds caused-by dep)")
 	fileCmd.Flags().StringP("type", "t", "", "Bead type (task, bug, feature, epic, chore, recovery)")
 	fileCmd.Flags().IntP("priority", "p", 0, "Priority (0-4)")
 	fileCmd.Flags().String("label", "", "Comma-separated labels")
@@ -70,12 +78,12 @@ func init() {
 
 func cmdFile(args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <base-branch>] [--merge-mode <merge|pr>] [--ref <design-bead-id>] [bd create flags...]")
+		fmt.Println("usage: spire file <title> [--prefix <prefix>] [--branch <base-branch>] [--merge-mode <merge|pr>] [--ref <bead-id>] [--design <design-bead-id>] [--caused-by <bead-id>] [bd create flags...]")
 		return nil
 	}
 
 	// Extract spire-specific flags from args; pass everything else to bd create
-	var prefix, branch, mergeMode, ref string
+	var prefix, branch, mergeMode, ref, design, causedBy string
 	remaining := []string{}
 
 	for i := 0; i < len(args); i++ {
@@ -112,6 +120,22 @@ func cmdFile(args []string) error {
 			ref = args[i]
 		case strings.HasPrefix(args[i], "--ref="):
 			ref = strings.TrimPrefix(args[i], "--ref=")
+		case args[i] == "--design":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--design requires a value")
+			}
+			i++
+			design = args[i]
+		case strings.HasPrefix(args[i], "--design="):
+			design = strings.TrimPrefix(args[i], "--design=")
+		case args[i] == "--caused-by":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--caused-by requires a value")
+			}
+			i++
+			causedBy = args[i]
+		case strings.HasPrefix(args[i], "--caused-by="):
+			causedBy = strings.TrimPrefix(args[i], "--caused-by=")
 		default:
 			remaining = append(remaining, args[i])
 		}
@@ -160,6 +184,23 @@ func cmdFile(args []string) error {
 	// of where the caller (e.g. an AI agent) invoked spire from.
 	if instPath != "" {
 		os.Chdir(instPath) //nolint
+	}
+
+	// Validate --design and --caused-by referents BEFORE bead creation so a
+	// failed lookup doesn't leave a half-created bead behind.
+	if design != "" {
+		b, err := fileGetBead(design)
+		if err != nil {
+			return fmt.Errorf("file: --design %s: %w", design, err)
+		}
+		if b.Type != "design" {
+			return fmt.Errorf("file: --design %s: bead is type=%s, not design — use --ref for non-design discovered-from links", design, b.Type)
+		}
+	}
+	if causedBy != "" {
+		if _, err := fileGetBead(causedBy); err != nil {
+			return fmt.Errorf("file: --caused-by %s: %w", causedBy, err)
+		}
 	}
 
 	// Parse remaining args into createOpts.
@@ -223,26 +264,42 @@ func cmdFile(args []string) error {
 		return fmt.Errorf("file: title is required")
 	}
 
-	id, err := storeCreateBead(opts)
+	id, err := fileCreateBead(opts)
 	if err != nil {
 		return fmt.Errorf("file: %w", err)
 	}
 
 	// Add branch and merge-mode labels if provided.
 	if branch != "" {
-		if lerr := storeAddLabel(id, "base-branch:"+branch); lerr != nil {
+		if lerr := fileAddLabel(id, "base-branch:"+branch); lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to add base-branch label: %v\n", lerr)
 		}
 	}
 	if mergeMode != "" {
-		if lerr := storeAddLabel(id, "merge-mode:"+mergeMode); lerr != nil {
+		if lerr := fileAddLabel(id, "merge-mode:"+mergeMode); lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to add merge-mode label: %v\n", lerr)
 		}
 	}
-	// Link to a design bead via discovered-from dep if --ref was provided.
+	// Link to a referenced bead via discovered-from dep if --ref was provided
+	// (unvalidated escape hatch).
 	if ref != "" {
-		if derr := storeAddDepTyped(id, ref, "discovered-from"); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to link design bead %s: %v\n", ref, derr)
+		if derr := fileAddDepTyped(id, ref, "discovered-from"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to link ref bead %s: %v\n", ref, derr)
+		}
+	}
+	// Link to the design bead via discovered-from dep if --design was provided
+	// (validated form: target was already confirmed type=design above).
+	if design != "" {
+		if derr := fileAddDepTyped(id, design, "discovered-from"); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to link design bead %s: %v\n", design, derr)
+		}
+	}
+	// Caused-by uses strict failure semantics: if the dep can't be added,
+	// surface the new bead ID (so the user can clean up) and return the error.
+	if causedBy != "" {
+		if derr := fileAddDepTyped(id, causedBy, store.DepCausedBy); derr != nil {
+			fmt.Println(id)
+			return fmt.Errorf("file: created bead %s but failed to add caused-by dep to %s: %w", id, causedBy, derr)
 		}
 	}
 
