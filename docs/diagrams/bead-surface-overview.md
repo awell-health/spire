@@ -1,28 +1,19 @@
 # Bead Surface Overview
 
-This map shows which commands and runtime actors touch the parent bead, the attempt bead, and the step beads.
+This map shows which commands and runtime actors touch the parent bead, the attempt bead, and the step beads. The surface is broken into three diagrams so each category stays readable on its own.
+
+## 1. Operator Commands
+
+Commands the user runs explicitly. Solid arrows are direct writes; dotted arrows are indirect side effects.
 
 ```mermaid
 flowchart LR
-  subgraph Commands["Operator Commands"]
-    summon["summon"]
-    resummon["resummon"]
-    reset["reset"]
-    resetHard["reset --hard"]
-    resetTo["reset --to"]
-    approve["approve"]
-  end
-
-  subgraph Runtime["Runtime Actors"]
-    exec["executor / wizard"]
-    steward["steward"]
-    orphan["orphan sweep"]
-  end
-
-  subgraph ReadOnly["Read-Only Surfaces"]
-    board["board"]
-    trace["trace"]
-  end
+  summon["summon"]
+  resummon["resummon"]
+  reset["reset"]
+  resetHard["reset --hard"]
+  resetTo["reset --to"]
+  approve["approve"]
 
   parent["parent work bead"]
   attempt["attempt bead"]
@@ -48,6 +39,21 @@ flowchart LR
 
   approve -->|resume parent when the last approval hook clears| parent
   approve -->|unhook human.approve or design-check gate| step
+```
+
+## 2. Runtime Actors
+
+Background processes that mutate beads as work progresses.
+
+```mermaid
+flowchart LR
+  exec["executor / wizard"]
+  steward["steward"]
+  orphan["orphan sweep"]
+
+  parent["parent work bead"]
+  attempt["attempt bead"]
+  step["step beads"]
 
   exec -->|status moves, labels, terminal close| parent
   exec -->|ownership stamp, heartbeat, result close| attempt
@@ -59,6 +65,20 @@ flowchart LR
 
   orphan -->|reopen parent when owner is dead and heartbeat is stale| parent
   orphan -->|close orphaned attempt| attempt
+```
+
+## 3. Read-Only Surfaces
+
+UI surfaces that only read bead state — they never mutate it.
+
+```mermaid
+flowchart LR
+  board["board"]
+  trace["trace"]
+
+  parent["parent work bead"]
+  attempt["attempt bead"]
+  step["step beads"]
 
   board -.->|queue state and current phase| parent
   board -.->|active owner summary| attempt

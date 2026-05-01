@@ -1427,7 +1427,6 @@ func cmdTowerRemove(name string, force bool) error {
 		if w.Tower == name {
 			if w.PID > 0 && processAlive(w.PID) {
 				if proc, findErr := os.FindProcess(w.PID); findErr == nil {
-					auditSendSignal(proc, syscall.SIGTERM, "tower.removeTower")
 					proc.Signal(syscall.SIGTERM)
 					// Wait briefly for graceful shutdown.
 					deadline := time.Now().Add(3 * time.Second)

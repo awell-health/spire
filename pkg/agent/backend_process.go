@@ -154,7 +154,6 @@ func (b *ProcessBackend) Kill(name string) error {
 	pid := found.PID
 	if pid > 0 && dolt.ProcessAlive(pid) {
 		proc, _ := os.FindProcess(pid)
-		auditSendSignal(proc, syscall.SIGTERM, "ProcessBackend.Kill")
 		if err := proc.Signal(syscall.SIGTERM); err != nil {
 			return fmt.Errorf("kill agent %s (pid %d): %w", name, pid, err)
 		}
@@ -282,13 +281,11 @@ func (b *ProcessBackend) TerminateBead(ctx context.Context, beadID string) error
 // because the only sane reaction is "keep going to the next entry".
 func signalTerminate(pid, pgid int) {
 	if pgid > 0 {
-		auditKillPGID(pgid, syscall.SIGTERM, "agent.signalTerminate")
 		_ = killPGID(pgid, syscall.SIGTERM)
 		return
 	}
 	if pid > 0 && dolt.ProcessAlive(pid) {
 		if proc, err := os.FindProcess(pid); err == nil {
-			auditSendSignal(proc, syscall.SIGTERM, "agent.signalTerminate")
 			_ = proc.Signal(syscall.SIGTERM)
 		}
 	}
@@ -297,13 +294,11 @@ func signalTerminate(pid, pgid int) {
 // signalKill is the SIGKILL counterpart to signalTerminate.
 func signalKill(pid, pgid int) {
 	if pgid > 0 {
-		auditKillPGID(pgid, syscall.SIGKILL, "agent.signalKill")
 		_ = killPGID(pgid, syscall.SIGKILL)
 		return
 	}
 	if pid > 0 && dolt.ProcessAlive(pid) {
 		if proc, err := os.FindProcess(pid); err == nil {
-			auditSendSignal(proc, syscall.SIGKILL, "agent.signalKill")
 			_ = proc.Signal(syscall.SIGKILL)
 		}
 	}

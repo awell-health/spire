@@ -33,7 +33,7 @@ sequenceDiagram
   alt owner alive and heartbeat older than shutdown
     Stew-->>Exec: backend.Kill(owner)
   else heartbeat missing or owner already gone
-    Stew-->>Stew: warn only; leave closure to orphan sweep
+    Stew-->>Stew: warn only leave closure to orphan sweep
   end
 
   Sweep->>Attempt: CloseAttemptBead(interrupted:orphan) when owner is dead and heartbeat is stale

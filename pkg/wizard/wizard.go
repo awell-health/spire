@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	rt "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -598,81 +597,16 @@ func CmdWizardRun(args []string, deps *Deps) error {
 		log("warning: registry stamp for %s: %v", wizardName, uerr)
 	}
 
-	// Sender-PID capture via SA_SIGINFO (see sigaction_unix.go). MUST be
-	// installed BEFORE Go's signal.Notify so the C handler is on the
-	// kernel-side delivery path and Go's handler chains AFTER ours. The
-	// C handler is async-signal-safe and writes a single line per
-	// signal to the capture log; the Go handler reads it back during
-	// forensic dump so the operator sees who sent the signal alongside
-	// the goroutine stack and ps snapshot.
-	senderCapturePath := filepath.Join(os.TempDir(), fmt.Sprintf("spire-sender-capture-%d.log", os.Getpid()))
-	if err := installSenderCapture(senderCapturePath); err != nil {
-		log("warning: install sender-capture handler: %v (continuing without sender PID detection)", err)
-	} else {
-		log("sender-capture handler installed: %s", senderCapturePath)
-	}
-
-	// Signal handler — registry cleanup is no longer done here; the entry
-	// was created by BeginWork and is cleaned by OrphanSweep/EndWork.
-	//
-	// We exit on SIGINT and SIGTERM (revert from spi-x5ehbs's survival
-	// experiment — confirmed SIGINT was a killer, but a second uncaught
-	// kill mechanism still fires after; need to identify both sources
-	// rather than mask the first). Dumps forensics including a goroutine
-	// stack so we know where the apprentice was when the signal arrived,
-	// plus a full ps snapshot so the sender (if still alive) shows up.
-	//
-	// Listens for a wider signal set (SIGINT/TERM/HUP/USR1/USR2/QUIT) to
-	// log any unexpected signal — broadens the capture net so we don't
-	// miss a sender using e.g. SIGUSR1.
-	dumpForensics := func(sig os.Signal) string {
-		pid := os.Getpid()
-		ppid := os.Getppid()
-		pgid, _ := syscall.Getpgid(pid)
-		forensicPath := filepath.Join(os.TempDir(), fmt.Sprintf("spire-apprentice-signal-%d-%d.log", pid, time.Now().Unix()))
-		if f, err := os.Create(forensicPath); err == nil {
-			fmt.Fprintf(f, "=== apprentice signal capture ===\n")
-			fmt.Fprintf(f, "time:        %s\n", time.Now().Format(time.RFC3339Nano))
-			fmt.Fprintf(f, "signal:      %v\n", sig)
-			fmt.Fprintf(f, "wizard_name: %s\n", wizardName)
-			fmt.Fprintf(f, "bead_id:     %s\n", beadID)
-			fmt.Fprintf(f, "pid:         %d\n", pid)
-			fmt.Fprintf(f, "ppid:        %d\n", ppid)
-			fmt.Fprintf(f, "pgid:        %d\n", pgid)
-			// Sender capture from the SA_SIGINFO C handler (sigaction_unix.go).
-			// Contains lines of shape "sig=N sender_pid=P sender_uid=U si_code=C ts=T self_pid=S"
-			// — one per signal received. The most recent line is the
-			// signal we are about to die on; si_code=0x10001 (SI_USER on
-			// macOS) means a userspace process called kill(); si_code=0x10000
-			// or similar means kernel-originated.
-			if data, rerr := os.ReadFile(senderCapturePath); rerr == nil {
-				fmt.Fprintf(f, "\n--- sender capture (from C SA_SIGINFO handler) ---\n%s\n", data)
-			} else {
-				fmt.Fprintf(f, "\n--- sender capture not available: %v ---\n", rerr)
-			}
-			// Goroutine stack — tells us where the apprentice was when the
-			// signal arrived. If it's blocked on cmd.Run / handle.Wait /
-			// network I/O, we know the apprentice was healthy; if it's in
-			// some weird code path, that's a clue.
-			stackBuf := make([]byte, 64*1024)
-			n := rt.Stack(stackBuf, true)
-			fmt.Fprintf(f, "\n--- all goroutines stack ---\n%s\n", stackBuf[:n])
-			if out, err := exec.Command("ps", "-o", "pid,ppid,pgid,state,command", "-p", strconv.Itoa(ppid)).CombinedOutput(); err == nil {
-				fmt.Fprintf(f, "\n--- parent process (ppid=%d) ---\n%s", ppid, out)
-			}
-			if out, err := exec.Command("ps", "axo", "pid,ppid,pgid,state,etime,command").CombinedOutput(); err == nil {
-				fmt.Fprintf(f, "\n--- ps axo (full snapshot) ---\n%s", out)
-			}
-			f.Close()
-		}
-		log("APPRENTICE SIGNAL: received %v (pid=%d ppid=%d pgid=%d), forensics: %s", sig, pid, ppid, pgid, forensicPath)
-		return forensicPath
-	}
+	// Signal handler — registry cleanup happens via OrphanSweep/EndWork
+	// (BeginWork created the entry). We exit on SIGINT/SIGTERM. The
+	// diagnostic forensic dump and cgo SA_SIGINFO sender-PID capture
+	// were ripped out after spi-od41sr identified the killer (a test
+	// reading the prod registry without isolation) — keeping them in
+	// production added a slow cgo build dep for no live signal.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGQUIT)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		sig := <-sigCh
-		dumpForensics(sig)
+		<-sigCh
 		os.Exit(1)
 	}()
 
