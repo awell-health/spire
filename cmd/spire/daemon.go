@@ -84,18 +84,29 @@ func runDaemon(interval, debounce time.Duration, once bool, database, remote, br
 	// Start gateway if --serve was set. Runs in the same process so it can
 	// call d.Trigger directly (no RPC boundary needed here).
 	if serve != "" {
-		wireGatewayLogArtifactReader(ctx)
-		go func() {
-			srv := gateway.NewServer(serve, d, nil, "", "")
-			// Spi-skfsia finding 4: inject the same graph-state store
-			// the executor / steward use so the cleric's HITL gate
-			// hits the canonical runtime dir (~/.config/spire by
-			// default) instead of the legacy ~/.spire fallback.
-			srv.SetGraphStateStore(resolveGlobalGraphStateStoreOrLocal())
-			if err := srv.Run(ctx); err != nil {
-				log.Printf("[gateway] exited: %s", err)
-			}
-		}()
+		// Spi-5hmz35: resolve BEADS_DIR at boot and pass it into NewServer.
+		// gateway.NewServer panics on empty dataDir, so the daemon now
+		// requires BEADS_DIR (or a registered tower instance) to start
+		// the gateway. Previously the gateway silently fell back to
+		// os.Getenv("BEADS_DIR") inside the request path, which leaked
+		// test writes through the store.Ensure singleton cache.
+		dataDir := resolveBeadsDir()
+		if dataDir == "" {
+			log.Printf("[gateway] BEADS_DIR is unset and no tower instance is registered; gateway not started (set BEADS_DIR to enable)")
+		} else {
+			wireGatewayLogArtifactReader(ctx)
+			go func() {
+				srv := gateway.NewServer(serve, d, nil, dataDir, "")
+				// Spi-skfsia finding 4: inject the same graph-state store
+				// the executor / steward use so the cleric's HITL gate
+				// hits the canonical runtime dir (~/.config/spire by
+				// default) instead of the legacy ~/.spire fallback.
+				srv.SetGraphStateStore(resolveGlobalGraphStateStoreOrLocal())
+				if err := srv.Run(ctx); err != nil {
+					log.Printf("[gateway] exited: %s", err)
+				}
+			}()
+		}
 	}
 
 	return d.Run(ctx)

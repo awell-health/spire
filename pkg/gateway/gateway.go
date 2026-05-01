@@ -83,9 +83,16 @@ type Server struct {
 // NewServer wires a server listening on addr (e.g. ":3030") that forwards
 // POST /sync to target.Trigger. Pass a non-nil logger to capture request
 // logs; nil uses log.Default(). dataDir is the .beads directory path used
-// by the /api/v1/* handlers. apiToken is the expected Bearer token; if empty
-// the server runs without auth (dev mode).
+// by the /api/v1/* handlers and MUST be non-empty — callers resolve
+// BEADS_DIR (or equivalent) at boot and pass the result in. Empty dataDir
+// panics: spi-5hmz35 closed the env-fallback footgun where tests with an
+// unset dataDir silently routed writes to whatever real beads store the
+// host had configured. apiToken is the expected Bearer token; if empty the
+// server runs without auth (dev mode).
 func NewServer(addr string, target Triggerable, logger *log.Logger, dataDir string, apiToken string) *Server {
+	if dataDir == "" {
+		panic("gateway.NewServer: dataDir must be non-empty (resolve BEADS_DIR at boot and pass it in; see spi-5hmz35)")
+	}
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -2048,12 +2055,16 @@ func statusForResetError(err error) int {
 	return http.StatusInternalServerError
 }
 
-// effectiveDataDir returns dataDir if set, otherwise falls back to BEADS_DIR env.
+// effectiveDataDir returns the configured dataDir. NewServer panics on
+// empty input, so this is always non-empty for servers built through the
+// public constructor. Raw &Server{...} literals in tests that skip the
+// constructor must set dataDir explicitly (typically t.TempDir()) or stub
+// the relevant *Func indirection so the result is never used. The previous
+// os.Getenv("BEADS_DIR") fallback was removed in spi-5hmz35 because it
+// silently routed test writes into the host's real beads store via the
+// store.Ensure singleton cache.
 func (s *Server) effectiveDataDir() string {
-	if s.dataDir != "" {
-		return s.dataDir
-	}
-	return os.Getenv("BEADS_DIR")
+	return s.dataDir
 }
 
 // pathSuffix strips a URL path prefix and returns the remaining segment(s).

@@ -150,7 +150,14 @@ func cmdServe(args []string) error {
 
 	// Start the Electron desktop API gateway in a background goroutine.
 	if apiPort != "0" {
+		// Spi-5hmz35: resolve BEADS_DIR at boot. gateway.NewServer panics
+		// on empty dataDir now, so a missing BEADS_DIR must surface as a
+		// clear error from `spire serve` rather than an opaque goroutine
+		// crash later.
 		dataDir := os.Getenv("BEADS_DIR")
+		if dataDir == "" {
+			return fmt.Errorf("spire serve: BEADS_DIR is unset and no tower instance is registered; set BEADS_DIR or register a tower (run `spire tower create` / `spire repo add`) before starting the gateway")
+		}
 		apiAddr := ":" + apiPort
 		log.Printf("spire serve: API gateway listening on %s", apiAddr)
 		wireGatewayLogArtifactReader(ctx)
