@@ -1,19 +1,19 @@
 package main
 
-// lifecycle_bridge.go wires the pkg/beadlifecycle.Deps interface to the
+// lifecycle_bridge.go wires the pkg/lifecycle.Deps interface to the
 // cmd/spire store bridge functions. It provides lifecycleDeps, a thin adapter
-// that satisfies beadlifecycle.Deps using the existing store bridge wrappers.
+// that satisfies lifecycle.Deps using the existing store bridge wrappers.
 
 import (
 	"time"
 
-	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
 
-// lifecycleDeps implements beadlifecycle.Deps by delegating to the store
+// lifecycleDeps implements lifecycle.Deps by delegating to the store
 // bridge functions that already exist in cmd/spire. It is not safe to share
 // across goroutines — each call site creates its own instance.
 type lifecycleDeps struct{}
@@ -91,6 +91,6 @@ func (lifecycleDeps) GetAttemptHeartbeat(attemptID string) (time.Time, bool, err
 }
 
 // newLifecycleDeps returns a lifecycleDeps wired to the store bridge.
-func newLifecycleDeps() beadlifecycle.Deps {
+func newLifecycleDeps() lifecycle.Deps {
 	return lifecycleDeps{}
 }

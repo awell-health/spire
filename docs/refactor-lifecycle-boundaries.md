@@ -100,10 +100,10 @@ k8s handles pod death:
 | Artifact | Local | Cluster |
 |---|---|---|
 | `pkg/registry` | Full owner of wizards.json | **Not used.** Cluster pods do not write to wizards.json. |
-| `beadlifecycle.BeginWork` | Called from summon. Creates attempt + sets in_progress + upserts registry. | **Not called from steward.** Cluster summon only sets dispatched. |
-| `beadlifecycle.ClaimWork` | Called from claim. Reclaims existing attempt OR noop (attempt already exists). | Called from claim. Creates attempt + sets in_progress. No registry upsert. |
-| `beadlifecycle.EndWork` | Called from actionBeadFinish, resummon, reset. Closes attempt + cascades + removes registry entry. | Called from actionBeadFinish, resummon, reset. Closes attempt + cascades. Registry remove is a noop (nothing to remove). |
-| `beadlifecycle.OrphanSweep` | Called from daemon tick. Reads wizards.json to find dead PIDs. | **Not called / noop for cluster entries.** Cluster uses CheckBeadHealth + stale heartbeat for orphan detection. |
+| `lifecycle.BeginWork` | Called from summon. Creates attempt + sets in_progress + upserts registry. | **Not called from steward.** Cluster summon only sets dispatched. |
+| `lifecycle.ClaimWork` | Called from claim. Reclaims existing attempt OR noop (attempt already exists). | Called from claim. Creates attempt + sets in_progress. No registry upsert. |
+| `lifecycle.EndWork` | Called from actionBeadFinish, resummon, reset. Closes attempt + cascades + removes registry entry. | Called from actionBeadFinish, resummon, reset. Closes attempt + cascades. Registry remove is a noop (nothing to remove). |
+| `lifecycle.OrphanSweep` | Called from daemon tick. Reads wizards.json to find dead PIDs. | **Not called / noop for cluster entries.** Cluster uses CheckBeadHealth + stale heartbeat for orphan detection. |
 
 This means `BeginWork` and `ClaimWork` are split rather than merged:
 
@@ -117,13 +117,13 @@ The cluster wizard (via `spire claim`) also hits `ClaimWork` — same code path.
 
 ```
 pkg/registry
-    ← no deps on pkg/alerts or pkg/beadlifecycle
+    ← no deps on pkg/alerts or pkg/lifecycle
 
 pkg/alerts
-    ← no deps on pkg/registry or pkg/beadlifecycle
+    ← no deps on pkg/registry or pkg/lifecycle
     ← imports pkg/store (for CreateBead, AddDepTyped)
 
-pkg/beadlifecycle
+pkg/lifecycle
     ← imports pkg/registry (for Upsert, Remove, Sweep)
     ← does NOT import pkg/alerts (to avoid circular; alerts close cascade uses BeadOps interface)
 
@@ -133,11 +133,11 @@ cmd/spire, pkg/steward
 
 pkg/executor
     ← imports pkg/alerts (for Raise)
-    ← does NOT import pkg/beadlifecycle (executor doesn't own task-bead transitions)
+    ← does NOT import pkg/lifecycle (executor doesn't own task-bead transitions)
     ← does NOT import pkg/registry (executor doesn't own registry)
 ```
 
-No import cycles. The one risk point: `pkg/beadlifecycle` needs to close alert children during `EndWork`. It does so via a `BeadOps.AlertCascadeClose(sourceBeadID)` interface method — the implementation (`pkg/recovery.CloseRelatedDependents`) is wired at call-site, not imported by the package.
+No import cycles. The one risk point: `pkg/lifecycle` needs to close alert children during `EndWork`. It does so via a `BeadOps.AlertCascadeClose(sourceBeadID)` interface method — the implementation (`pkg/recovery.CloseRelatedDependents`) is wired at call-site, not imported by the package.
 
 ## Three new packages
 
@@ -200,7 +200,7 @@ func Sweep() ([]Entry, error)
 | `agent.LoadRegistry()` / `.Wizards` iteration | `registry.List()` |
 | `agent.RegisterSelf(...)` in `cmd/spire/summon.go` | **DELETE** from summon callers. `BeginWork` creates the entry. |
 | `agent.RegisterSelf(...)` in `pkg/executor/graph_interpreter.go:35`, `pkg/wizard/wizard.go:334`, `pkg/wizard/wizard_review.go:48` | These are runtime field stamps (PID, phase) on an entry that already exists. Map to `registry.Update(name, fn)`, **not** `BeginWork`. The entry was created by summon; these callers only patch fields after spawn. |
-| `pkg/summon/summon.go:187 cleanDeadWizards` clone | **DELETE**. Daemon tick handles it via `beadlifecycle.OrphanSweep`. |
+| `pkg/summon/summon.go:187 cleanDeadWizards` clone | **DELETE**. Daemon tick handles it via `lifecycle.OrphanSweep`. |
 
 **Test strategy:**
 
@@ -294,14 +294,14 @@ Keep the three `Escalate*` functions as thin wrappers calling `alerts.Raise`, fo
 
 ---
 
-### `pkg/beadlifecycle`
+### `pkg/lifecycle`
 
 **Purpose:** exclusive owner of the **(task bead status × attempt bead × registry entry)** state machine. Three entrypoints: `BeginWork` (local summon), `ClaimWork` (local + cluster claim), `EndWork` (all close/interrupt paths). Plus `OrphanSweep` for the daemon.
 
 **Contract:**
 
 ```go
-package beadlifecycle
+package lifecycle
 
 // Mode controls whether the registry is written.
 type Mode int
@@ -478,19 +478,19 @@ type Deps interface {
 
 | Old call site | New |
 |---|---|
-| `cmd/spire/summon.go:543-558` (status transition + attempt logic) | `beadlifecycle.BeginWork(deps, beadID, BeginOpts{Mode: ModeLocal, ...})` |
-| `cmd/spire/claim.go:86-139` (attempt creation + status transition only) | `beadlifecycle.ClaimWork(deps, beadID, BeginOpts{...})` — business logic stays in claim.go |
+| `cmd/spire/summon.go:543-558` (status transition + attempt logic) | `lifecycle.BeginWork(deps, beadID, BeginOpts{Mode: ModeLocal, ...})` |
+| `cmd/spire/claim.go:86-139` (attempt creation + status transition only) | `lifecycle.ClaimWork(deps, beadID, BeginOpts{...})` — business logic stays in claim.go |
 | `cmd/spire/summon.go:861 reconcileOrphanAttempts` | **DELETE**. OrphanSweep's Scan B absorbs this logic in the daemon, which is the correct owner. |
 | `cmd/spire/summon.go:767 cleanDeadWizards` / `summon.go:799 reapDeadWizard` | **DELETE**. OrphanSweep's Scan A absorbs this. |
-| `pkg/steward/daemon.go:699 ReapDeadAgents` | `beadlifecycle.OrphanSweep(deps, OrphanScope{All: true})` — runs both scans |
-| `cmd/spire/resummon.go:62-112` (state cleanup before re-summon) | `beadlifecycle.EndWork(..., EndResult{Status: "interrupted", ReopenTask: true, CascadeReason: "resummon", StripLabels: []string{"review-approved"}})` then `beadlifecycle.BeginWork(...)` |
-| `cmd/spire/reset.go:1097,1280,1304` attempt-closing calls | `beadlifecycle.EndWork(..., EndResult{Status: "reset", ReopenTask: true, CascadeReason: "reset"})` |
+| `pkg/steward/daemon.go:699 ReapDeadAgents` | `lifecycle.OrphanSweep(deps, OrphanScope{All: true})` — runs both scans |
+| `cmd/spire/resummon.go:62-112` (state cleanup before re-summon) | `lifecycle.EndWork(..., EndResult{Status: "interrupted", ReopenTask: true, CascadeReason: "resummon", StripLabels: []string{"review-approved"}})` then `lifecycle.BeginWork(...)` |
+| `cmd/spire/reset.go:1097,1280,1304` attempt-closing calls | `lifecycle.EndWork(..., EndResult{Status: "reset", ReopenTask: true, CascadeReason: "reset"})` |
 
 **EXPLICIT CARVE-OUT — executor's close path:**
 
 `pkg/executor/graph_actions.go:actionBeadFinish` is **out of scope** for this refactor.
 
-The executor is a library that runs the formula and is responsible for formula completion. Making it call `beadlifecycle.EndWork` would require the executor to import `pkg/beadlifecycle`, violating the dep boundary (see dependency diagram). It would also require changing how execution completion is signalled back to the wizard layer — a larger refactor in its own right.
+The executor is a library that runs the formula and is responsible for formula completion. Making it call `lifecycle.EndWork` would require the executor to import `pkg/lifecycle`, violating the dep boundary (see dependency diagram). It would also require changing how execution completion is signalled back to the wizard layer — a larger refactor in its own right.
 
 For this refactor, `actionBeadFinish` continues to:
 - Run the close guard (`childLandedOnBranch`)
@@ -546,7 +546,7 @@ These are small but urgent — they close the specific leaks visible on the boar
 
 2. **Remove `Prefix: "spi"` hardcode in `MessageArchmage`** — Already fixed in spi-ff7nrq. The `pkg/alerts` migration will absorb this call site and the fix will be preserved.
 
-3. **Daemon Sweep replaces `ReapDeadAgents`** — `pkg/steward/daemon.go:699`: stops calling `agent.RegistryRemove` directly; calls `beadlifecycle.OrphanSweep(deps, OrphanScope{All: true})` which encapsulates dual-signal detection AND attempt+bead cleanup.
+3. **Daemon Sweep replaces `ReapDeadAgents`** — `pkg/steward/daemon.go:699`: stops calling `agent.RegistryRemove` directly; calls `lifecycle.OrphanSweep(deps, OrphanScope{All: true})` which encapsulates dual-signal detection AND attempt+bead cleanup.
 
 4. **Alert cascade on close covers `related` deps** — `EndWork` calls `AlertCascadeClose(beadID, []string{"caused-by", "related"})`. The resummon path links alert beads via `related` (not `caused-by`); both must be closed to prevent stale alerts.
 
@@ -566,7 +566,7 @@ These are small but urgent — they close the specific leaks visible on the boar
 
 **Phase 2 (sequential after Phase 1):**
 
-- **Agent C:** build `pkg/beadlifecycle` (BeginWork + ClaimWork + EndWork + OrphanSweep) + tests. Wire the call sites in `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, and `pkg/steward/daemon.go:699`. `pkg/executor/graph_actions.go:actionBeadFinish` is the explicit carve-out — Agent C does not touch it.
+- **Agent C:** build `pkg/lifecycle` (BeginWork + ClaimWork + EndWork + OrphanSweep) + tests. Wire the call sites in `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, and `pkg/steward/daemon.go:699`. `pkg/executor/graph_actions.go:actionBeadFinish` is the explicit carve-out — Agent C does not touch it.
 
 **Phase 3 (cleanup):**
 
@@ -587,7 +587,7 @@ Each agent works in its own worktree. The merge agent integrates in order Phase 
 | Daemon aggressively reaps live work | Medium | Dual-signal check: entry is orphaned only if PID dead AND no graph_state.json. Grace period logic not needed — the two-signal check is sufficient. |
 | Caller misses a migrated call site | Medium | Delete the old function bodies outright (not just deprecate). Compiler catches misses. Grep for every removed symbol after migration. |
 | EndWork cascades close something still needed | Low | `EndWork` only cascades kinds=[recovery, alert]. Both are safe to close on task completion. |
-| External `spire resummon` CLI breaks | Low | CLI now calls `beadlifecycle.EndWork` + `beadlifecycle.BeginWork`. Integration test covers CLI path. |
+| External `spire resummon` CLI breaks | Low | CLI now calls `lifecycle.EndWork` + `lifecycle.BeginWork`. Integration test covers CLI path. |
 | Cluster-native breaks | Low | Cluster path uses `ClaimWork(ModeCluster)` which skips registry. `OrphanSweep` is only called by daemon in local mode. CheckBeadHealth + heartbeat handles cluster orphan detection as before. |
 | `ClaimWork` vs. `BeginWork` confusion | Medium | Clear naming and doc: `BeginWork` = summon (local only); `ClaimWork` = claim (both modes). Compiler errors if wrong one is called at wrong site. |
 
@@ -597,7 +597,7 @@ Each agent works in its own worktree. The merge agent integrates in order Phase 
 
 1. `~/.config/spire/wizards.json` writes happen **only** from `pkg/registry`. `grep -rn "RegistryAdd\|RegistryRemove\|RegistryUpdate\|SaveRegistry" pkg/ cmd/` returns zero hits outside `pkg/registry/`.
 2. Alert beads are created **only** via `pkg/alerts.Raise` (or thin `Escalate*` wrappers). No direct `CreateBead(..., Labels: []string{"alert:..."})` outside the new package.
-3. Task/epic bead transitions between `open`, `ready`, `in_progress`, `dispatched`, and `closed` happen **only** via `pkg/beadlifecycle.{BeginWork,ClaimWork,EndWork,OrphanSweep}`. **Excluded from this check (out of scope, stay as-is):** step-bead transitions in `pkg/executor/graph_interpreter.go`, hook/unhook transitions for task beads in `graph_interpreter.go`, and `closeAllOpenGraphStepBeads` in `cmd/spire/summon.go`. A targeted grep confirming no new in-scope callers were added is sufficient; the excluded paths are identified by their file location.
+3. Task/epic bead transitions between `open`, `ready`, `in_progress`, `dispatched`, and `closed` happen **only** via `pkg/lifecycle.{BeginWork,ClaimWork,EndWork,OrphanSweep}`. **Excluded from this check (out of scope, stay as-is):** step-bead transitions in `pkg/executor/graph_interpreter.go`, hook/unhook transitions for task beads in `graph_interpreter.go`, and `closeAllOpenGraphStepBeads` in `cmd/spire/summon.go`. A targeted grep confirming no new in-scope callers were added is sufficient; the excluded paths are identified by their file location.
 4. Archmage message beads and alert beads carry the source bead's prefix. Unit tests verify against spd-parent fixtures.
 5. Steward daemon tick closes orphan attempt beads + reopens their parents within one tick. Integration test: start fake wizard (local mode), kill it (remove PID + graph_state.json), wait one tick, verify state clean.
 6. Steward daemon tick does NOT reap a wizard that crashed but left graph_state.json. Integration test: kill PID, keep graph_state.json, wait one tick, verify bead still in_progress (resumable).
@@ -622,7 +622,7 @@ Each agent works in its own worktree. The merge agent integrates in order Phase 
 
 ## Summary diff (rough scale)
 
-- New files: `pkg/registry/*.go` (~3 files), `pkg/alerts/*.go` (~2 files), `pkg/beadlifecycle/*.go` (~5 files including integration tests) — ~1800 lines including tests.
+- New files: `pkg/registry/*.go` (~3 files), `pkg/alerts/*.go` (~2 files), `pkg/lifecycle/*.go` (~5 files including integration tests) — ~1800 lines including tests.
 - Modified: `pkg/executor/executor_escalate.go`, `pkg/executor/graph_actions.go`, `pkg/recovery/bead_ops.go`, `pkg/steward/steward.go`, `pkg/steward/daemon.go`, `cmd/spire/summon.go`, `cmd/spire/claim.go`, `cmd/spire/resummon.go`, `cmd/spire/reset.go`, `pkg/summon/summon.go`, `pkg/agent/registry.go`.
 - Deleted: `RegisterSelf` (~18 lines), `pkg/summon/summon.go:187 cleanDeadWizards` (~40 lines), `cmd/spire/summon.go:reconcileOrphanAttempts` + `cleanDeadWizards` + `reapDeadWizard` (~150 lines).
 

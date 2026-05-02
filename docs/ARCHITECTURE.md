@@ -346,7 +346,7 @@ for the canonical wizard pod spec.
 [`pkg/wizardregistry`](../pkg/wizardregistry/README.md) `Registry` interface
 in both deployment modes. The interface guarantees fresh authoritative-source
 reads per call — no snapshot caching — so cross-mode callers
-(`pkg/beadlifecycle/OrphanSweep`, `pkg/summon`'s duplicate guard, board,
+(`pkg/lifecycle/OrphanSweep`, `pkg/summon`'s duplicate guard, board,
 trace) are race-safe by construction.
 
 | Mode | Registry impl | Authoritative source for liveness |

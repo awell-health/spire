@@ -200,11 +200,11 @@ spi-30nma0 bug. These rules are normative.
 |------|-----|------|-------|
 | **Create** | `ProcessBackend.Spawn` | `registry.Upsert` (via `RegistryAdd`) — writes the row with the real PID returned by the process spawner. | [`backend_process.go`](backend_process.go) |
 | **Stamp** | child runtime | `registry.Update` — fills in `Phase`, `PhaseStartedAt`, `InstanceID`, and (for the main wizard) `Worktree` once the child has booted enough to know them. | [`pkg/executor/graph_interpreter.go`](../executor/graph_interpreter.go), [`pkg/wizard/wizard.go`](../wizard/wizard.go), [`pkg/wizard/wizard_review.go`](../wizard/wizard_review.go) |
-| **Remove** | sweep / teardown | `registry.Remove` — cleans up dead PIDs (`OrphanSweep`) or finished work (`EndWork`). | [`pkg/beadlifecycle/lifecycle.go`](../beadlifecycle/lifecycle.go) |
+| **Remove** | sweep / teardown | `registry.Remove` — cleans up dead PIDs (`OrphanSweep`) or finished work (`EndWork`). | [`pkg/lifecycle/lifecycle.go`](../lifecycle/lifecycle.go) |
 
 Two notes on Create:
 
-- `BeginWork` (in `pkg/beadlifecycle`) also calls `registry.Upsert` for
+- `BeginWork` (in `pkg/lifecycle`) also calls `registry.Upsert` for
   the **main** wizard — it writes a PID=0 placeholder *before* spawn so
   `OrphanSweep` can find a half-finished summon if step 3 (attempt bead)
   or step 4 (status flip) fails. `ProcessBackend.Spawn` then overwrites

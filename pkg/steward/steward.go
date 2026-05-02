@@ -33,7 +33,7 @@ import (
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/alerts"
 	"github.com/awell-health/spire/pkg/bd"
-	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/cleric"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
@@ -132,13 +132,13 @@ var SendMessageFunc = sendMessage
 var reviewRegistryListFunc = agent.RegistryList
 
 // OrphanSweepFunc is a test-replaceable hook for the steward-side orphan
-// sweep. Production wires it to beadlifecycle.OrphanSweep with the
+// sweep. Production wires it to lifecycle.OrphanSweep with the
 // daemonLifecycleDeps and localRegistryAdapter from lifecycle_deps.go.
 // The sweep was moved here from DaemonTowerCycle (spi-4d2i71) so it
 // runs in the same sequential cycle as SweepHookedSteps and cannot
 // race with the hooked-resume path across processes.
-var OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
-	return beadlifecycle.OrphanSweep(newDaemonLifecycleDeps(), newLocalRegistryAdapter(), beadlifecycle.OrphanScope{All: true})
+var OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
+	return lifecycle.OrphanSweep(newDaemonLifecycleDeps(), newLocalRegistryAdapter(), lifecycle.OrphanScope{All: true})
 }
 
 // RegistryRemoveFunc is a test-replaceable hook for removing a single

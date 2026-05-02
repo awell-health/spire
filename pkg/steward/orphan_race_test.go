@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
@@ -395,7 +395,7 @@ func TestTowerCycle_OrphanSweepThenResume_NoClobber(t *testing.T) {
 		stateMu:   &stateMu,
 		labelsAdd: &labelsAdd,
 	}
-	if _, err := beadlifecycle.OrphanSweep(deps, reg, beadlifecycle.OrphanScope{All: true}); err != nil {
+	if _, err := lifecycle.OrphanSweep(deps, reg, lifecycle.OrphanScope{All: true}); err != nil {
 		t.Fatalf("OrphanSweep error: %v", err)
 	}
 	stateMu.Lock()
@@ -428,7 +428,7 @@ func TestTowerCycle_OrphanSweepThenResume_NoClobber(t *testing.T) {
 	}
 }
 
-// raceTestDeps is a beadlifecycle.Deps stub just rich enough for the
+// raceTestDeps is a lifecycle.Deps stub just rich enough for the
 // orphan-clobber regression test. It mirrors a tiny in-memory slice
 // of the store; ListBeads returns parent+attempt so OrphanSweep scan B
 // has something to walk.
@@ -510,15 +510,15 @@ func (d raceTestDeps) GetAttemptHeartbeat(attemptID string) (time.Time, bool, er
 
 // TestTowerCycle_OrphanSweepFuncIsTestReplaceable confirms the seam
 // added in spi-4d2i71. The default OrphanSweepFunc wires through to
-// beadlifecycle.OrphanSweep against the real store; tests substitute
+// lifecycle.OrphanSweep against the real store; tests substitute
 // it. This guard lets future refactors notice if the seam is removed
 // or stops being exercised.
 func TestTowerCycle_OrphanSweepFuncIsTestReplaceable(t *testing.T) {
 	called := false
 	orig := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		called = true
-		return beadlifecycle.SweepReport{}, nil
+		return lifecycle.SweepReport{}, nil
 	}
 	defer func() { OrphanSweepFunc = orig }()
 

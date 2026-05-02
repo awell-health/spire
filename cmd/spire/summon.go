@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
-	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
@@ -578,9 +578,9 @@ var activeTowerConfigFunc = activeTowerConfig
 // used by summonLocal for status transitions.
 var summonUpdateBeadFunc = storeUpdateBead
 
-// summonBeginWorkFunc is a test-replaceable wrapper around beadlifecycle.BeginWork
+// summonBeginWorkFunc is a test-replaceable wrapper around lifecycle.BeginWork
 // used by summonLocal to set up per-bead work state.
-var summonBeginWorkFunc = beadlifecycle.BeginWork
+var summonBeginWorkFunc = lifecycle.BeginWork
 
 // summonSpawnFunc is the seam around backend.Spawn so unit tests can exercise
 // summonLocal without fork/exec'ing the test binary (which would inherit
@@ -723,7 +723,7 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 	}
 
 	// Load registry for live-agent deduplication in scanOrphanedBeads.
-	// Dead-wizard cleanup is now handled by beadlifecycle.OrphanSweep
+	// Dead-wizard cleanup is now handled by lifecycle.OrphanSweep
 	// (called inside BeginWork), so we skip the old cleanDeadWizards pass.
 	reg := loadWizardRegistry()
 
@@ -812,8 +812,8 @@ func summonLocal(count int, targetIDs []string, dispatch string, authFlags wizar
 			id := targets[i].bead.ID
 			wizardName := "wizard-" + id
 			worktree := filepath.Join(os.TempDir(), "spire-wizard", wizardName, id)
-			if _, berr := summonBeginWorkFunc(newLifecycleDeps(), newLocalRegistryAdapter(), id, beadlifecycle.BeginOpts{
-				Mode:      beadlifecycle.ModeLocal,
+			if _, berr := summonBeginWorkFunc(newLifecycleDeps(), newLocalRegistryAdapter(), id, lifecycle.BeginOpts{
+				Mode:      lifecycle.ModeLocal,
 				AgentName: wizardName,
 				Worktree:  worktree,
 				Tower:     towerName,

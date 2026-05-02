@@ -1,4 +1,4 @@
-package beadlifecycle
+package lifecycle
 
 import (
 	"context"

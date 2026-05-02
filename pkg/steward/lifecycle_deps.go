@@ -1,8 +1,8 @@
 package steward
 
-// lifecycle_deps.go wires the pkg/beadlifecycle.Deps interface to the
+// lifecycle_deps.go wires the pkg/lifecycle.Deps interface to the
 // store + recovery functions available inside pkg/steward. This lets the
-// daemon tick call beadlifecycle.OrphanSweep without importing cmd/spire.
+// daemon tick call lifecycle.OrphanSweep without importing cmd/spire.
 //
 // It also exposes a wizardregistry.Registry adapter wired to the local
 // wizard registry file owned by pkg/agent. The adapter projects the rich
@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
-	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
@@ -25,7 +25,7 @@ import (
 	"github.com/steveyegge/beads"
 )
 
-// daemonLifecycleDeps implements beadlifecycle.Deps using the store package
+// daemonLifecycleDeps implements lifecycle.Deps using the store package
 // directly. The daemon always has a live store connection via the background
 // dolt server, so these calls are safe to make from the daemon tick.
 type daemonLifecycleDeps struct{}
@@ -118,7 +118,7 @@ func (daemonRecoveryOps) CloseBead(id string) error {
 }
 
 // newDaemonLifecycleDeps returns a daemonLifecycleDeps wired to the store.
-func newDaemonLifecycleDeps() beadlifecycle.Deps {
+func newDaemonLifecycleDeps() lifecycle.Deps {
 	return daemonLifecycleDeps{}
 }
 

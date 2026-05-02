@@ -113,7 +113,7 @@ contract shape; read it before proposing structural changes.
 
 | Caller | Site | What it asks |
 |--------|------|--------------|
-| `pkg/beadlifecycle.OrphanSweep` | daemon tick / `BeginWork` | Fresh per-iteration `IsAlive` for every candidate attempt. No snapshot of liveAgents — the [`spi-5bzu9r`] race-fix concretization. |
+| `pkg/lifecycle.OrphanSweep` | daemon tick / `BeginWork` | Fresh per-iteration `IsAlive` for every candidate attempt. No snapshot of liveAgents — the [`spi-5bzu9r`] race-fix concretization. |
 | `operator/controllers.AgentMonitor` | reconciler | Liveness queries (where added in future) consult `Registry.IsAlive`; pod reaping and stale-pod deletion stay k8s-native because they hold the live pod object. |
 | `pkg/steward` | daemon | Inbox delivery + dead-letter reaping read `agent.RegistryList` directly (rich-fields path); cluster-portable callers go through the Registry. |
 | `pkg/board` | Agents tab | `Registry.List` + `Registry.IsAlive` for the live agent panel. |

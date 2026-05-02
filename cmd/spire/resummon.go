@@ -66,7 +66,7 @@ func cmdResummon(args []string) error {
 	// Why EndWork is NOT called here:
 	// EndWork(interrupted, ReopenTask=true) would close the active attempt bead and
 	// remove the registry entry. resummon handles registry removal directly (below),
-	// and the attempt bead is closed by beadlifecycle.OrphanSweep when the subsequent
+	// and the attempt bead is closed by lifecycle.OrphanSweep when the subsequent
 	// cmdSummon → BeginWork runs. Scan B in OrphanSweep finds in_progress attempt
 	// beads with no live registry entry and closes them automatically. This produces
 	// equivalent state to EndWork without introducing an EndWork dependency here.

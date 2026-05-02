@@ -33,7 +33,7 @@ import (
 	"time"
 
 	"github.com/awell-health/spire/pkg/agent"
-	"github.com/awell-health/spire/pkg/beadlifecycle"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	"github.com/awell-health/spire/pkg/recovery"
@@ -64,9 +64,9 @@ func TestTowerCycle_ClusterNative_SkipsOrphanSweep(t *testing.T) {
 	// cluster-native cycle must skip this seam entirely.
 	sweepCalls := 0
 	origSweep := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		sweepCalls++
-		return beadlifecycle.SweepReport{}, nil
+		return lifecycle.SweepReport{}, nil
 	}
 	defer func() { OrphanSweepFunc = origSweep }()
 
@@ -127,9 +127,9 @@ func TestTowerCycle_AttachedReserved_SkipsOrphanSweep(t *testing.T) {
 
 	sweepCalls := 0
 	origSweep := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		sweepCalls++
-		return beadlifecycle.SweepReport{}, nil
+		return lifecycle.SweepReport{}, nil
 	}
 	defer func() { OrphanSweepFunc = origSweep }()
 
@@ -160,9 +160,9 @@ func TestTowerCycle_LocalNative_RunsOrphanSweep(t *testing.T) {
 
 	sweepCalls := 0
 	origSweep := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		sweepCalls++
-		return beadlifecycle.SweepReport{}, nil
+		return lifecycle.SweepReport{}, nil
 	}
 	defer func() { OrphanSweepFunc = origSweep }()
 
@@ -189,9 +189,9 @@ func TestTowerCycle_DefaultTower_RunsOrphanSweep(t *testing.T) {
 
 	sweepCalls := 0
 	origSweep := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		sweepCalls++
-		return beadlifecycle.SweepReport{}, nil
+		return lifecycle.SweepReport{}, nil
 	}
 	defer func() { OrphanSweepFunc = origSweep }()
 
@@ -226,9 +226,9 @@ func TestTowerCycle_TowerLoadFails_SkipsOrphanSweep(t *testing.T) {
 
 	sweepCalls := 0
 	origSweep := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		sweepCalls++
-		return beadlifecycle.SweepReport{}, nil
+		return lifecycle.SweepReport{}, nil
 	}
 	defer func() { OrphanSweepFunc = origSweep }()
 
@@ -476,11 +476,11 @@ func TestTowerCycle_ClusterNative_DoesNotClobberPodAttempt(t *testing.T) {
 	// would-have-cleaned attempt so the test fails loudly if the gate
 	// drops.
 	origSweep := OrphanSweepFunc
-	OrphanSweepFunc = func() (beadlifecycle.SweepReport, error) {
+	OrphanSweepFunc = func() (lifecycle.SweepReport, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		closedAttempts = append(closedAttempts, "spi-pod1.attempt-1")
-		return beadlifecycle.SweepReport{Cleaned: 1}, nil
+		return lifecycle.SweepReport{Cleaned: 1}, nil
 	}
 	defer func() { OrphanSweepFunc = origSweep }()
 

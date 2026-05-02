@@ -339,7 +339,7 @@ func cmdUp(args []string) error {
 
 	// Step 2.5: Prune dead wizard registry entries (PID no longer alive).
 	// Bead-level cleanup (attempt close, bead reopen) is handled by
-	// beadlifecycle.OrphanSweep which runs on every BeginWork and steward tick.
+	// lifecycle.OrphanSweep which runs on every BeginWork and steward tick.
 	fmt.Print("dead wizard cleanup: ")
 	{
 		reg := loadWizardRegistry()

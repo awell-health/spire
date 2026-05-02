@@ -1,4 +1,4 @@
-# pkg/beadlifecycle
+# pkg/lifecycle
 
 Exclusive owner of the (task bead status × attempt bead × wizard-registry
 entry) state machine.
@@ -49,7 +49,7 @@ liveness queries, steward, board, trace, summon) takes a
 [`pkg/wizardregistry`](../wizardregistry/README.md) contract is the
 sole sanctioned wizard-tracking surface across modes.
 
-The `Wizard.ID` field is opaque to `beadlifecycle`: in `ModeLocal` it is
+The `Wizard.ID` field is opaque to `lifecycle`: in `ModeLocal` it is
 the agent name (`wizard-<bead-id>`); in `ModeCluster` it is the pod
 name. The attempt bead's `agent:<id>` label carries the same opaque
 key, so Scan B can route from attempt → liveness check without knowing

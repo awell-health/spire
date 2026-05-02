@@ -1,4 +1,4 @@
-// Package beadlifecycle is the exclusive owner of the (task bead status ×
+// Package lifecycle is the exclusive owner of the (task bead status ×
 // attempt bead × wizard-registry entry) state machine.
 //
 // Three entrypoints:
@@ -15,7 +15,7 @@
 //
 // The executor's close path (pkg/executor/graph_actions.go:actionBeadFinish) is
 // an explicit carve-out and is NOT called through this package.
-package beadlifecycle
+package lifecycle
 
 import (
 	"context"
@@ -101,7 +101,7 @@ type SweepReport struct {
 	Errors []error
 }
 
-// Deps is the narrow dependency surface for beadlifecycle operations.
+// Deps is the narrow dependency surface for lifecycle operations.
 type Deps interface {
 	GetBead(id string) (store.Bead, error)
 	UpdateBead(id string, updates map[string]interface{}) error

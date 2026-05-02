@@ -261,5 +261,5 @@ func TestBugB_BuildProtectedBeadIDs_DoesNotProtectAlerts(t *testing.T) {
 // Note: seams 11 and 15 (orphan-attempt reconciler) were removed in Phase 3 of the
 // lifecycle-boundaries refactor (spi-pbuhit). The reconcileOrphanAttempts/
 // reconcileOrphanAttemptsWithSeams helpers were deleted from cmd/spire/summon.go
-// because pkg/beadlifecycle.OrphanSweep now owns this responsibility. Tests for
-// OrphanSweep live in pkg/beadlifecycle/lifecycle_test.go.
+// because pkg/lifecycle.OrphanSweep now owns this responsibility. Tests for
+// OrphanSweep live in pkg/lifecycle/lifecycle_test.go.
