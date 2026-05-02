@@ -51,6 +51,26 @@ func SetLogArtifactReader(r LogArtifactReader) {
 	logArtifactReaderFunc = func() (LogArtifactReader, bool) { return r, true }
 }
 
+// logArtifactReconcileFunc is the optional bead-scoped reconcile hook.
+// When set, the list handler invokes it before returning an empty
+// manifest list so on-disk transcripts that pre-date the substrate's
+// write-path registration become visible without requiring the operator
+// to run `spire reconcile-logs` first.
+//
+// The contract is: a single call per request, scoped to the requested
+// bead, swallowing errors (return nil on best-effort failure). Wiring
+// is via SetLogArtifactReconciler.
+var logArtifactReconcileFunc func(ctx context.Context, beadID string) error
+
+// SetLogArtifactReconciler installs the lazy reconcile hook. Pass nil
+// to disable. The hook fires when reader.List returns an empty list,
+// before the response is written, so a single retry surfaces newly
+// inserted rows. cmd/spire wires this in local-native mode where the
+// backend is a logartifact.LocalStore.
+func SetLogArtifactReconciler(fn func(ctx context.Context, beadID string) error) {
+	logArtifactReconcileFunc = fn
+}
+
 // Test seams: bead resolution and store-ensure are mocked through these
 // vars so handler tests don't need to spin up a real Dolt store. The
 // production wiring delegates to pkg/store.
@@ -216,6 +236,19 @@ func (s *Server) listBeadLogs(w http.ResponseWriter, r *http.Request, id string)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	if len(manifests) == 0 && logArtifactReconcileFunc != nil {
+		// Transition fallback: the manifest is empty but the on-disk
+		// wizard log directory may have transcripts for this bead that
+		// were never registered through Put/Finalize. Reconcile once
+		// and re-list. Best-effort — a reconcile error is swallowed so
+		// a flaky filesystem walk never escalates a list to 500.
+		_ = logArtifactReconcileFunc(r.Context(), id)
+		manifests, err = reader.List(r.Context(), logartifact.Filter{BeadID: id})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	// Cursor advance: skip rows whose ordinal position is below the

@@ -18,6 +18,14 @@ import (
 	"github.com/awell-health/spire/pkg/store"
 )
 
+// LogArtifactLazyReconcileEnv toggles the gateway's lazy reconcile
+// fallback. The fallback walks the wizard log directory and inserts
+// manifest rows on demand when a list returns empty, so on-disk logs
+// from before the substrate write-path landed are still visible
+// through the API. Default is "1" (enabled) during the transition; set
+// to "0" once every wizard write site is wired through Put/Finalize.
+const LogArtifactLazyReconcileEnv = "SPIRE_GATEWAY_LAZY_RECONCILE_LOGS"
+
 // wireGatewayLogArtifactReader builds the configured logartifact backend
 // (local or GCS) and registers it on the gateway. The handlers consult
 // the registration lazily, so a single call before the gateway serves
@@ -53,6 +61,19 @@ func wireGatewayLogArtifactReader(ctx context.Context) {
 		}
 		gateway.SetLogArtifactReader(st)
 		log.Printf("[gateway/logs] local backend wired (root=%s)", root)
+		if lazyReconcileEnabled() {
+			tower, terr := activeTowerConfig()
+			if terr != nil || tower == nil || tower.Name == "" {
+				log.Printf("[gateway/logs] lazy reconcile disabled: no active tower (%v)", terr)
+				return
+			}
+			towerName := tower.Name
+			gateway.SetLogArtifactReconciler(func(rctx context.Context, beadID string) error {
+				_, rerr := st.Reconcile(rctx, towerName, beadID)
+				return rerr
+			})
+			log.Printf("[gateway/logs] lazy reconcile fallback enabled (tower=%s)", towerName)
+		}
 	case "gcs":
 		bucket := os.Getenv("LOGSTORE_GCS_BUCKET")
 		if bucket == "" {
@@ -75,5 +96,17 @@ func wireGatewayLogArtifactReader(ctx context.Context) {
 		log.Printf("[gateway/logs] GCS backend wired (bucket=%s prefix=%s)", bucket, prefix)
 	default:
 		log.Printf("[gateway/logs] unknown LOGSTORE_BACKEND=%q — bead-logs API will return empty lists", backend)
+	}
+}
+
+// lazyReconcileEnabled reports whether the gateway's empty-list fallback
+// should run a wizard-layout reconcile. Defaults to enabled; set
+// SPIRE_GATEWAY_LAZY_RECONCILE_LOGS=0 (or "false") to opt out.
+func lazyReconcileEnabled() bool {
+	switch os.Getenv(LogArtifactLazyReconcileEnv) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
 	}
 }

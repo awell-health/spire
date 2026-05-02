@@ -402,7 +402,7 @@ func TestParseLocalPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildObjectKey: %v", err)
 	}
-	gotID, gotSeq, ok := parseLocalPath(relKey)
+	gotID, gotSeq, ok := parseLocalPath(relKey, "")
 	if !ok {
 		t.Fatalf("parseLocalPath rejected canonical key %q", relKey)
 	}
@@ -415,7 +415,7 @@ func TestParseLocalPath(t *testing.T) {
 
 	// Sequenced.
 	relKey2, _ := BuildObjectKey("", id, 5)
-	gotID2, gotSeq2, ok := parseLocalPath(relKey2)
+	gotID2, gotSeq2, ok := parseLocalPath(relKey2, "")
 	if !ok {
 		t.Fatalf("parseLocalPath rejected sequenced key %q", relKey2)
 	}
@@ -431,7 +431,7 @@ func TestParseLocalPath(t *testing.T) {
 	id3.Provider = ""
 	id3.Stream = StreamStdout
 	relKey3, _ := BuildObjectKey("", id3, 0)
-	gotID3, _, ok := parseLocalPath(relKey3)
+	gotID3, _, ok := parseLocalPath(relKey3, "")
 	if !ok {
 		t.Fatalf("parseLocalPath rejected no-provider key %q", relKey3)
 	}
@@ -440,11 +440,144 @@ func TestParseLocalPath(t *testing.T) {
 	}
 
 	// Non-canonical paths are rejected.
-	if _, _, ok := parseLocalPath("garbage"); ok {
+	if _, _, ok := parseLocalPath("garbage", ""); ok {
 		t.Error("expected reject on garbage path")
 	}
-	if _, _, ok := parseLocalPath("a/b/c.jsonl"); ok {
+	if _, _, ok := parseLocalPath("a/b/c.jsonl", ""); ok {
 		t.Error("expected reject on too-short path")
+	}
+}
+
+// TestParseLocalPath_WizardLayout pins the legacy wizard log layout
+// shapes that pre-date the substrate. parseLocalPath must accept these
+// when defaultTower is non-empty so Reconcile can pick up
+// already-on-disk wizard/apprentice transcripts and surface them
+// through the bead-logs API.
+func TestParseLocalPath_WizardLayout(t *testing.T) {
+	cases := []struct {
+		name      string
+		path      string
+		wantBead  string
+		wantPhase string
+		wantProv  string
+		wantRole  Role
+		wantStrm  Stream
+	}{
+		{
+			name:      "orchestrator log",
+			path:      "wizard-spi-tsodj3.log",
+			wantBead:  "spi-tsodj3",
+			wantPhase: "orchestrator",
+			wantRole:  RoleWizard,
+			wantStrm:  StreamStdout,
+		},
+		{
+			name:      "spawn log",
+			path:      "wizard-spi-tsodj3-implement-1.log",
+			wantBead:  "spi-tsodj3",
+			wantPhase: "implement-1",
+			wantRole:  RoleWizard,
+			wantStrm:  StreamStdout,
+		},
+		{
+			name:      "claude transcript under wizard dir",
+			path:      "wizard-spi-tsodj3/claude/implement-20260422-184843.jsonl",
+			wantBead:  "spi-tsodj3",
+			wantPhase: "implement",
+			wantProv:  "claude",
+			wantRole:  RoleWizard,
+			wantStrm:  StreamTranscript,
+		},
+		{
+			name:      "claude transcript under spawn dir",
+			path:      "wizard-spi-tsodj3-implement-1/claude/implement-20260422-184843.jsonl",
+			wantBead:  "spi-tsodj3",
+			wantPhase: "implement",
+			wantProv:  "claude",
+			wantRole:  RoleWizard,
+			wantStrm:  StreamTranscript,
+		},
+		{
+			name:      "legacy claude .log transcript",
+			path:      "wizard-spi-tsodj3/claude/implement-20260422-184843.log",
+			wantBead:  "spi-tsodj3",
+			wantPhase: "implement",
+			wantProv:  "claude",
+			wantRole:  RoleWizard,
+			wantStrm:  StreamTranscript,
+		},
+		{
+			name:      "multi-segment bead prefix",
+			path:      "wizard-xserver-0hy/claude/plan-20260422-184843.jsonl",
+			wantBead:  "xserver-0hy",
+			wantPhase: "plan",
+			wantProv:  "claude",
+			wantRole:  RoleWizard,
+			wantStrm:  StreamTranscript,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, _, ok := parseLocalPath(tc.path, "awell-test")
+			if !ok {
+				t.Fatalf("parseLocalPath rejected %q", tc.path)
+			}
+			if id.Tower != "awell-test" {
+				t.Errorf("Tower = %q, want awell-test", id.Tower)
+			}
+			if id.BeadID != tc.wantBead {
+				t.Errorf("BeadID = %q, want %q", id.BeadID, tc.wantBead)
+			}
+			if id.Phase != tc.wantPhase {
+				t.Errorf("Phase = %q, want %q", id.Phase, tc.wantPhase)
+			}
+			if id.Provider != tc.wantProv {
+				t.Errorf("Provider = %q, want %q", id.Provider, tc.wantProv)
+			}
+			if id.Role != tc.wantRole {
+				t.Errorf("Role = %q, want %q", id.Role, tc.wantRole)
+			}
+			if id.Stream != tc.wantStrm {
+				t.Errorf("Stream = %q, want %q", id.Stream, tc.wantStrm)
+			}
+			if id.AttemptID != LegacyAttemptID {
+				t.Errorf("AttemptID = %q, want %q", id.AttemptID, LegacyAttemptID)
+			}
+			if id.AgentName == "" {
+				t.Errorf("AgentName must be set")
+			}
+		})
+	}
+}
+
+// TestParseLocalPath_WizardLayout_Rejects covers paths the wizard
+// layout intentionally skips: stderr sidecars, tmpfiles, missing
+// `wizard-` prefix, and non-bead-shaped names.
+func TestParseLocalPath_WizardLayout_Rejects(t *testing.T) {
+	cases := []string{
+		"wizard-spi-tsodj3/claude/implement-20260422-184843.stderr.log",
+		"wizard-spi-tsodj3/claude/implement-20260422-184843.jsonl.tmp",
+		"orphan-file.log",
+		"wizard-/claude/x.jsonl",
+		"wizard-NOT_A_BEAD.log",
+		"wizard-spi-tsodj3/claude/extra/path.jsonl",
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			if _, _, ok := parseLocalPath(p, "awell-test"); ok {
+				t.Errorf("parseLocalPath accepted bad path %q", p)
+			}
+		})
+	}
+}
+
+// TestParseLocalPath_WizardLayoutDisabledWithoutTower verifies that the
+// wizard fallback only activates when the caller passes a non-empty
+// default tower. Tests calling parseLocalPath without a tower must not
+// observe the wizard layout (preserves the prior contract).
+func TestParseLocalPath_WizardLayoutDisabledWithoutTower(t *testing.T) {
+	if _, _, ok := parseLocalPath("wizard-spi-tsodj3.log", ""); ok {
+		t.Error("expected reject when defaultTower is empty")
 	}
 }
 
@@ -547,6 +680,98 @@ func TestLocalStore_Reconcile_TowerRequired(t *testing.T) {
 	store, _, _ := newLocalForTest(t)
 	if _, err := store.Reconcile(context.Background(), "", "spi-foo"); err == nil {
 		t.Error("expected error for empty tower")
+	}
+}
+
+// TestLocalStore_Reconcile_WizardLayout exercises the legacy on-disk
+// wizard layout: an orchestrator .log plus a claude .jsonl transcript
+// for the same bead must both surface as manifest rows after a single
+// Reconcile call. This is the spi-tsodj3 acceptance — the gateway
+// bead-logs API was returning empty because parseLocalPath couldn't
+// decode this layout.
+func TestLocalStore_Reconcile_WizardLayout(t *testing.T) {
+	store, mock, _ := newLocalForTest(t)
+	ctx := context.Background()
+
+	beadID := "spi-tsodj3"
+	wizardName := "wizard-" + beadID
+	root := store.Root()
+
+	// Orchestrator log at root.
+	wizardLogPath := filepath.Join(root, wizardName+".log")
+	if err := os.WriteFile(wizardLogPath, []byte("wizard log line\n"), 0o644); err != nil {
+		t.Fatalf("write wizard log: %v", err)
+	}
+
+	// Provider transcript under wizard dir.
+	claudeDir := filepath.Join(root, wizardName, "claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir claude: %v", err)
+	}
+	transcriptPath := filepath.Join(claudeDir, "implement-20260422-184843.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(`{"type":"system"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	// Two artifacts → two identity-tuple lookups (each "not found") and
+	// two inserts. The walk order is filesystem-dependent (alphabetical
+	// by directory entry) so we just allow either order.
+	emptyRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{
+			"id", "tower", "bead_id", "attempt_id", "run_id", "agent_name",
+			"role", "phase", "provider", "stream", "sequence", "object_uri",
+			"byte_size", "checksum", "status", "started_at", "ended_at",
+			"created_at", "updated_at", "redaction_version", "visibility",
+			"summary", "tail",
+		})
+	}
+	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
+		WillReturnRows(emptyRows())
+	mock.ExpectExec(`INSERT INTO agent_log_artifacts`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
+		WillReturnRows(emptyRows())
+	mock.ExpectExec(`INSERT INTO agent_log_artifacts`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	manifests, err := store.Reconcile(ctx, "awell-test", beadID)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(manifests) != 2 {
+		t.Fatalf("expected 2 manifests, got %d", len(manifests))
+	}
+
+	// One should be the wizard log (stdout) and one the claude transcript.
+	var sawWizardLog, sawTranscript bool
+	for _, m := range manifests {
+		if m.Identity.BeadID != beadID {
+			t.Errorf("BeadID = %q, want %q", m.Identity.BeadID, beadID)
+		}
+		if m.Identity.Tower != "awell-test" {
+			t.Errorf("Tower = %q, want awell-test", m.Identity.Tower)
+		}
+		if m.Identity.Stream == StreamStdout {
+			sawWizardLog = true
+			if m.Identity.Phase != "orchestrator" {
+				t.Errorf("orchestrator log Phase = %q, want orchestrator", m.Identity.Phase)
+			}
+		}
+		if m.Identity.Stream == StreamTranscript {
+			sawTranscript = true
+			if m.Identity.Provider != "claude" {
+				t.Errorf("transcript Provider = %q, want claude", m.Identity.Provider)
+			}
+			if m.Identity.Phase != "implement" {
+				t.Errorf("transcript Phase = %q, want implement", m.Identity.Phase)
+			}
+		}
+	}
+	if !sawWizardLog {
+		t.Errorf("Reconcile did not register the wizard .log file")
+	}
+	if !sawTranscript {
+		t.Errorf("Reconcile did not register the claude .jsonl transcript")
 	}
 }
 

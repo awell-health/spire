@@ -311,6 +311,114 @@ func TestListBeadLogs_ManifestRowsWithoutBytes(t *testing.T) {
 	}
 }
 
+// TestListBeadLogs_LazyReconcileFires_OnEmpty exercises the
+// transition fallback that pkg/gateway runs when reader.List returns
+// an empty manifest. The hook is wired by cmd/spire to reconcile the
+// on-disk wizard log directory; once it completes, the gateway
+// re-lists and surfaces any newly inserted rows. This is what makes
+// pre-substrate transcripts visible without an explicit
+// `spire reconcile-logs` call.
+func TestListBeadLogs_LazyReconcileFires_OnEmpty(t *testing.T) {
+	// Mutable reader that starts empty and gains a manifest after the
+	// reconcile hook fires.
+	reader := &fakeLogReader{}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	prevReconcile := logArtifactReconcileFunc
+	t.Cleanup(func() { logArtifactReconcileFunc = prevReconcile })
+	calls := 0
+	SetLogArtifactReconciler(func(_ context.Context, beadID string) error {
+		calls++
+		if beadID != "spi-test1" {
+			t.Errorf("reconcile beadID = %q want spi-test1", beadID)
+		}
+		// Simulate Reconcile inserting a manifest row.
+		reader.manifests = append(reader.manifests, makeManifest("log-after-reconcile"))
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs", nil)
+	rec := httptest.NewRecorder()
+	s.listBeadLogs(rec, req, "spi-test1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 body=%q", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("reconcile called %d times, want 1", calls)
+	}
+	var resp logsListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Artifacts) != 1 || resp.Artifacts[0].ID != "log-after-reconcile" {
+		t.Fatalf("artifacts = %+v, want [log-after-reconcile]", resp.Artifacts)
+	}
+}
+
+// TestListBeadLogs_LazyReconcileSkipped_WhenManifestNonEmpty proves
+// the hook is not invoked when reader.List already has rows. Without
+// this guard a healthy bead would walk the filesystem on every list
+// request.
+func TestListBeadLogs_LazyReconcileSkipped_WhenManifestNonEmpty(t *testing.T) {
+	reader := &fakeLogReader{
+		manifests: []logartifact.Manifest{makeManifest("log-existing")},
+	}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	prevReconcile := logArtifactReconcileFunc
+	t.Cleanup(func() { logArtifactReconcileFunc = prevReconcile })
+	calls := 0
+	SetLogArtifactReconciler(func(_ context.Context, _ string) error {
+		calls++
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs", nil)
+	rec := httptest.NewRecorder()
+	s.listBeadLogs(rec, req, "spi-test1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200", rec.Code)
+	}
+	if calls != 0 {
+		t.Errorf("reconcile called %d times, want 0", calls)
+	}
+}
+
+// TestListBeadLogs_LazyReconcile_ErrorSwallowed proves a reconcile
+// failure does not escalate the list endpoint to 5xx. The on-disk
+// walk is best-effort; the empty-list response is what the caller
+// would have gotten without the fallback.
+func TestListBeadLogs_LazyReconcile_ErrorSwallowed(t *testing.T) {
+	reader := &fakeLogReader{}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	prevReconcile := logArtifactReconcileFunc
+	t.Cleanup(func() { logArtifactReconcileFunc = prevReconcile })
+	SetLogArtifactReconciler(func(_ context.Context, _ string) error {
+		return errors.New("filesystem permission denied")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs", nil)
+	rec := httptest.NewRecorder()
+	s.listBeadLogs(rec, req, "spi-test1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 (errors must be swallowed)", rec.Code)
+	}
+	var resp logsListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Artifacts) != 0 {
+		t.Errorf("artifacts = %+v want []", resp.Artifacts)
+	}
+}
+
 func TestListBeadLogs_PaginationCursorRoundTrip(t *testing.T) {
 	manifests := make([]logartifact.Manifest, 5)
 	for i := range manifests {

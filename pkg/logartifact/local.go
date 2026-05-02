@@ -12,12 +12,24 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	pkgstore "github.com/awell-health/spire/pkg/store"
 
 	"github.com/awell-health/spire/pkg/logartifact/redact"
 )
+
+// LegacyAttemptID and LegacyRunID are the synthetic identity components used
+// when reconciling files written under the pre-substrate wizard layout
+// (`<root>/wizard-<bead-id>/...`). Real attempt/run IDs are not recoverable
+// from the on-disk path, so the parser fills these in deterministically: the
+// attempt is a fixed sentinel, and the run is derived from the file's stem
+// (timestamp portion of the basename or "orchestrator" for the parent log).
+//
+// Live writes that go through Put/Finalize use the real Identity supplied by
+// the caller and never collide with the legacy slot.
+const LegacyAttemptID = "legacy"
 
 // LocalStore is a filesystem-backed log artifact store. The byte stream
 // for each artifact lands at a deterministic path under root; the
@@ -332,12 +344,16 @@ func (s *LocalStore) List(ctx context.Context, filter Filter) ([]Manifest, error
 	return listManifests(ctx, s.db, filter)
 }
 
-// Reconcile walks the local artifact root for the given bead and
-// inserts manifest rows for any byte-store files that have no
-// corresponding row yet. The walk infers identity from the on-disk
-// path layout (which mirrors BuildObjectKey), hashes each file to fill
-// in the byte_size and checksum columns, and marks the resulting rows
-// StatusFinalized.
+// Reconcile walks the local artifact root and inserts manifest rows
+// for any byte-store files that have no corresponding row yet. The
+// walk infers identity from the on-disk path layout, hashes each file
+// to fill in the byte_size and checksum columns, and marks the
+// resulting rows StatusFinalized.
+//
+// Two layouts are recognized: the canonical BuildObjectKey shape under
+// `<root>/<tower>/<bead>/...` and the legacy wizard layout under
+// `<root>/wizard-<bead>/...` plus root-level `wizard-<bead>[-...].log`
+// files. See parseLocalPath for the exact shapes.
 //
 // Reconcile is opt-in: List never invokes it implicitly. Use Reconcile
 // once when migrating an existing wizard log directory into the
@@ -354,16 +370,12 @@ func (s *LocalStore) Reconcile(ctx context.Context, tower, beadID string) ([]Man
 	if tower == "" {
 		return nil, errors.New("logartifact: Reconcile: tower is required")
 	}
-	towerRoot := filepath.Join(s.root, tower)
-	if beadID != "" {
-		towerRoot = filepath.Join(towerRoot, beadID)
-	}
-	if _, err := os.Stat(towerRoot); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(s.root); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 
 	var out []Manifest
-	walkErr := filepath.WalkDir(towerRoot, func(path string, d os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(s.root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			// Don't abort on a single unreadable dir; log via error
 			// chain only when the walk root itself fails.
@@ -372,19 +384,17 @@ func (s *LocalStore) Reconcile(ctx context.Context, tower, beadID string) ([]Man
 		if d.IsDir() {
 			return nil
 		}
-		// Only canonical .jsonl artifacts are reconciled; tmpfiles
-		// and stray files (.log, .stderr.log) are ignored. This is
-		// where we'd later widen if we want to bring legacy wizard
-		// .log files into the manifest, but for now the design
-		// reserves .jsonl as the artifact extension.
-		if !strings.HasSuffix(path, ".jsonl") {
+		// Tmpfiles produced by an in-flight Put are never canonical
+		// artifacts; skip them.
+		base := filepath.Base(path)
+		if strings.Contains(base, ".tmp") {
 			return nil
 		}
 		rel, err := filepath.Rel(s.root, path)
 		if err != nil {
 			return nil
 		}
-		identity, sequence, ok := parseLocalPath(filepath.ToSlash(rel))
+		identity, sequence, ok := parseLocalPath(filepath.ToSlash(rel), tower)
 		if !ok {
 			return nil
 		}
@@ -454,7 +464,7 @@ func (s *LocalStore) Reconcile(ctx context.Context, tower, beadID string) ([]Man
 		return nil
 	})
 	if walkErr != nil {
-		return out, fmt.Errorf("logartifact: walk %s: %w", towerRoot, walkErr)
+		return out, fmt.Errorf("logartifact: walk %s: %w", s.root, walkErr)
 	}
 	return out, nil
 }
@@ -475,15 +485,44 @@ func hashFile(path string) (int64, string, error) {
 	return n, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// parseLocalPath inverts BuildObjectKey for the local backend. The
-// relative path produced by BuildObjectKey("",...) has the shape
+// parseLocalPath inverts BuildObjectKey for the local backend, and
+// also recognizes the legacy wizard log layout used by pkg/wizard before
+// the artifact substrate landed. Two shapes are accepted:
 //
-//	<tower>/<bead>/<attempt>/<run>/<agent>/<role>/<phase>[/<provider>]/<stream>[-<seq>].jsonl
+//   - Canonical (BuildObjectKey output):
+//     <tower>/<bead>/<attempt>/<run>/<agent>/<role>/<phase>[/<provider>]/<stream>[-<seq>].jsonl
 //
-// with 8 or 9 segments depending on whether a provider was set. The
-// parser returns ok=false on any structural mismatch; callers treat
-// that as "not a canonical artifact".
-func parseLocalPath(rel string) (Identity, int, bool) {
+//   - Wizard layout under <root>/:
+//     wizard-<bead-id>.log                                    (orchestrator log)
+//     wizard-<bead-id>-<step>-<n>.log                         (sibling spawn log)
+//     wizard-<bead-id>/<provider>/<phase>-<ts>.jsonl          (provider transcript)
+//     wizard-<bead-id>-<step>-<n>/<provider>/<phase>-<ts>.jsonl
+//
+// For the wizard layout, identity fields that aren't recoverable from
+// the path are synthesized: AttemptID is the LegacyAttemptID sentinel,
+// RunID is the file basename stem (timestamp portion or "orchestrator"),
+// AgentName is the wizard directory name, and Tower defaults to
+// defaultTower (callers pass the active-tower name; empty disables the
+// wizard fallback).
+//
+// Returns ok=false on any structural mismatch; callers treat that as
+// "not a canonical artifact" and skip the file.
+func parseLocalPath(rel, defaultTower string) (Identity, int, bool) {
+	if id, seq, ok := parseCanonicalLocalPath(rel); ok {
+		return id, seq, true
+	}
+	if defaultTower != "" {
+		if id, seq, ok := parseWizardLocalPath(rel, defaultTower); ok {
+			return id, seq, true
+		}
+	}
+	return Identity{}, 0, false
+}
+
+// parseCanonicalLocalPath handles the BuildObjectKey-shaped path. The
+// relative path has 8 or 9 segments depending on whether a provider was
+// set; everything else is rejected.
+func parseCanonicalLocalPath(rel string) (Identity, int, bool) {
 	parts := strings.Split(rel, "/")
 	if len(parts) != 8 && len(parts) != 9 {
 		return Identity{}, 0, false
@@ -522,6 +561,120 @@ func parseLocalPath(rel string) (Identity, int, bool) {
 		return Identity{}, 0, false
 	}
 	return id, sequence, true
+}
+
+// wizardBeadIDPattern matches the bead-id slot embedded in a wizard
+// directory or log filename — `<prefix>-<id>` with optional dotted
+// hierarchy (e.g. `spi-a3f8.1.2`). Mirrors the regex in
+// pkg/git/commitmsg.go that decodes commit subjects, so a wizard whose
+// name was derived from a bead ID round-trips here.
+var wizardBeadIDPattern = regexp.MustCompile(`^([a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*)`)
+
+// parseWizardLocalPath recognizes the legacy on-disk wizard log layout.
+// The `wizard-` prefix is the discriminant; without it, this layout
+// doesn't apply and the parser returns ok=false.
+func parseWizardLocalPath(rel, defaultTower string) (Identity, int, bool) {
+	parts := strings.Split(rel, "/")
+	if len(parts) == 0 {
+		return Identity{}, 0, false
+	}
+	rootSegment := parts[0]
+	if !strings.HasPrefix(rootSegment, "wizard-") {
+		return Identity{}, 0, false
+	}
+
+	// Strip a `.log` suffix from the root segment when it sits at the
+	// top of the tree (the orchestrator/sibling log shape). The bead-id
+	// regex needs to look at the agent stem, not the filename.
+	agentStem := strings.TrimSuffix(rootSegment, ".log")
+	rest := strings.TrimPrefix(agentStem, "wizard-")
+	match := wizardBeadIDPattern.FindStringSubmatch(rest)
+	if match == nil {
+		return Identity{}, 0, false
+	}
+	beadID := match[1]
+
+	// The portion after the bead-id is the spawn suffix (e.g. "-implement-1").
+	// Empty suffix means the orchestrator wizard.
+	spawnSuffix := strings.TrimPrefix(rest, beadID)
+	spawnSuffix = strings.TrimPrefix(spawnSuffix, "-")
+	phase := spawnSuffix
+	if phase == "" {
+		phase = "orchestrator"
+	}
+
+	switch len(parts) {
+	case 1:
+		// Top-level operational log file: wizard-<bead-id>[-...].log
+		if !strings.HasSuffix(rootSegment, ".log") || strings.HasSuffix(rootSegment, ".stderr.log") {
+			return Identity{}, 0, false
+		}
+		runID := strings.TrimSuffix(rootSegment, ".log")
+		id := Identity{
+			Tower:     defaultTower,
+			BeadID:    beadID,
+			AttemptID: LegacyAttemptID,
+			RunID:     runID,
+			AgentName: agentStem,
+			Role:      RoleWizard,
+			Phase:     phase,
+			Stream:    StreamStdout,
+		}
+		if id.Validate() != nil {
+			return Identity{}, 0, false
+		}
+		return id, 0, true
+	case 3:
+		// Provider transcript: wizard-<bead>[-...]/<provider>/<file>
+		provider := parts[1]
+		leaf := parts[2]
+		if provider == "" {
+			return Identity{}, 0, false
+		}
+		// Tmpfiles and stderr sidecars are not first-class artifacts.
+		if strings.HasSuffix(leaf, ".stderr.log") || strings.Contains(leaf, ".tmp") {
+			return Identity{}, 0, false
+		}
+		var stem string
+		switch {
+		case strings.HasSuffix(leaf, ".jsonl"):
+			stem = strings.TrimSuffix(leaf, ".jsonl")
+		case strings.HasSuffix(leaf, ".log") && provider == "claude":
+			// Legacy pre-spi-7mgv9 claude transcripts used .log; keep
+			// them visible so retroactive Reconcile picks them up.
+			stem = strings.TrimSuffix(leaf, ".log")
+		default:
+			return Identity{}, 0, false
+		}
+		runID := stem
+		// Filenames are typically "<phase>-<ts>" (e.g. "implement-20260422-184843").
+		// Use the leading word as phase so the manifest groups artifacts by
+		// phase the way the desktop UI expects.
+		filePhase := stem
+		if dash := strings.Index(stem, "-"); dash > 0 {
+			filePhase = stem[:dash]
+		}
+		if filePhase == "" {
+			filePhase = phase
+		}
+		id := Identity{
+			Tower:     defaultTower,
+			BeadID:    beadID,
+			AttemptID: LegacyAttemptID,
+			RunID:     runID,
+			AgentName: agentStem,
+			Role:      RoleWizard,
+			Phase:     filePhase,
+			Provider:  provider,
+			Stream:    StreamTranscript,
+		}
+		if id.Validate() != nil {
+			return Identity{}, 0, false
+		}
+		return id, 0, true
+	default:
+		return Identity{}, 0, false
+	}
 }
 
 // parsePositiveInt returns n when s is a non-empty decimal string with a
