@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/beads"
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/store"
 )
 
@@ -206,7 +207,7 @@ func FetchDAGProgressFromChildren(beadID string, children []store.Bead) *DAGProg
 	// Active attempt — mirrors store.GetActiveAttempt filter.
 	var active []store.Bead
 	for _, c := range children {
-		if (c.Status == "open" || c.Status == "in_progress") && store.IsAttemptBead(c) {
+		if lifecycle.IsActive(&c) && store.IsAttemptBead(c) {
 			active = append(active, c)
 		}
 	}
