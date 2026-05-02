@@ -1165,7 +1165,7 @@ func DetectReviewReady(dryRun bool, backend agent.Backend, towerName string, tow
 		}
 		implClosed := false
 		for _, s := range steps {
-			if store.StepBeadPhaseName(s) == "implement" && s.Status == "closed" {
+			if store.StepBeadPhaseName(s) == "implement" && !lifecycle.IsMutable(&s) {
 				implClosed = true
 				break
 			}
@@ -1480,7 +1480,7 @@ func DetectReviewFeedback(dryRun bool, mode config.DeploymentMode) {
 
 		lastReview := reviews[len(reviews)-1]
 		// Must be closed with request_changes verdict.
-		if lastReview.Status != "closed" || ReviewBeadVerdict(lastReview) != "request_changes" {
+		if lifecycle.IsMutable(&lastReview) || ReviewBeadVerdict(lastReview) != "request_changes" {
 			continue
 		}
 
@@ -1648,7 +1648,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 					log.Printf("[steward] hooked sweep: get design bead %s: %s", designRef, err)
 					continue
 				}
-				if designBead.Status != "closed" {
+				if lifecycle.IsMutable(&designBead) {
 					continue // still waiting
 				}
 				comments, _ := GetCommentsFunc(designRef)
@@ -1733,7 +1733,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				continue
 			}
 
-			if recoveryBead.Status == "closed" {
+			if !lifecycle.IsMutable(&recoveryBead) {
 				// Cleric finished. Check resolution: a closed recovery bead
 				// with the new cleric.finish outcome (cleric_outcome=
 				// approve+executed) OR the legacy DecisionResume outcome
@@ -1998,7 +1998,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 					log.Printf("[steward] hooked sweep: get design bead %s: %s", designRef, err)
 					continue
 				}
-				if designBead.Status != "closed" {
+				if lifecycle.IsMutable(&designBead) {
 					continue
 				}
 				comments, _ := GetCommentsFunc(designRef)

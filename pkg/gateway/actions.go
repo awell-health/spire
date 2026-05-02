@@ -9,6 +9,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/cleric"
 	pkgclose "github.com/awell-health/spire/pkg/close"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/reset"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/awell-health/spire/pkg/summon"
@@ -183,7 +184,7 @@ func (s *Server) handleBeadDismiss(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 
-	if bead.Status == "closed" {
+	if !lifecycle.IsMutable(&bead) {
 		// Already dismissed. Stamp identity (idempotent) and return.
 		stampActionsArchmage(r, bead.ID, &bead)
 		writeJSON(w, http.StatusOK, bead)
