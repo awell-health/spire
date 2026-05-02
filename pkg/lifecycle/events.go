@@ -1,5 +1,19 @@
 package lifecycle
 
+// Migration mapping for Landing 2 (spi-u9iwt4) — direct status writes that
+// move into pkg/lifecycle.RecordEvent. Wave 1 migration agents use this
+// table to pick the right event without re-deriving from each call site.
+//
+//	pkg/wizard/wizard.go:926                    -> ApprenticeNoChanges{HandoffDone: false}
+//	pkg/executor/action_dispatch.go:453         -> FormulaStepStarted{Step: "implement"}
+//	pkg/executor/action_dispatch.go:618         -> FormulaStepStarted{Step: "implement"}
+//	pkg/executor/executor_dag.go:248            -> FormulaStepStarted{Step: <review-substep>} after formula lifecycle declares OnStart="open" for the substep (treats reset as a fresh start); fall back to a new BeadReopened event if formula lifecycle authorship is deferred
+//	pkg/executor/graph_interpreter.go:213       -> FormulaStepStarted{Step: stepName} (parent resumes when last hooked step is unhooked; rely on formula lifecycle OnStart="in_progress")
+//	pkg/executor/graph_interpreter.go:342       -> FormulaStepFailed{Step: stepName, Err: result.Error} with formula lifecycle OnFail.Status="hooked"
+//	pkg/executor/graph_interpreter.go:389       -> FormulaStepCompleted{Step: stepName, Outputs: result.Outputs} with formula lifecycle OnCompleteMatch clause emitting "hooked" when result.Hooked is captured in Outputs (or add a dedicated FormulaStepHooked event if the OnCompleteMatch shape feels strained)
+//	pkg/executor/graph_interpreter.go:741       -> FormulaStepStarted{Step: "implement"} (injected task dispatch)
+//	pkg/executor/graph_interpreter.go:1274      -> FormulaStepStarted{Step: <inferred>} via inferPreHookParentStatus's target; if the target is "open" without a step context, a small new event (e.g., HookCleared) keeps the call site readable
+
 // Event is the sealed interface implemented by every lifecycle event type.
 // The unexported isLifecycleEvent method prevents callers outside this
 // package from declaring new event types — the evaluator's transition
@@ -59,3 +73,21 @@ func (Escalated) isLifecycleEvent() {}
 type Closed struct{}
 
 func (Closed) isLifecycleEvent() {}
+
+// ApprenticeNoChanges is emitted when an apprentice exits without
+// handing off changes. HandoffDone reflects whether the apprentice
+// completed its handoff: false means the apprentice produced no work
+// and the bead should be returned to the pool; true means the bead
+// should remain in its current status while the wizard finishes
+// downstream steps.
+//
+// HandoffDone=false maps in_progress -> open, preserving the
+// pkg/wizard/wizard.go:926 reopen-as-open semantics. Landing 3 will
+// introduce needs_changes and may flip the false-branch target;
+// HandoffDone=true is a deliberate no-op so callers can fire the event
+// unconditionally without a branch on their side.
+type ApprenticeNoChanges struct {
+	HandoffDone bool
+}
+
+func (ApprenticeNoChanges) isLifecycleEvent() {}

@@ -22,6 +22,7 @@ func TestEventInterfaceCompliance(t *testing.T) {
 		{"FormulaStepFailed", FormulaStepFailed{Step: "implement", Err: errors.New("boom")}},
 		{"Escalated", Escalated{}},
 		{"Closed", Closed{}},
+		{"ApprenticeNoChanges", ApprenticeNoChanges{HandoffDone: false}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +85,7 @@ func TestEventInterfaceIsSealed(t *testing.T) {
 	var _ Event = FormulaStepFailed{}
 	var _ Event = Escalated{}
 	var _ Event = Closed{}
+	var _ Event = ApprenticeNoChanges{}
 }
 
 func TestErrTransitionConflict_IsSentinel(t *testing.T) {

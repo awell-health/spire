@@ -33,11 +33,14 @@ var legalStatusSet = map[string]struct{}{
 //
 // Core event rules (zero-behavior-change with today's writers):
 //
-//	Filed         → "open"
-//	ReadyToWork   → "ready"
-//	WizardClaimed → "in_progress" (from "ready" or "open"); else unchanged
-//	Escalated     → currentStatus (escalation today only adds labels/alerts)
-//	Closed        → "closed"
+//	Filed                 → "open"
+//	ReadyToWork           → "ready"
+//	WizardClaimed         → "in_progress" (from "ready" or "open"); else unchanged
+//	Escalated             → currentStatus (escalation today only adds labels/alerts)
+//	Closed                → "closed"
+//	ApprenticeNoChanges   → "open" (from "in_progress", HandoffDone=false); else unchanged
+//	                        Mirrors pkg/wizard/wizard.go:926 reopen-as-open semantics
+//	                        until Landing 3 introduces needs_changes.
 //
 // Formula step events (FormulaStepStarted/Completed/Failed) consult
 // f.Steps[event.Step].Lifecycle. When Lifecycle is nil the evaluator
@@ -69,6 +72,14 @@ func ApplyEvent(currentStatus string, event Event, f *formula.FormulaStepGraph) 
 		return currentStatus, nil
 	case Closed:
 		return validateLegal(currentStatus, "closed")
+	case ApprenticeNoChanges:
+		if ev.HandoffDone {
+			return currentStatus, nil
+		}
+		if currentStatus == "in_progress" {
+			return validateLegal(currentStatus, "open")
+		}
+		return currentStatus, nil
 	case FormulaStepStarted:
 		cfg := stepLifecycle(f, ev.Step)
 		if cfg == nil || cfg.OnStart == "" {

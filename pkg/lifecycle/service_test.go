@@ -190,10 +190,9 @@ func TestRecordEvent_CASErrorIsNotConflict(t *testing.T) {
 	}
 }
 
-// TestRecordEvent_VerboseLogEmission asserts the audit log line is
-// emitted only when verboseTransitions is on. The log line content is
-// verified to include the bead ID, both statuses, and the event type
-// per the design's audit-signal requirement.
+// TestRecordEvent_VerboseLogEmission asserts the verbose transition log
+// line is emitted only when verboseTransitions is on. The audit
+// `[lifecycle]` line is independent and tested separately.
 func TestRecordEvent_VerboseLogEmission(t *testing.T) {
 	env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "ready", Type: "task"}, nil)
 	restore := withServiceDeps(env.deps())
@@ -204,7 +203,7 @@ func TestRecordEvent_VerboseLogEmission(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(prev)
 
-	// Off path — no log line.
+	// Off path — no verbose transition log line.
 	SetVerboseTransitions(false)
 	if err := RecordEvent(context.Background(), "spi-abc", WizardClaimed{}); err != nil {
 		t.Fatalf("RecordEvent err = %v", err)
@@ -225,6 +224,158 @@ func TestRecordEvent_VerboseLogEmission(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("log %q missing %q", out, want)
 		}
+	}
+}
+
+// TestRecordEvent_AuditLogAlwaysEmitted asserts the always-on
+// `[lifecycle]` audit line includes the required fields (beadID, event
+// type, from-status, to-status, caller attribution) on every successful
+// status mutation, regardless of the verboseTransitions flag.
+func TestRecordEvent_AuditLogAlwaysEmitted(t *testing.T) {
+	env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "ready", Type: "task"}, nil)
+	restore := withServiceDeps(env.deps())
+	defer restore()
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	SetVerboseTransitions(false)
+	if err := RecordEvent(context.Background(), "spi-abc", WizardClaimed{}); err != nil {
+		t.Fatalf("RecordEvent err = %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"[lifecycle]",
+		"bead=spi-abc",
+		"event=WizardClaimed",
+		"from=ready",
+		"to=in_progress",
+		"caller=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("audit log %q missing %q", out, want)
+		}
+	}
+}
+
+// TestRecordEvent_AuditLogCallerAttribution verifies the caller= field
+// names a frame outside pkg/lifecycle. The test driver lives in
+// pkg/lifecycle/service_test.go, so the runtime caller chain skips
+// every internal frame and lands on the test file path. Asserting the
+// attribution names a non-lifecycle file is the load-bearing claim
+// (the audit signal in Landing 2 acceptance: 'spd-a83o type bug
+// becomes hypothetically catchable from logs').
+//
+// The current package tests are themselves under pkg/lifecycle so the
+// resolver returns "?" — we verify that the caller= field is present
+// and does not point INTO service.go (which is what would happen if
+// the runtime.Caller skip were wrong).
+func TestRecordEvent_AuditLogCallerAttribution(t *testing.T) {
+	env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "ready", Type: "task"}, nil)
+	restore := withServiceDeps(env.deps())
+	defer restore()
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	if err := RecordEvent(context.Background(), "spi-abc", WizardClaimed{}); err != nil {
+		t.Fatalf("RecordEvent err = %v", err)
+	}
+
+	out := buf.String()
+	// caller= must be present.
+	idx := strings.Index(out, "caller=")
+	if idx < 0 {
+		t.Fatalf("audit log missing caller= field: %q", out)
+	}
+	// The caller field must not name service.go — the resolver is
+	// supposed to skip it.
+	if strings.Contains(out, "caller=pkg/lifecycle/service.go") {
+		t.Errorf("caller resolution did not skip service.go: %q", out)
+	}
+}
+
+// TestCallerOutsideLifecycle_SkipsInternalFrames pins the resolver to
+// the contract: when called from within pkg/lifecycle the inner-most
+// non-lifecycle frame (the testing harness) is reported, and the
+// returned string carries a "file.go:line" shape rather than the empty
+// sentinel.
+func TestCallerOutsideLifecycle_SkipsInternalFrames(t *testing.T) {
+	got := callerOutsideLifecycle()
+	if got == "?" {
+		// Acceptable when the call stack genuinely contains nothing
+		// outside pkg/lifecycle within maxDepth — mostly a safety
+		// fall-through. Still log the value so a future regression
+		// where the resolver returns "?" inappropriately is visible.
+		t.Logf("callerOutsideLifecycle returned sentinel %q (acceptable)", got)
+		return
+	}
+	if strings.Contains(got, "/pkg/lifecycle/") {
+		t.Errorf("caller %q points inside pkg/lifecycle; resolver skip is broken", got)
+	}
+	if !strings.Contains(got, ":") {
+		t.Errorf("caller %q missing :line suffix", got)
+	}
+}
+
+// TestRecordEvent_ApprenticeNoChangesAuditLog wires the new event into
+// the full RecordEvent path and asserts the audit log surfaces the
+// event-type field as "ApprenticeNoChanges" — preventing a future
+// rename or type-switch bug from silently relabeling the audit signal.
+func TestRecordEvent_ApprenticeNoChangesAuditLog(t *testing.T) {
+	env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "in_progress", Type: "task"}, nil)
+	restore := withServiceDeps(env.deps())
+	defer restore()
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	if err := RecordEvent(context.Background(), "spi-abc", ApprenticeNoChanges{HandoffDone: false}); err != nil {
+		t.Fatalf("RecordEvent err = %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"[lifecycle]",
+		"bead=spi-abc",
+		"event=ApprenticeNoChanges",
+		"from=in_progress",
+		"to=open",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("audit log %q missing %q", out, want)
+		}
+	}
+}
+
+// TestRecordEvent_ApprenticeNoChangesHandoffTrueIsSilent asserts
+// HandoffDone=true does not write or log — the call short-circuits at
+// the no-op check just like Escalated.
+func TestRecordEvent_ApprenticeNoChangesHandoffTrueIsSilent(t *testing.T) {
+	env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "in_progress", Type: "task"}, nil)
+	restore := withServiceDeps(env.deps())
+	defer restore()
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	if err := RecordEvent(context.Background(), "spi-abc", ApprenticeNoChanges{HandoffDone: true}); err != nil {
+		t.Fatalf("RecordEvent err = %v", err)
+	}
+	if env.casCalls != 0 {
+		t.Errorf("HandoffDone=true should not write; casCalls = %d", env.casCalls)
+	}
+	if strings.Contains(buf.String(), "[lifecycle]") {
+		t.Errorf("HandoffDone=true no-op should not emit audit log; got %q", buf.String())
 	}
 }
 

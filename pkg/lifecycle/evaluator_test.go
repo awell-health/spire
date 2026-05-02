@@ -358,3 +358,51 @@ func TestApplyEvent_UnknownEventType(t *testing.T) {
 type unrecognizedEvent struct{}
 
 func (unrecognizedEvent) isLifecycleEvent() {}
+
+// TestApplyEvent_ApprenticeNoChanges covers the two HandoffDone modes
+// of the migration event that replaces pkg/wizard/wizard.go:926.
+//
+// HandoffDone=false: in_progress → open (preserves the pre-migration
+// reopen-as-open hack semantics); from any other status the event is a
+// no-op so callers don't accidentally clobber a valid state.
+//
+// HandoffDone=true: deliberate no-op from every status — callers can
+// fire the event unconditionally without branching on their side.
+func TestApplyEvent_ApprenticeNoChanges(t *testing.T) {
+	t.Run("handoff_false_from_in_progress_reopens", func(t *testing.T) {
+		got, err := ApplyEvent("in_progress", ApprenticeNoChanges{HandoffDone: false}, nil)
+		if err != nil {
+			t.Fatalf("ApplyEvent err = %v", err)
+		}
+		if got != "open" {
+			t.Errorf("ApplyEvent = %q, want open", got)
+		}
+	})
+
+	t.Run("handoff_false_from_other_statuses_is_noop", func(t *testing.T) {
+		for _, s := range evaluatorLegalStatuses {
+			if s == "in_progress" {
+				continue
+			}
+			got, err := ApplyEvent(s, ApprenticeNoChanges{HandoffDone: false}, nil)
+			if err != nil {
+				t.Fatalf("ApplyEvent from %q err = %v", s, err)
+			}
+			if got != s {
+				t.Errorf("ApplyEvent from %q = %q, want unchanged", s, got)
+			}
+		}
+	})
+
+	t.Run("handoff_true_is_noop_from_every_status", func(t *testing.T) {
+		for _, s := range evaluatorLegalStatuses {
+			got, err := ApplyEvent(s, ApprenticeNoChanges{HandoffDone: true}, nil)
+			if err != nil {
+				t.Fatalf("ApplyEvent from %q err = %v", s, err)
+			}
+			if got != s {
+				t.Errorf("ApplyEvent HandoffDone=true from %q = %q, want unchanged", s, got)
+			}
+		}
+	})
+}

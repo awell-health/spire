@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/awell-health/spire/pkg/formula"
@@ -113,12 +115,50 @@ func RecordEvent(ctx context.Context, beadID string, event Event) error {
 		return ErrTransitionConflict
 	}
 
+	caller := callerOutsideLifecycle()
+	log.Printf("[lifecycle] bead=%s event=%s from=%s to=%s caller=%s step=%s",
+		beadID, eventTypeName(event), bead.Status, newStatus, caller, eventStepName(event))
+
 	if verboseTransitions {
 		log.Printf("lifecycle: transition bead=%s old=%s new=%s event=%s step=%s",
 			beadID, bead.Status, newStatus, eventTypeName(event), eventStepName(event))
 	}
 
 	return nil
+}
+
+// callerOutsideLifecycle walks up the call stack and returns "file:line"
+// for the first frame whose file is outside pkg/lifecycle. The audit log
+// uses this so a `[lifecycle]` line names the actual writer (executor,
+// wizard, steward, …) rather than service.go itself.
+//
+// Returns "?" if no non-lifecycle frame is found within a reasonable
+// depth — never panics, never blocks the write path.
+func callerOutsideLifecycle() string {
+	const maxDepth = 16
+	const skipFromCaller = 2 // 0=this fn, 1=RecordEvent
+	for skip := skipFromCaller; skip < maxDepth; skip++ {
+		_, file, line, ok := runtime.Caller(skip)
+		if !ok {
+			break
+		}
+		if strings.Contains(file, "/pkg/lifecycle/") || strings.HasSuffix(file, "/pkg/lifecycle") {
+			continue
+		}
+		return fmt.Sprintf("%s:%d", trimFileForCaller(file), line)
+	}
+	return "?"
+}
+
+// trimFileForCaller drops everything before the repository-relative
+// segment so log lines stay grep-friendly ("pkg/wizard/wizard.go:926"
+// rather than "/Users/.../spire/pkg/wizard/wizard.go:926").
+func trimFileForCaller(file string) string {
+	const marker = "/spire/"
+	if i := strings.LastIndex(file, marker); i >= 0 {
+		return file[i+len(marker):]
+	}
+	return file
 }
 
 // defaultUpdateStatusCAS issues the optimistic CAS update against the
@@ -175,6 +215,8 @@ func eventTypeName(ev Event) string {
 		return "Escalated"
 	case Closed:
 		return "Closed"
+	case ApprenticeNoChanges:
+		return "ApprenticeNoChanges"
 	}
 	return fmt.Sprintf("%T", ev)
 }
