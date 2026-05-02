@@ -3,6 +3,9 @@ package recovery
 import (
 	"fmt"
 	"strings"
+
+	"github.com/awell-health/spire/pkg/lifecycle"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // Verify checks whether the interrupted state has been successfully cleared
@@ -103,7 +106,7 @@ func CheckSourceHealth(deps RecoveryDeps, sourceBead, selfBeadID string) VerifyR
 			if !isRecoveryLink(dep.DependencyType) {
 				continue
 			}
-			if dep.Status == "open" || dep.Status == "in_progress" {
+			if lifecycle.IsActive(&store.Bead{Status: dep.Status}) {
 				result.Healthy = false
 				result.Status = VerifyDegraded
 				check := fmt.Sprintf("open recovery sibling: %s (status=%s)", dep.ID, dep.Status)
