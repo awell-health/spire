@@ -24,6 +24,15 @@ func (b Bead) Meta(key string) string {
 	return b.Metadata[key]
 }
 
+// IsActive reports whether the bead is currently being worked on or queued
+// in the open backlog. Mirrors lifecycle.IsActive — defined here so pkg/store
+// callers can use a named predicate without inverting the package dependency
+// (pkg/lifecycle imports pkg/store, so pkg/store cannot import pkg/lifecycle).
+// Behavior must stay in lockstep with pkg/lifecycle's predicate body.
+func (b Bead) IsActive() bool {
+	return b.Status == "in_progress" || b.Status == "open"
+}
+
 // BoardBead extends Bead with full board metadata (owner, timestamps, deps).
 type BoardBead struct {
 	ID              string            `json:"id"`

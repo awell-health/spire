@@ -32,7 +32,7 @@ func GetActiveAttempt(parentID string) (*Bead, error) {
 
 	var active []Bead
 	for _, child := range children {
-		if child.Status != "open" && child.Status != "in_progress" {
+		if !child.IsActive() {
 			continue
 		}
 		if !IsAttemptBead(child) {
