@@ -81,3 +81,68 @@ cmd-side adapter uses the atomic claim variant
 - The PID-stamp step that runs after `summon.SpawnWizard` lives in
   `pkg/summon`; this package only writes the placeholder entry from
   `BeginWork`.
+
+## CI gate: no new direct bead.status writes
+
+`pkg/lifecycle` is the sole sanctioned writer of `bead.status`. To stop
+that invariant from rotting as new code lands, CI runs
+`scripts/check-lifecycle-gate.sh`, which greps the repo for direct
+status-write patterns outside this package and fails on any addition.
+
+### What it matches
+
+Across every `*.go` file (excluding `*_test.go`, `vendor/`, and
+`pkg/lifecycle/`), the gate flags:
+
+1. `UpdateBead(...)` calls with a `"status"` map key on the same line.
+2. `.Status = "..."` string-literal assignments.
+3. `"status": "..."` literal map/struct keys with string values.
+
+Each match is normalized to `<path>:<trimmed-line>` and diffed against
+`scripts/lifecycle-gate-allowlist.txt`.
+
+### Run locally
+
+```bash
+bash scripts/check-lifecycle-gate.sh   # exits 0 if no new violations
+make lifecycle-gate                    # same, via Makefile
+```
+
+CI runs the same script in `.github/workflows/ci.yml` (the `build` job).
+
+### Grandfathered call sites and the allowlist
+
+Landing 1 (this landing) only enforces *no new additions*. The existing
+~85 direct writes — most concentrated in `pkg/executor/graph_interpreter.go`,
+`pkg/executor/executor_dag.go`, `pkg/executor/action_dispatch.go`,
+`pkg/wizard`, `pkg/gateway`, `pkg/steward`, `pkg/summon`, and a handful
+of `cmd/spire/` commands — are seeded into
+`scripts/lifecycle-gate-allowlist.txt` so the gate stays green while
+Landing 2 deletes them one by one.
+
+**When migrating a grandfathered call site through `pkg/lifecycle` in
+Landing 2:** delete the corresponding entry from the allowlist (or
+re-run `bash scripts/check-lifecycle-gate.sh --regenerate` after the
+migration, which rewrites the allowlist from the current matches). The
+gate notes removed entries but does not fail on them — that lets
+incremental migration land without an allowlist update on every PR.
+
+**When intentionally adding a sanctioned new direct write (rare —
+should almost always go through `lifecycle.RecordEvent`):** run
+`bash scripts/check-lifecycle-gate.sh --regenerate`, commit the
+updated allowlist alongside the change, and explain the carve-out in
+the PR description. A reviewer should push back unless the reason
+matches the existing carve-outs documented above (e.g., the executor's
+`actionBeadFinish` close path).
+
+## Lifecycle predicates (Landing 1, Task 2)
+
+The predicate seam — `lifecycle.IsActive(b)`, `lifecycle.IsMutable(b)`,
+`lifecycle.IsDispatchable(b)` — is defined in `predicates.go` (Task 2
+of this landing). Callers should use these predicates instead of
+switching on raw `bead.status` strings, so that the meaning of "active"
+or "dispatchable" can evolve in this package as Landing 3 introduces
+new statuses (`awaiting_review`, `needs_changes`, `awaiting_human`,
+`merge_pending`) without rippling string comparisons through every
+caller. The predicate bodies stay in `pkg/lifecycle`; this gate
+enforces that the *write* side stays here too.
