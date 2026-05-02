@@ -86,6 +86,9 @@ type StepConfig struct {
 	//                  if unset), mark the step completed, and continue the graph loop.
 	//                  Lets the formula route on the error via conditional edges.
 	OnError string `toml:"on_error,omitempty"`
+	// Lifecycle declares per-step bead-status transitions consumed by
+	// pkg/lifecycle. Optional; nil means the step uses executor-driven defaults.
+	Lifecycle *LifecycleConfig `toml:"lifecycle,omitempty"`
 }
 
 // --- Parsing ---
