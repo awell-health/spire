@@ -71,7 +71,10 @@ pkg/store/beadtypes.go:"status": "open",
 pkg/store/beadtypes.go:return UpdateBead(stepID, map[string]interface{}{"status": "open"})
 pkg/store/mutations.go:// Gateway mode: routes to UpdateBead({"status":"closed"}) so the gateway's
 pkg/store/mutations.go:return UpdateBead(id, map[string]interface{}{"status": "closed"})
+pkg/store/store.go:const StatusAwaitingHuman beads.Status = "awaiting_human"
 pkg/store/store.go:const StatusAwaitingReview beads.Status = "awaiting_review"
 pkg/store/store.go:const StatusHooked beads.Status = "hooked"
+pkg/store/store.go:const StatusMergePending beads.Status = "merge_pending"
+pkg/store/store.go:const StatusNeedsChanges beads.Status = "needs_changes"
 pkg/summon/summon.go:bead.Status = "in_progress"
 pkg/summon/summon.go:if err := UpdateBeadFunc(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {

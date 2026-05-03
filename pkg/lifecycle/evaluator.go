@@ -10,19 +10,24 @@ import (
 // into today. Statuses outside this set are rejected so misconfigured
 // formulas surface early rather than silently writing unknown values.
 //
-// Landing 3 of spi-sqqero introduces awaiting_review, needs_changes,
-// awaiting_human, and merge_pending. Until that lands, the evaluator
-// rejects them as not-yet-introduced — even if a formula declares one
-// in [steps.X.lifecycle].
+// Landing 3 of spi-sqqero (spi-lkeuqy) introduces awaiting_review,
+// needs_changes, awaiting_human, and merge_pending alongside the legacy
+// taxonomy. hooked stays in the set during Landing 3 — it is only
+// removed atomically in spi-x7c67k after steward dispatch and the rest
+// of the long-tail consumers have moved off it.
 var legalStatusSet = map[string]struct{}{
-	"open":        {},
-	"ready":       {},
-	"dispatched":  {},
-	"in_progress": {},
-	"hooked":      {},
-	"blocked":     {},
-	"deferred":    {},
-	"closed":      {},
+	"open":            {},
+	"ready":           {},
+	"dispatched":      {},
+	"in_progress":     {},
+	"hooked":          {},
+	"blocked":         {},
+	"deferred":        {},
+	"awaiting_review": {},
+	"needs_changes":   {},
+	"awaiting_human":  {},
+	"merge_pending":   {},
+	"closed":          {},
 }
 
 // ApplyEvent computes the new bead status produced by applying event to a

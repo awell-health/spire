@@ -117,12 +117,12 @@ func TestRecordEvent_TransitionConflict(t *testing.T) {
 }
 
 // TestRecordEvent_EvaluatorError ensures evaluator-level errors (e.g.
-// a formula declaring a not-yet-introduced status) bubble up rather
-// than getting swallowed before the CAS write.
+// a formula declaring an unknown status) bubble up rather than getting
+// swallowed before the CAS write.
 func TestRecordEvent_EvaluatorError(t *testing.T) {
 	f := &formula.FormulaStepGraph{
 		Steps: map[string]formula.StepConfig{
-			"implement": {Lifecycle: &formula.LifecycleConfig{OnComplete: "awaiting_review"}},
+			"implement": {Lifecycle: &formula.LifecycleConfig{OnComplete: "totally_made_up"}},
 		},
 	}
 	env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "in_progress", Type: "task"}, f)
@@ -135,6 +135,37 @@ func TestRecordEvent_EvaluatorError(t *testing.T) {
 	}
 	if env.casCalls != 0 {
 		t.Errorf("casCalls = %d, want 0 (evaluator error should short-circuit before CAS)", env.casCalls)
+	}
+}
+
+// TestRecordEvent_Landing3StatusesPersist verifies the four new statuses
+// introduced by spi-sqqero Landing 3 (spi-lkeuqy) — awaiting_review,
+// needs_changes, awaiting_human, merge_pending — flow end-to-end through
+// RecordEvent and reach the CAS write rather than tripping the evaluator
+// gate. This is the load-bearing assertion for Task 1's contract: the
+// statuses are valid transition targets via lifecycle.RecordEvent.
+func TestRecordEvent_Landing3StatusesPersist(t *testing.T) {
+	for _, s := range []string{"awaiting_review", "needs_changes", "awaiting_human", "merge_pending"} {
+		t.Run(s, func(t *testing.T) {
+			f := &formula.FormulaStepGraph{
+				Steps: map[string]formula.StepConfig{
+					"implement": {Lifecycle: &formula.LifecycleConfig{OnComplete: s}},
+				},
+			}
+			env := newFakeEnv(store.Bead{ID: "spi-abc", Status: "in_progress", Type: "task"}, f)
+			restore := withServiceDeps(env.deps())
+			defer restore()
+
+			if err := RecordEvent(context.Background(), "spi-abc", FormulaStepCompleted{Step: "implement"}); err != nil {
+				t.Fatalf("RecordEvent err = %v", err)
+			}
+			if env.casCalls != 1 {
+				t.Fatalf("casCalls = %d, want 1", env.casCalls)
+			}
+			if env.lastCAS.expected != "in_progress" || env.lastCAS.next != s {
+				t.Errorf("lastCAS = %+v, want {expected=in_progress next=%s}", env.lastCAS, s)
+			}
+		})
 	}
 }
 

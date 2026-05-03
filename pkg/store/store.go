@@ -213,13 +213,31 @@ func FindParentID(deps []*beads.Dependency) string {
 // because the beads library has it in internal/types but does not re-export it.
 const StatusHooked beads.Status = "hooked"
 
-// StatusAwaitingReview is the "awaiting_review" bead status — a recovery bead
-// the cleric has annotated with a ProposedAction and is now blocked on a
-// human gate (approve / reject+comment / takeover). Allowed transitions are
-// in_progress → awaiting_review → {closed, in_progress}. Cleric foundation
-// (spi-h2d7yn) adds the literal; the cleric runtime (future) is the only
-// path that transitions a bead into it.
+// StatusAwaitingReview is the "awaiting_review" bead status — used in two
+// contexts: (1) a recovery bead the cleric has annotated with a
+// ProposedAction and is now blocked on a human gate; (2) a task bead whose
+// implement step has handed off and is awaiting sage review. Cleric
+// foundation (spi-h2d7yn) added the literal; spi-sqqero Landing 3
+// (spi-lkeuqy) extended its meaning to the formula-declared review-handoff
+// state.
 const StatusAwaitingReview beads.Status = "awaiting_review"
+
+// StatusNeedsChanges is the "needs_changes" bead status — a task bead whose
+// sage review returned `request_changes`. Steward dispatches a fix
+// apprentice from this status. Introduced by spi-sqqero Landing 3
+// (spi-lkeuqy) as part of the new lifecycle taxonomy.
+const StatusNeedsChanges beads.Status = "needs_changes"
+
+// StatusAwaitingHuman is the "awaiting_human" bead status — a bead parked
+// waiting on a human action (cleric escalation, manual takeover, human
+// gate). Replaces the parked-after-work-started subset of the legacy
+// `hooked` status. Introduced by spi-sqqero Landing 3 (spi-lkeuqy).
+const StatusAwaitingHuman beads.Status = "awaiting_human"
+
+// StatusMergePending is the "merge_pending" bead status — a task bead whose
+// sage review returned `approve` and is queued for the formula's merge
+// step. Introduced by spi-sqqero Landing 3 (spi-lkeuqy).
+const StatusMergePending beads.Status = "merge_pending"
 
 // AllowedStatusTransitions maps each constrained source status to the set of
 // destinations it may transition into. The map is intentionally NOT
@@ -286,6 +304,12 @@ func ParseStatus(s string) beads.Status {
 		return StatusHooked
 	case "awaiting_review":
 		return StatusAwaitingReview
+	case "needs_changes":
+		return StatusNeedsChanges
+	case "awaiting_human":
+		return StatusAwaitingHuman
+	case "merge_pending":
+		return StatusMergePending
 	default:
 		return beads.StatusOpen
 	}

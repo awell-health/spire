@@ -7,10 +7,12 @@ import (
 )
 
 // legalStatuses enumerates every status string that may appear on a
-// bead today. Includes the new statuses spi-sqqero Landing 3 will add
-// (awaiting_review) so the predicates remain well-defined when those
-// land — none of them flip the predicates' answers under legacy
-// semantics.
+// bead today. Includes the four statuses spi-sqqero Landing 3
+// (spi-lkeuqy) introduces — awaiting_review, needs_changes,
+// awaiting_human, merge_pending — so the predicates remain well-defined
+// across the full taxonomy. None of them flip the predicates' answers
+// under legacy semantics; later landings (Task 7+) re-tune the
+// predicates against the new statuses.
 var legalStatuses = []string{
 	"open",
 	"ready",
@@ -19,6 +21,9 @@ var legalStatuses = []string{
 	"hooked",
 	"deferred",
 	"awaiting_review",
+	"needs_changes",
+	"awaiting_human",
+	"merge_pending",
 	"closed",
 }
 
@@ -31,6 +36,9 @@ func TestIsActive(t *testing.T) {
 		"hooked":          false,
 		"deferred":        false,
 		"awaiting_review": false,
+		"needs_changes":   false,
+		"awaiting_human":  false,
+		"merge_pending":   false,
 		"closed":          false,
 	}
 	for _, status := range legalStatuses {
@@ -55,10 +63,13 @@ func TestIsMutable(t *testing.T) {
 		"open":            true,
 		"ready":           true,
 		"dispatched":      true,
-		"in_progress":    true,
+		"in_progress":     true,
 		"hooked":          true,
 		"deferred":        true,
 		"awaiting_review": true,
+		"needs_changes":   true,
+		"awaiting_human":  true,
+		"merge_pending":   true,
 		"closed":          false,
 	}
 	for _, status := range legalStatuses {
@@ -85,6 +96,9 @@ func TestIsDispatchable(t *testing.T) {
 		"hooked":          true,
 		"deferred":        false,
 		"awaiting_review": false,
+		"needs_changes":   false,
+		"awaiting_human":  false,
+		"merge_pending":   false,
 		"closed":          false,
 	}
 	for _, status := range legalStatuses {

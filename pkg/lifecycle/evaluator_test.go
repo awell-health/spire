@@ -1,7 +1,6 @@
 package lifecycle
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/awell-health/spire/pkg/formula"
@@ -18,6 +17,10 @@ var evaluatorLegalStatuses = []string{
 	"hooked",
 	"blocked",
 	"deferred",
+	"awaiting_review",
+	"needs_changes",
+	"awaiting_human",
+	"merge_pending",
 	"closed",
 }
 
@@ -66,14 +69,18 @@ func TestApplyEvent_CoreEvents(t *testing.T) {
 			name:  "WizardClaimed",
 			event: WizardClaimed{},
 			want: map[string]string{
-				"open":        "in_progress",
-				"ready":       "in_progress",
-				"dispatched":  "dispatched",
-				"in_progress": "in_progress",
-				"hooked":      "hooked",
-				"blocked":     "blocked",
-				"deferred":    "deferred",
-				"closed":      "closed",
+				"open":            "in_progress",
+				"ready":           "in_progress",
+				"dispatched":      "dispatched",
+				"in_progress":     "in_progress",
+				"hooked":          "hooked",
+				"blocked":         "blocked",
+				"deferred":        "deferred",
+				"awaiting_review": "awaiting_review",
+				"needs_changes":   "needs_changes",
+				"awaiting_human":  "awaiting_human",
+				"merge_pending":   "merge_pending",
+				"closed":          "closed",
 			},
 		},
 		{name: "Escalated", event: Escalated{}, want: identity()},
@@ -298,24 +305,74 @@ func TestApplyEvent_FormulaStepFailed(t *testing.T) {
 	})
 }
 
-// TestApplyEvent_RejectsLanding3Statuses covers the four statuses that
-// Landing 3 of spi-sqqero will introduce. Until then, formula authors
-// who declare them must see a descriptive error rather than a silent
-// out-of-set write.
-func TestApplyEvent_RejectsLanding3Statuses(t *testing.T) {
+// TestApplyEvent_AcceptsLanding3Statuses covers the four statuses that
+// spi-sqqero Landing 3 (spi-lkeuqy) introduces as valid transition
+// targets. Each status must be reachable from in_progress via a formula
+// declaration; before Landing 3 these returned a descriptive
+// "not-in-legal-set" error, and that gate must now pass.
+func TestApplyEvent_AcceptsLanding3Statuses(t *testing.T) {
 	for _, s := range []string{"awaiting_review", "needs_changes", "awaiting_human", "merge_pending"} {
-		t.Run(s, func(t *testing.T) {
+		t.Run("on_complete_"+s, func(t *testing.T) {
 			f := &formula.FormulaStepGraph{
 				Steps: map[string]formula.StepConfig{
 					"implement": {Lifecycle: &formula.LifecycleConfig{OnComplete: s}},
 				},
 			}
-			_, err := ApplyEvent("in_progress", FormulaStepCompleted{Step: "implement"}, f)
-			if err == nil {
-				t.Fatalf("expected error for not-yet-introduced status %q", s)
+			got, err := ApplyEvent("in_progress", FormulaStepCompleted{Step: "implement"}, f)
+			if err != nil {
+				t.Fatalf("ApplyEvent err = %v (status %q must be legal)", err, s)
 			}
-			if !strings.Contains(err.Error(), s) {
-				t.Errorf("error %q should mention rejected status %q", err.Error(), s)
+			if got != s {
+				t.Errorf("ApplyEvent = %q, want %q", got, s)
+			}
+		})
+		t.Run("on_start_"+s, func(t *testing.T) {
+			f := &formula.FormulaStepGraph{
+				Steps: map[string]formula.StepConfig{
+					"review": {Lifecycle: &formula.LifecycleConfig{OnStart: s}},
+				},
+			}
+			got, err := ApplyEvent("in_progress", FormulaStepStarted{Step: "review"}, f)
+			if err != nil {
+				t.Fatalf("ApplyEvent err = %v (status %q must be legal)", err, s)
+			}
+			if got != s {
+				t.Errorf("ApplyEvent = %q, want %q", got, s)
+			}
+		})
+		t.Run("on_complete_match_"+s, func(t *testing.T) {
+			f := &formula.FormulaStepGraph{
+				Steps: map[string]formula.StepConfig{
+					"review": {Lifecycle: &formula.LifecycleConfig{
+						OnCompleteMatch: []formula.MatchClause{
+							{When: "outputs.verdict == 'go'", Status: s},
+						},
+					}},
+				},
+			}
+			got, err := ApplyEvent("in_progress",
+				FormulaStepCompleted{Step: "review", Outputs: map[string]any{"verdict": "go"}}, f)
+			if err != nil {
+				t.Fatalf("ApplyEvent err = %v (status %q must be legal)", err, s)
+			}
+			if got != s {
+				t.Errorf("ApplyEvent = %q, want %q", got, s)
+			}
+		})
+		t.Run("on_fail_"+s, func(t *testing.T) {
+			f := &formula.FormulaStepGraph{
+				Steps: map[string]formula.StepConfig{
+					"implement": {Lifecycle: &formula.LifecycleConfig{
+						OnFail: &formula.FailAction{Status: s},
+					}},
+				},
+			}
+			got, err := ApplyEvent("in_progress", FormulaStepFailed{Step: "implement"}, f)
+			if err != nil {
+				t.Fatalf("ApplyEvent err = %v (status %q must be legal)", err, s)
+			}
+			if got != s {
+				t.Errorf("ApplyEvent = %q, want %q", got, s)
 			}
 		})
 	}
