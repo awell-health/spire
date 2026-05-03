@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/awell-health/spire/pkg/formula"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
 )
@@ -17,7 +19,7 @@ func (e *Executor) ensureAttemptBead() error {
 	// If we already have an attempt bead from persisted state, verify it's still open.
 	if e.state.AttemptBeadID != "" {
 		b, err := e.deps.GetBead(e.state.AttemptBeadID)
-		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
+		if err == nil && lifecycle.IsActive(&b) {
 			e.log("resuming existing attempt bead %s", e.state.AttemptBeadID)
 			e.ensureAttemptModelLabel(e.state.AttemptBeadID, b, model)
 			return nil
@@ -245,7 +247,7 @@ func (e *Executor) resetReviewSubStep(stepName string) error {
 	if !ok {
 		return nil // no sub-step beads created (test/legacy)
 	}
-	return e.deps.UpdateBead(beadID, map[string]interface{}{"status": "open"})
+	return lifecycle.RecordEvent(context.Background(), beadID, lifecycle.Filed{})
 }
 
 // transitionStepBead closes the previous phase's step bead and activates the new one.
