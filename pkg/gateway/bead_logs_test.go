@@ -867,29 +867,88 @@ func TestGetBeadLogPretty_LocalNativeDefaultAllowsEngineerOnly(t *testing.T) {
 	}
 }
 
-func TestGetBeadLogPretty_ClusterNativeDefaultStillDeniesEngineerOnly(t *testing.T) {
-	// Threat-model regression guard for /pretty: cluster-native must keep
-	// denying engineer_only without an explicit header, mirroring /raw.
-	stubScopeDeploymentMode(t, config.DeploymentModeClusterNative)
+func TestGetBeadLogPretty_NonLocalNativeDefaultStillDeniesEngineerOnly(t *testing.T) {
+	// Threat-model regression guard for /pretty: every non-local-native
+	// mode must keep denying engineer_only without an explicit header, so
+	// foreign desktop callers can't reach engineer-only artifacts by
+	// default. spi-dhqv40 acceptance criterion #2 names cluster-attached
+	// alongside cluster-native; the in-tree spelling for the attached
+	// track is DeploymentModeAttachedReserved.
+	cases := []struct {
+		name string
+		mode config.DeploymentMode
+	}{
+		{"cluster-native", config.DeploymentModeClusterNative},
+		{"attached-reserved (spec: cluster-attached)", config.DeploymentModeAttachedReserved},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubScopeDeploymentMode(t, tc.mode)
+
+			transcript := []byte(`{"type":"system","subtype":"init","session_id":"s1","cwd":"/x"}` + "\n")
+			reader := &fakeLogReader{
+				manifests: []logartifact.Manifest{
+					makeManifest("log-a", func(m *logartifact.Manifest) {
+						m.ByteSize = int64(len(transcript))
+					}),
+				},
+				bytes: map[string][]byte{"log-a": transcript},
+			}
+			withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+			s := newLogTestServer("")
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/pretty", nil)
+			rec := httptest.NewRecorder()
+			s.getBeadLogPretty(rec, req, "spi-test1", "log-a")
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("mode=%s status = %d want 403 body=%q", tc.mode, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestGetBeadLogPretty_ExplicitHeaderOverridesLocalNativeDefault(t *testing.T) {
+	// spi-dhqv40 acceptance criterion #3 / #5: explicit X-Spire-Scope
+	// downgrades win over the local-native engineer default at the
+	// handler level. An operator who sets desktop or public must get a
+	// 403 on engineer_only, not the elevated default. Mirrors the
+	// scope-function-level coverage in
+	// TestScopeFromRequest_ExplicitHeaderOverridesDefault but routes
+	// through getBeadLogPretty so a future regression in the handler
+	// (e.g. ignoring the header) gets caught.
+	stubScopeDeploymentMode(t, config.DeploymentModeLocalNative)
 
 	transcript := []byte(`{"type":"system","subtype":"init","session_id":"s1","cwd":"/x"}` + "\n")
-	reader := &fakeLogReader{
-		manifests: []logartifact.Manifest{
-			makeManifest("log-a", func(m *logartifact.Manifest) {
-				m.ByteSize = int64(len(transcript))
-			}),
-		},
-		bytes: map[string][]byte{"log-a": transcript},
+	cases := []struct {
+		name   string
+		header string
+	}{
+		{"desktop downgrade", string(logartifact.ScopeDesktop)},
+		{"public downgrade", string(logartifact.ScopePublic)},
 	}
-	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
-	s := newLogTestServer("")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &fakeLogReader{
+				manifests: []logartifact.Manifest{
+					makeManifest("log-a", func(m *logartifact.Manifest) {
+						m.ByteSize = int64(len(transcript))
+					}),
+				},
+				bytes: map[string][]byte{"log-a": transcript},
+			}
+			withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+			s := newLogTestServer("")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/pretty", nil)
-	rec := httptest.NewRecorder()
-	s.getBeadLogPretty(rec, req, "spi-test1", "log-a")
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/pretty", nil)
+			req.Header.Set("X-Spire-Scope", tc.header)
+			rec := httptest.NewRecorder()
+			s.getBeadLogPretty(rec, req, "spi-test1", "log-a")
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d want 403 body=%q", rec.Code, rec.Body.String())
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("header=%q status = %d want 403 body=%q", tc.header, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
