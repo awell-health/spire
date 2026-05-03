@@ -45,6 +45,7 @@ func saveCycleFuncVars(t *testing.T) {
 	t.Helper()
 	origCommitPending := CommitPendingFunc
 	origGetSchedulable := GetSchedulableWorkFunc
+	origDispatchable := DispatchableBeadsFunc
 	origLoadTowerConfig := LoadTowerConfigFunc
 	origGetDB := GetDBForRoutingFunc
 	origAddLabel := AddLabelFunc
@@ -62,6 +63,7 @@ func saveCycleFuncVars(t *testing.T) {
 	t.Cleanup(func() {
 		CommitPendingFunc = origCommitPending
 		GetSchedulableWorkFunc = origGetSchedulable
+		DispatchableBeadsFunc = origDispatchable
 		LoadTowerConfigFunc = origLoadTowerConfig
 		GetDBForRoutingFunc = origGetDB
 		AddLabelFunc = origAddLabel
@@ -79,6 +81,10 @@ func saveCycleFuncVars(t *testing.T) {
 }
 
 // setupCycleFuncMocks installs mocks for TowerCycle to run without a real store.
+//
+// The dispatch loop now consumes lifecycle.DispatchableBeads (spi-jzs5xq);
+// the GetSchedulableWork mock is preserved for any legacy callers but the
+// production TowerCycle path has moved off it.
 func setupCycleFuncMocks(t *testing.T, schedulable []store.Bead, maxConcurrent int) {
 	t.Helper()
 	saveCycleFuncVars(t)
@@ -86,6 +92,13 @@ func setupCycleFuncMocks(t *testing.T, schedulable []store.Bead, maxConcurrent i
 	CommitPendingFunc = func(msg string) error { return nil }
 	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
 		return &store.ScheduleResult{Schedulable: schedulable}, nil
+	}
+	DispatchableBeadsFunc = func(ctx context.Context) ([]*store.Bead, error) {
+		out := make([]*store.Bead, 0, len(schedulable))
+		for i := range schedulable {
+			out = append(out, &schedulable[i])
+		}
+		return out, nil
 	}
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
 		return &config.TowerConfig{MaxConcurrent: maxConcurrent}, nil
@@ -108,10 +121,15 @@ func setupCycleFuncMocks(t *testing.T, schedulable []store.Bead, maxConcurrent i
 	}
 }
 
+// testBeads constructs a slice of work-shaped beads in a status that
+// lifecycle.DispatchableBeads' legacy fallback predicate accepts ("ready"
+// per Landing 3 design, replacing the legacy "open"/"hooked" entries).
+// Tests that drive the dispatch loop through this helper rely on the
+// fakeDispatchableBeads mock returning these beads as candidates.
 func testBeads(ids ...string) []store.Bead {
 	var out []store.Bead
 	for _, id := range ids {
-		out = append(out, store.Bead{ID: id, Title: "task " + id, Status: "open", Type: "task"})
+		out = append(out, store.Bead{ID: id, Title: "task " + id, Status: "ready", Type: "task"})
 	}
 	return out
 }
@@ -471,5 +489,86 @@ func TestE2E_EmptySchedulable(t *testing.T) {
 	}
 	if snap.SpawnedThisCycle != 0 {
 		t.Errorf("SpawnedThisCycle = %d, want 0", snap.SpawnedThisCycle)
+	}
+}
+
+// TestE2E_DispatchLoopCallsDispatchableBeads pins the spi-jzs5xq
+// contract: the steward dispatch step consults
+// lifecycle.DispatchableBeads (via DispatchableBeadsFunc) rather than
+// the prior store.GetSchedulableWork path. The hook is observed
+// through a counter rather than asserting the spawn shape so the
+// behavior under test is "we asked the lifecycle" — independent of
+// whether any candidate ultimately spawns.
+func TestE2E_DispatchLoopCallsDispatchableBeads(t *testing.T) {
+	backend := &cycleBackend{}
+	saveCycleFuncVars(t)
+
+	CommitPendingFunc = func(msg string) error { return nil }
+	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
+		return &config.TowerConfig{MaxConcurrent: 0}, nil
+	}
+	GetDBForRoutingFunc = func(dbName string) *sql.DB { return nil }
+	AddLabelFunc = func(id, label string) error { return nil }
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) { return nil, nil }
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) { return nil, nil }
+	RaiseCorruptedBeadAlertFunc = func(beadID string, err error) {}
+	GetChildrenFunc = func(parentID string) ([]store.Bead, error) { return nil, nil }
+	GetBeadFunc = func(id string) (store.Bead, error) { return store.Bead{}, fmt.Errorf("not found") }
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+	RemoveLabelFunc = func(id, label string) error { return nil }
+	SendMessageFunc = func(to, from, body, ref string, priority int) (string, error) { return "", nil }
+	ConfigLoadFunc = func() (*config.SpireConfig, error) {
+		return &config.SpireConfig{Instances: make(map[string]*config.Instance)}, nil
+	}
+
+	calls := 0
+	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) {
+		calls++
+		return nil, nil
+	}
+	// Set a sentinel that should not be consulted by the production
+	// path post-spi-jzs5xq; this proves the dispatch loop has truly
+	// migrated off GetSchedulableWork rather than calling both.
+	gswCalls := 0
+	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
+		gswCalls++
+		return &store.ScheduleResult{}, nil
+	}
+
+	cfg := StewardConfig{
+		Backend:            backend,
+		ConcurrencyLimiter: NewConcurrencyLimiter(),
+		StaleThreshold:     10 * time.Minute,
+		ShutdownThreshold:  15 * time.Minute,
+	}
+	TowerCycle(1, "", cfg)
+
+	if calls != 1 {
+		t.Errorf("DispatchableBeadsFunc calls = %d, want 1", calls)
+	}
+	if gswCalls != 0 {
+		t.Errorf("GetSchedulableWorkFunc calls = %d, want 0 (dispatch loop must not consult the legacy path)", gswCalls)
+	}
+}
+
+// TestE2E_DispatchLoopEmptyDispatchable covers the empty-candidate
+// branch the dispatch loop takes when DispatchableBeads yields no
+// beads: the cycle completes without spawning, and the lifecycle hook
+// is still called once (so the steward records "asked the lifecycle"
+// even when the answer is empty).
+func TestE2E_DispatchLoopEmptyDispatchable(t *testing.T) {
+	backend := &cycleBackend{}
+	setupCycleFuncMocks(t, nil, 0)
+
+	cfg := StewardConfig{
+		Backend:            backend,
+		ConcurrencyLimiter: NewConcurrencyLimiter(),
+		StaleThreshold:     10 * time.Minute,
+		ShutdownThreshold:  15 * time.Minute,
+	}
+	TowerCycle(1, "", cfg)
+
+	if len(backend.spawns) != 0 {
+		t.Errorf("expected 0 spawns when DispatchableBeads is empty, got %d", len(backend.spawns))
 	}
 }

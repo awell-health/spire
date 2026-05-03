@@ -169,6 +169,7 @@ func modeRoutingSetup(t *testing.T, tc *config.TowerConfig, schedulable []store.
 	origStoreOpen := StoreOpenAtFunc
 	origCommit := CommitPendingFunc
 	origSched := GetSchedulableWorkFunc
+	origDispatchable := DispatchableBeadsFunc
 	origLoadTower := LoadTowerConfigFunc
 	origList := ListBeadsFunc
 	origAttempt := GetActiveAttemptFunc
@@ -181,6 +182,17 @@ func modeRoutingSetup(t *testing.T, tc *config.TowerConfig, schedulable []store.
 	CommitPendingFunc = func(_ string) error { return nil }
 	GetSchedulableWorkFunc = func(_ beads.WorkFilter) (*store.ScheduleResult, error) {
 		return &store.ScheduleResult{Schedulable: schedulable}, nil
+	}
+	// The dispatch loop now consumes lifecycle.DispatchableBeads
+	// (spi-jzs5xq); fan the schedulable fixture through both the legacy
+	// and the new hook so existing tests that exercise routing decisions
+	// still drive a non-empty candidate set.
+	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) {
+		out := make([]*store.Bead, 0, len(schedulable))
+		for i := range schedulable {
+			out = append(out, &schedulable[i])
+		}
+		return out, nil
 	}
 	LoadTowerConfigFunc = func(_ string) (*config.TowerConfig, error) {
 		return tc, nil
@@ -196,6 +208,7 @@ func modeRoutingSetup(t *testing.T, tc *config.TowerConfig, schedulable []store.
 		StoreOpenAtFunc = origStoreOpen
 		CommitPendingFunc = origCommit
 		GetSchedulableWorkFunc = origSched
+		DispatchableBeadsFunc = origDispatchable
 		LoadTowerConfigFunc = origLoadTower
 		ListBeadsFunc = origList
 		GetActiveAttemptFunc = origAttempt

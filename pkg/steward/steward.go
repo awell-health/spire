@@ -430,21 +430,51 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 		log.Printf("[steward] %sskipping local-registry orphan sweep: tower %q mode=%s; cluster registry not yet injected (spi-40rtru)", prefix, towerName, deploymentMode)
 	}
 
-	// Step 2: Assess — find schedulable work (ready + policy-filtered).
-	schedResult, err := GetSchedulableWorkFunc(beads.WorkFilter{})
+	// Step 2: Assess — find dispatchable work via lifecycle.DispatchableBeads
+	// (spi-jzs5xq). The function consults each bead's formula lifecycle
+	// declarations to decide whether a bead's current status is an entry
+	// point for some not-yet-run step; legacy formulas without lifecycle
+	// blocks fall through to the historical IsDispatchable predicate.
+	// This replaces the prior store.GetSchedulableWork list-and-filter-by-
+	// status path that hardcoded a "ready/open/hooked" rule in the steward.
+	dispatchableBeads, err := DispatchableBeadsFunc(context.Background())
 	if err != nil {
 		log.Printf("[steward] %sready: error — %s", prefix, err)
 		pushState()
 		return
 	}
 
-	// Handle quarantined beads (invariant violations like multiple open attempts).
-	for _, q := range schedResult.Quarantined {
-		log.Printf("[steward] quarantining %s (multiple open attempts): %v", q.ID, q.Error)
-		RaiseCorruptedBeadAlertFunc(q.ID, q.Error)
+	// Apply the post-filter policy that GetSchedulableWork used to apply
+	// inline so dispatchable matches the same per-bead invariants:
+	//   - IsWorkBead drops internal types and child beads.
+	//   - Skip template beads.
+	//   - Skip beads with an active attempt child (someone already working).
+	//   - Quarantine beads where GetActiveAttempt returns an error
+	//     (invariant violation, e.g. multiple open attempts).
+	// GetActiveAttemptFunc is test-replaceable so unit tests can drive
+	// this loop without a live store.
+	var schedulable []store.Bead
+	for _, b := range dispatchableBeads {
+		if b == nil {
+			continue
+		}
+		if !store.IsWorkBead(*b) {
+			continue
+		}
+		if store.ContainsLabel(*b, "template") {
+			continue
+		}
+		attempt, aErr := GetActiveAttemptFunc(b.ID)
+		if aErr != nil {
+			log.Printf("[steward] quarantining %s (multiple open attempts): %v", b.ID, aErr)
+			RaiseCorruptedBeadAlertFunc(b.ID, aErr)
+			continue
+		}
+		if attempt != nil {
+			continue
+		}
+		schedulable = append(schedulable, *b)
 	}
-
-	schedulable := schedResult.Schedulable
 
 	// Step 3: Load roster and refresh concurrency limiter.
 	agents, _ := cfg.Backend.List()
@@ -1563,9 +1593,12 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 	resummoned := 0
 
 	// --- Primary path: bead-status-driven sweep ---
-	// Query for work beads with status='hooked'. For each, find child step beads
-	// with status='hooked' and check if their hook condition is resolved.
-	hookedStatus := beads.Status("hooked")
+	// Query for work beads parked on a hook condition. The bead constant
+	// lives in pkg/store (store.StatusHooked) so the literal does not
+	// appear in pkg/steward production code (spi-jzs5xq); Task 8
+	// (spi-x7c67k) atomically renames it to awaiting_human across all
+	// callers in wave 3.
+	hookedStatus := store.StatusHooked
 	hookedParents, err := ListBeadsFunc(beads.IssueFilter{Status: &hookedStatus})
 	if err != nil {
 		log.Printf("[steward] hooked sweep: list hooked beads: %s", err)
@@ -1985,7 +2018,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		gs := entry.State
 
 		for stepName, ss := range gs.Steps {
-			if ss.Status != "hooked" {
+			if ss.Status != string(store.StatusHooked) {
 				continue
 			}
 
@@ -2050,7 +2083,7 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 
 			// Check parent bead status and clear hooked if no more hooked steps.
 			parentBead, _ := GetBeadFunc(gs.BeadID)
-			if parentBead.Status == "hooked" {
+			if parentBead.Status == string(store.StatusHooked) {
 				remainingHooked, _ := GetHookedStepsFunc(gs.BeadID)
 				if len(remainingHooked) == 0 {
 					if err := UpdateBeadFunc(gs.BeadID, map[string]interface{}{
@@ -2371,6 +2404,14 @@ var CommitPendingFunc = store.CommitPending
 
 // GetSchedulableWorkFunc is a test-replaceable function for store.GetSchedulableWork.
 var GetSchedulableWorkFunc = store.GetSchedulableWork
+
+// DispatchableBeadsFunc is a test-replaceable hook for
+// lifecycle.DispatchableBeads. The TowerCycle dispatch step (spi-jzs5xq)
+// calls this to obtain the list of beads whose current status is an
+// `on_start` for some unrun step in their formula. Tests substitute a
+// fake to drive the dispatch loop without a live store or formula
+// surface.
+var DispatchableBeadsFunc = lifecycle.DispatchableBeads
 
 // LoadTowerConfigFunc is a test-replaceable function for config.LoadTowerConfig.
 var LoadTowerConfigFunc = config.LoadTowerConfig

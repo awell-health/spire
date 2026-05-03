@@ -3440,6 +3440,11 @@ func towerCycleTestSetup(t *testing.T) func() {
 	// Stub ListBeadsFunc for CheckBeadHealth (step 5 of TowerCycle).
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) { return nil, nil }
+	// Stub the dispatch-loop's lifecycle hook so TowerCycle's Step 2
+	// (spi-jzs5xq) does not fall through to the real lifecycle path.
+	// Tests that need to drive specific candidates override this hook.
+	origDispatchable := DispatchableBeadsFunc
+	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) { return nil, nil }
 	// Stub InstanceIDFunc.
 	origInstanceID := InstanceIDFunc
 	InstanceIDFunc = func() string { return "test-instance" }
@@ -3448,6 +3453,7 @@ func towerCycleTestSetup(t *testing.T) func() {
 		StoreOpenAtFunc = origStoreOpen
 		CommitPendingFunc = origCommit
 		ListBeadsFunc = origList
+		DispatchableBeadsFunc = origDispatchable
 		InstanceIDFunc = origInstanceID
 	}
 }
@@ -3457,16 +3463,19 @@ func TestTowerCycle_SkipsBeadsForUnboundPrefixes(t *testing.T) {
 	cleanup := towerCycleTestSetup(t)
 	defer cleanup()
 
-	origSchedulable := GetSchedulableWorkFunc
-	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
-		return &store.ScheduleResult{
-			Schedulable: []store.Bead{
-				{ID: "web-task1", Title: "web task", Type: "task"},
-				{ID: "api-task1", Title: "api task", Type: "task"},
-			},
-		}, nil
+	dispatchable := []store.Bead{
+		{ID: "web-task1", Title: "web task", Status: "ready", Type: "task"},
+		{ID: "api-task1", Title: "api task", Status: "ready", Type: "task"},
 	}
-	defer func() { GetSchedulableWorkFunc = origSchedulable }()
+	origDispatchable := DispatchableBeadsFunc
+	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) {
+		out := make([]*store.Bead, 0, len(dispatchable))
+		for i := range dispatchable {
+			out = append(out, &dispatchable[i])
+		}
+		return out, nil
+	}
+	defer func() { DispatchableBeadsFunc = origDispatchable }()
 
 	origLoadTower := LoadTowerConfigFunc
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
@@ -3503,16 +3512,19 @@ func TestTowerCycle_SpawnsBeadsForBoundPrefixes(t *testing.T) {
 	cleanup := towerCycleTestSetup(t)
 	defer cleanup()
 
-	origSchedulable := GetSchedulableWorkFunc
-	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
-		return &store.ScheduleResult{
-			Schedulable: []store.Bead{
-				{ID: "spi-task1", Title: "spire task", Type: "task"},
-				{ID: "web-task2", Title: "web task 2", Type: "task"},
-			},
-		}, nil
+	dispatchable := []store.Bead{
+		{ID: "spi-task1", Title: "spire task", Status: "ready", Type: "task"},
+		{ID: "web-task2", Title: "web task 2", Status: "ready", Type: "task"},
 	}
-	defer func() { GetSchedulableWorkFunc = origSchedulable }()
+	origDispatchable := DispatchableBeadsFunc
+	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) {
+		out := make([]*store.Bead, 0, len(dispatchable))
+		for i := range dispatchable {
+			out = append(out, &dispatchable[i])
+		}
+		return out, nil
+	}
+	defer func() { DispatchableBeadsFunc = origDispatchable }()
 
 	origLoadTower := LoadTowerConfigFunc
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
@@ -3546,15 +3558,18 @@ func TestTowerCycle_SpawnConfigUsesRoleWizardAndInstanceID(t *testing.T) {
 	cleanup := towerCycleTestSetup(t)
 	defer cleanup()
 
-	origSchedulable := GetSchedulableWorkFunc
-	GetSchedulableWorkFunc = func(filter beads.WorkFilter) (*store.ScheduleResult, error) {
-		return &store.ScheduleResult{
-			Schedulable: []store.Bead{
-				{ID: "spi-task1", Title: "spire task", Type: "task"},
-			},
-		}, nil
+	dispatchable := []store.Bead{
+		{ID: "spi-task1", Title: "spire task", Status: "ready", Type: "task"},
 	}
-	defer func() { GetSchedulableWorkFunc = origSchedulable }()
+	origDispatchable := DispatchableBeadsFunc
+	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) {
+		out := make([]*store.Bead, 0, len(dispatchable))
+		for i := range dispatchable {
+			out = append(out, &dispatchable[i])
+		}
+		return out, nil
+	}
+	defer func() { DispatchableBeadsFunc = origDispatchable }()
 
 	origLoadTower := LoadTowerConfigFunc
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {

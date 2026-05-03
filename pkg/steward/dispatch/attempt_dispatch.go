@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
-	"github.com/steveyegge/beads"
 )
 
 // ErrNoClaimedAttempt is returned by DispatchEmitter.Emit when the caller
@@ -158,31 +158,54 @@ func ClaimThenEmit(
 	return emitter.Emit(ctx, handle, buildIntent(handle))
 }
 
-// StoreSelector is the default pkg/store-backed ReadyWorkSelector. It
-// returns the IDs of beads currently schedulable under the shared
-// repo-registration store — i.e. beads without an open attempt child, no
-// active deferral, and no other structural block.
+// StoreSelector is the default lifecycle-backed ReadyWorkSelector. It
+// returns the IDs of beads currently dispatchable per their formula's
+// `[steps.X.lifecycle].on_start` declarations (or, for legacy formulas
+// without lifecycle blocks, the historical "ready/open/hooked" predicate
+// preserved by lifecycle.IsDispatchable). Beads with an active attempt
+// child or invariant violation are filtered out at the per-bead policy
+// layer below so the cluster claim path sees only valid targets.
 //
-// The returned order is whatever order pkg/store.GetSchedulableWork
+// The returned order is whatever order lifecycle.DispatchableBeads
 // yields; StoreSelector imposes no additional ranking.
 type StoreSelector struct{}
 
-// SelectReady delegates to store.GetSchedulableWork and returns the
-// schedulable bead IDs. Quarantined beads are dropped at this layer — a
-// bead whose attempt graph is in an invariant-violation state is not a
-// valid claim target, and the steward's quarantine path handles it
-// elsewhere.
-func (s StoreSelector) SelectReady(_ context.Context) ([]string, error) {
+// SelectReady delegates to lifecycle.DispatchableBeads (spi-jzs5xq) and
+// returns the dispatchable bead IDs. The selector applies the same
+// per-bead policy filters the steward's TowerCycle dispatch path uses:
+// internal beads are dropped (via store.IsWorkBead), template beads are
+// skipped, and beads with an active attempt — or an invariant-violation
+// error from GetActiveAttempt — are excluded so the claim step never
+// races a live wizard.
+func (s StoreSelector) SelectReady(ctx context.Context) ([]string, error) {
 	_ = s
-	result, err := store.GetSchedulableWork(beads.WorkFilter{})
+	dispatchable, err := lifecycle.DispatchableBeads(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: select ready: %w", err)
 	}
-	if result == nil {
-		return nil, nil
-	}
-	ids := make([]string, 0, len(result.Schedulable))
-	for _, b := range result.Schedulable {
+	ids := make([]string, 0, len(dispatchable))
+	for _, b := range dispatchable {
+		if b == nil {
+			continue
+		}
+		if !store.IsWorkBead(*b) {
+			continue
+		}
+		if store.ContainsLabel(*b, "template") {
+			continue
+		}
+		attempt, aErr := store.GetActiveAttempt(b.ID)
+		if aErr != nil {
+			// Quarantine path: a bead whose attempt graph is in an
+			// invariant-violation state is not a valid claim target.
+			// The steward's TowerCycle path raises an alert; here the
+			// safe action is to drop the candidate so the loser
+			// doesn't race the wizard owning the broken attempt.
+			continue
+		}
+		if attempt != nil {
+			continue
+		}
 		ids = append(ids, b.ID)
 	}
 	return ids, nil
