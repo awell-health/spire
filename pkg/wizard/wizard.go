@@ -22,6 +22,7 @@ import (
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/executor"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/promptctx"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/runtime"
@@ -923,7 +924,9 @@ func CmdWizardRun(args []string, deps *Deps) error {
 
 	// 15. If we didn't hand off, reopen the bead so it doesn't stay orphaned.
 	if !handoffDone {
-		deps.UpdateBead(beadID, map[string]interface{}{"status": "open"})
+		if err := lifecycle.RecordEvent(context.Background(), beadID, lifecycle.ApprenticeNoChanges{HandoffDone: false}); err != nil {
+			log("warning: lifecycle reopen failed: %s", err)
+		}
 		log("apprentice mode — bead reopened")
 	}
 
