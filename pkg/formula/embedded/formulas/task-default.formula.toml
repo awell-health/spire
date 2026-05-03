@@ -41,6 +41,10 @@ kind = "op"
 action = "wizard.run"
 flow = "task-plan"
 title = "Plan implementation"
+[steps.plan.lifecycle]
+on_start = "in_progress"
+on_complete = "in_progress"
+on_fail = { event = "Escalated" }
 
 # Step 2: Apprentice implements the plan in an isolated worktree.
 [steps.implement]
@@ -50,6 +54,10 @@ flow = "implement"
 needs = ["plan"]
 workspace = "feature"
 title = "Implement changes"
+[steps.implement.lifecycle]
+on_start = "in_progress"
+on_complete = "awaiting_review"
+on_fail = { event = "Escalated" }
 
 # Step 3: Review via the subgraph-review sub-graph (sage → fix/arbiter → merge/discard).
 [steps.review]
@@ -59,6 +67,13 @@ needs = ["implement"]
 workspace = "feature"
 graph = "subgraph-review"
 title = "Review changes"
+[steps.review.lifecycle]
+on_start = "awaiting_review"
+on_complete_match = [
+  { when = "outputs.verdict == 'approve'",         status = "merge_pending" },
+  { when = "outputs.verdict == 'request_changes'", status = "needs_changes" },
+]
+on_fail = { event = "Escalated" }
 
 # Step 4a: Merge to main — fires when review outcome is merge.
 [steps.merge]
@@ -71,6 +86,10 @@ title = "Merge to main"
 strategy = "squash"
 [steps.merge.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+[steps.merge.lifecycle]
+on_start = "merge_pending"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 # Step 5a: Close bead after successful merge.
 [steps.close]
@@ -81,6 +100,10 @@ terminal = true
 title = "Close bead"
 [steps.close.with]
 status = "closed"
+[steps.close.lifecycle]
+on_start = "closed"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 # Step 4b: Discard — fires when review outcome is discard.
 [steps.discard]
@@ -93,3 +116,7 @@ title = "Discard branch"
 status = "discard"
 [steps.discard.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]
+[steps.discard.lifecycle]
+on_start = "needs_changes"
+on_complete = "closed"
+on_fail = { event = "Escalated" }

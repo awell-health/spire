@@ -44,6 +44,10 @@ Once identified, create a caused-by dependency:
   bd dep add {vars.bead_id} <causing-bead-id> --type caused-by
 If the causing bead cannot be determined, note this in the plan and proceed without the link.
 """
+[steps.plan.lifecycle]
+on_start = "in_progress"
+on_complete = "in_progress"
+on_fail = { event = "Escalated" }
 
 [steps.implement]
 kind = "op"
@@ -52,6 +56,10 @@ flow = "implement"
 needs = ["plan"]
 workspace = "feature"
 title = "Implement bugfix"
+[steps.implement.lifecycle]
+on_start = "in_progress"
+on_complete = "awaiting_review"
+on_fail = { event = "Escalated" }
 
 [steps.review]
 kind = "call"
@@ -60,6 +68,13 @@ needs = ["implement"]
 workspace = "feature"
 graph = "subgraph-review"
 title = "Review bugfix"
+[steps.review.lifecycle]
+on_start = "awaiting_review"
+on_complete_match = [
+  { when = "outputs.verdict == 'approve'",         status = "merge_pending" },
+  { when = "outputs.verdict == 'request_changes'", status = "needs_changes" },
+]
+on_fail = { event = "Escalated" }
 
 [steps.merge]
 kind = "op"
@@ -71,6 +86,10 @@ title = "Merge to main"
 strategy = "squash"
 [steps.merge.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+[steps.merge.lifecycle]
+on_start = "merge_pending"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 [steps.close]
 kind = "op"
@@ -80,6 +99,10 @@ terminal = true
 title = "Close bead"
 [steps.close.with]
 status = "closed"
+[steps.close.lifecycle]
+on_start = "closed"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 [steps.discard]
 kind = "op"
@@ -91,3 +114,7 @@ title = "Discard branch"
 status = "discard"
 [steps.discard.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]
+[steps.discard.lifecycle]
+on_start = "needs_changes"
+on_complete = "closed"
+on_fail = { event = "Escalated" }

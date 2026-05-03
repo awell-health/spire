@@ -37,6 +37,10 @@ kind = "op"
 action = "check.design-linked"
 title = "Validate design linkage"
 with = { auto_create = "true" }
+[steps.design-check.lifecycle]
+on_start = "in_progress"
+on_complete = "in_progress"
+on_fail = { event = "Escalated" }
 
 [steps.plan]
 kind = "op"
@@ -44,12 +48,20 @@ action = "wizard.run"
 flow = "epic-plan"
 needs = ["design-check"]
 title = "Plan epic subtasks"
+[steps.plan.lifecycle]
+on_start = "in_progress"
+on_complete = "in_progress"
+on_fail = { event = "Escalated" }
 
 [steps.materialize]
 kind = "op"
 action = "beads.materialize_plan"
 needs = ["plan"]
 title = "Verify subtask materialization"
+[steps.materialize.lifecycle]
+on_start = "in_progress"
+on_complete = "in_progress"
+on_fail = { event = "Escalated" }
 
 [steps.implement]
 kind = "call"
@@ -58,6 +70,13 @@ needs = ["materialize"]
 workspace = "staging"
 graph = "subgraph-implement"
 title = "Implement epic subtasks"
+[steps.implement.lifecycle]
+on_start = "in_progress"
+on_complete_match = [
+  { when = "outputs.outcome == 'verified'",     status = "awaiting_review" },
+  { when = "outputs.outcome == 'build-failed'", status = "awaiting_human" },
+]
+on_fail = { event = "Escalated" }
 
 [steps.implement-failed]
 kind = "op"
@@ -69,6 +88,10 @@ title = "Implementation failed — escalate"
 status = "escalate"
 [steps.implement-failed.when]
 all = [{ left = "steps.implement.outputs.outcome", op = "ne", right = "verified" }]
+[steps.implement-failed.lifecycle]
+on_start = "awaiting_human"
+on_complete = "awaiting_human"
+on_fail = { event = "Escalated" }
 
 [steps.review]
 kind = "call"
@@ -79,6 +102,13 @@ graph = "subgraph-review"
 title = "Review epic changes"
 [steps.review.when]
 all = [{ left = "steps.implement.outputs.outcome", op = "eq", right = "verified" }]
+[steps.review.lifecycle]
+on_start = "awaiting_review"
+on_complete_match = [
+  { when = "outputs.verdict == 'approve'",         status = "merge_pending" },
+  { when = "outputs.verdict == 'request_changes'", status = "needs_changes" },
+]
+on_fail = { event = "Escalated" }
 
 [steps.merge]
 kind = "op"
@@ -90,6 +120,10 @@ title = "Merge to main"
 strategy = "squash"
 [steps.merge.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+[steps.merge.lifecycle]
+on_start = "merge_pending"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 [steps.close]
 kind = "op"
@@ -99,6 +133,10 @@ terminal = true
 title = "Close epic"
 [steps.close.with]
 status = "closed"
+[steps.close.lifecycle]
+on_start = "closed"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 [steps.discard]
 kind = "op"
@@ -110,3 +148,7 @@ title = "Discard epic"
 status = "discard"
 [steps.discard.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]
+[steps.discard.lifecycle]
+on_start = "needs_changes"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
