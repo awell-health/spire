@@ -95,10 +95,11 @@ crd-check:
 	@diff -r k8s/crds/ helm/spire/crds/ \
 		|| { echo "CRD drift: k8s/crds and helm/spire/crds disagree; run 'go generate ./api/...' in operator/ to regenerate both."; exit 1; }
 
-# --- Lifecycle gate (spi-91ohmn / Landing 1 of spi-sqqero) ---
+# --- Lifecycle gate (spi-sqqero) ---
 
-# Fails when new direct bead.status writes land outside pkg/lifecycle.
-# Existing call sites are grandfathered via scripts/lifecycle-gate-allowlist.txt.
+# Fails when any direct bead.status write is detected outside pkg/lifecycle.
+# Hardened in Landing 2 (spi-g8a1nz) — no grandfathered allowlist; pkg/lifecycle
+# is the sole sanctioned writer of bead.status.
 # See pkg/lifecycle/README.md for migration guidance.
 lifecycle-gate:
 	bash scripts/check-lifecycle-gate.sh
