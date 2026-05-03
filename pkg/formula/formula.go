@@ -110,6 +110,9 @@ func ParseFormulaStepGraph(data []byte) (*FormulaStepGraph, error) {
 	if err := ValidateGraph(&f); err != nil {
 		return nil, fmt.Errorf("validate step-graph formula: %w", err)
 	}
+	for _, w := range validateLifecycle(&f) {
+		log.Printf("warn: %s", w.String())
+	}
 	return &f, nil
 }
 
