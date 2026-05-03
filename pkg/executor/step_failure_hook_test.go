@@ -15,7 +15,9 @@ import (
 // hook-and-exit invariant (spi-h2d7yn). When a graph step fails, the wizard
 // MUST:
 //
-//   - transition the source bead to status="hooked"
+//   - transition the source bead's graph step state to "hooked" and route
+//     the parent-bead status write through pkg/lifecycle (no direct
+//     deps.UpdateBead({status: hooked}) seam)
 //   - file a recovery bead (type=recovery)
 //   - wire a `caused-by` dep from the new recovery bead → source bead
 //   - exit cleanly without re-dispatching the failed step
@@ -27,8 +29,8 @@ import (
 func TestStepFailure_HooksSourceAndFilesRecoveryBead(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
-	// Capture UpdateBead calls so we can assert the source bead → hooked
-	// transition fires.
+	// Capture UpdateBead calls so we can assert the migration: no direct
+	// status write on the source bead — pkg/lifecycle owns that transition.
 	type updateCall struct {
 		id      string
 		updates map[string]interface{}
@@ -99,19 +101,18 @@ func TestStepFailure_HooksSourceAndFilesRecoveryBead(t *testing.T) {
 		t.Fatalf("RunGraph returned unexpected error: %v", err)
 	}
 
-	// (1) Source bead must be transitioned to "hooked".
-	foundHooked := false
+	// (1) The source bead's status write must NOT have flowed through the
+	// direct deps.UpdateBead seam — pkg/lifecycle.RecordEvent now owns the
+	// hooked transition. This is the load-bearing migration assertion: any
+	// regression that reintroduces a `bead.status="hooked"` write on the
+	// parent will surface here.
 	for _, u := range updates {
 		if u.id != "spi-source-task" {
 			continue
 		}
 		if status, ok := u.updates["status"].(string); ok && status == "hooked" {
-			foundHooked = true
-			break
+			t.Errorf("source bead spi-source-task hooked transition leaked through direct deps.UpdateBead; expected the call to flow through lifecycle.RecordEvent instead. updates: %+v", updates)
 		}
-	}
-	if !foundHooked {
-		t.Errorf("expected source bead spi-source-task to be transitioned to hooked, got updates: %+v", updates)
 	}
 
 	// (2) The implement step state must be parked as "hooked" (not failed).

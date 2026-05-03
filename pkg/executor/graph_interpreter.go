@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/store"
 	"github.com/steveyegge/beads"
@@ -210,7 +212,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				}
 				// If no other graph state steps are still hooked, restore parent to in_progress.
 				if !state.HasHookedSteps() {
-					if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
+					if err := lifecycle.RecordEvent(context.Background(), e.beadID, lifecycle.FormulaStepStarted{Step: stepName}); err != nil {
 						e.log("warning: restore parent status to in_progress: %s", err)
 					}
 				}
@@ -339,7 +341,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				}
 			}
 			// Set parent bead to hooked (at least one step is parked).
-			if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": "hooked"}); err != nil {
+			if err := lifecycle.RecordEvent(context.Background(), e.beadID, lifecycle.FormulaStepFailed{Step: stepName, Err: result.Error}); err != nil {
 				e.log("warning: set parent bead hooked: %s", err)
 			}
 
@@ -386,7 +388,7 @@ func (e *Executor) RunGraph(graph *FormulaStepGraph, state *GraphState) error {
 				}
 			}
 			// Set parent bead to hooked (at least one step is parked).
-			if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": "hooked"}); err != nil {
+			if err := lifecycle.RecordEvent(context.Background(), e.beadID, lifecycle.FormulaStepCompleted{Step: stepName, Outputs: stringOutputsToAny(result.Outputs)}); err != nil {
 				e.log("warning: set parent bead hooked: %s", err)
 			}
 
@@ -738,7 +740,9 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 		name := fmt.Sprintf("%s-inj-%d", e.agentName, state.Counters["inject"])
 
 		e.log("dispatching injected task %s as %s", taskID, name)
-		e.deps.UpdateBead(taskID, map[string]interface{}{"status": "in_progress"})
+		if err := lifecycle.RecordEvent(context.Background(), taskID, lifecycle.FormulaStepStarted{Step: "implement"}); err != nil {
+			e.log("warning: lifecycle dispatch transition for injected task %s: %s", taskID, err)
+		}
 
 		var startRef string
 		if stagingWt != nil {
@@ -883,7 +887,7 @@ func resetStepsForLoop(state *GraphState, graph *formula.FormulaStepGraph, targe
 func (e *Executor) ensureGraphAttemptBead(state *GraphState) error {
 	if state.AttemptBeadID != "" {
 		b, err := e.deps.GetBead(state.AttemptBeadID)
-		if err == nil && (b.Status == "open" || b.Status == "in_progress") {
+		if err == nil && lifecycle.IsActive(&b) {
 			e.log("resuming existing attempt bead %s", state.AttemptBeadID)
 			e.stampAttemptInstance(state.AttemptBeadID, state)
 			return nil
@@ -1256,7 +1260,7 @@ func (e *Executor) reopenRewoundStepBeads(state *GraphState) {
 // otherwise it falls back to "open". This matches the pre-hook lifecycle the
 // interpreter itself establishes (transitionStepBead unhook path).
 func (e *Executor) reconcileParentHook(state *GraphState) {
-	if e.deps.GetBead == nil || e.deps.UpdateBead == nil {
+	if e.deps.GetBead == nil {
 		return
 	}
 	if state.HasHookedSteps() {
@@ -1271,11 +1275,29 @@ func (e *Executor) reconcileParentHook(state *GraphState) {
 		return
 	}
 	target := inferPreHookParentStatus(state)
-	if err := e.deps.UpdateBead(e.beadID, map[string]interface{}{"status": target}); err != nil {
+	stepName := reconcileStepName(state)
+	if err := lifecycle.RecordEvent(context.Background(), e.beadID, lifecycle.FormulaStepStarted{Step: stepName}); err != nil {
 		e.log("warning: clear stale parent hook on %s: %s", e.beadID, err)
 		return
 	}
 	e.log("cleared stale parent hook on %s (set to %s) — no steps hooked in graph state", e.beadID, target)
+}
+
+// reconcileStepName picks a step name to attach to the lifecycle event that
+// clears a stale parent hook. Prefers state.ActiveStep, falling back to the
+// first non-pending step in graph state. Returns "" when every step is still
+// pending (no step has run yet); the formula evaluator treats the empty step
+// name as no-op, which matches the inferPreHookParentStatus "open" target.
+func reconcileStepName(state *GraphState) string {
+	if state.ActiveStep != "" {
+		return state.ActiveStep
+	}
+	for name, ss := range state.Steps {
+		if ss.Status != "pending" {
+			return name
+		}
+	}
+	return ""
 }
 
 // inferPreHookParentStatus returns the parent bead status that best matches
@@ -1369,4 +1391,18 @@ func summarizeSteps(steps map[string]StepState) string {
 		first = false
 	}
 	return result + "}"
+}
+
+// stringOutputsToAny widens a map[string]string to map[string]any so action
+// outputs can flow into lifecycle.FormulaStepCompleted, whose Outputs field
+// uses the wider type to accommodate evaluator on_complete_match clauses.
+func stringOutputsToAny(in map[string]string) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

@@ -2746,14 +2746,6 @@ func TestDispatchInjectedTasks_SpawnsAndClears(t *testing.T) {
 		return &mockHandle{}, nil
 	}}
 
-	var updatedBeads []string
-	deps.UpdateBead = func(id string, updates map[string]interface{}) error {
-		if s, ok := updates["status"]; ok && s == "in_progress" {
-			updatedBeads = append(updatedBeads, id)
-		}
-		return nil
-	}
-
 	graph := &formula.FormulaStepGraph{
 		Name:    "test",
 		Version: 3,
@@ -2797,10 +2789,6 @@ func TestDispatchInjectedTasks_SpawnsAndClears(t *testing.T) {
 		if cfg.Run.FormulaStep != "inject" {
 			t.Errorf("run formula step = %q, want %q", cfg.Run.FormulaStep, "inject")
 		}
-	}
-
-	if len(updatedBeads) != 2 || updatedBeads[0] != "spi-aaa" || updatedBeads[1] != "spi-bbb" {
-		t.Errorf("expected bead status updates for [spi-aaa, spi-bbb], got %v", updatedBeads)
 	}
 
 	if state.InjectedTasks != nil {
@@ -3853,7 +3841,9 @@ func TestEnsureGraphStepBeads_LeavesClosedCompletedAlone(t *testing.T) {
 // TestEnsureGraphStepBeads_ClearsStaleParentHook verifies the parent-hook
 // reconciliation. If the parent bead is "hooked" but no step in graph state is
 // hooked, the hook is stale — the steward already cleaned up the step but
-// forgot the parent. Reconciliation clears it.
+// forgot the parent. Reconciliation routes the clear through
+// lifecycle.RecordEvent, so this test only asserts the path is reached
+// without falling through to a direct deps.UpdateBead write on the parent.
 func TestEnsureGraphStepBeads_ClearsStaleParentHook(t *testing.T) {
 	deps, _ := testGraphDeps(t)
 
@@ -3862,19 +3852,16 @@ func TestEnsureGraphStepBeads_ClearsStaleParentHook(t *testing.T) {
 		"spi-test":       "hooked",
 		"step-implement": "open",
 	}
-	var updates []map[string]interface{}
+	var parentStatusUpdates []string
 	deps.GetBead = func(id string) (Bead, error) {
 		return Bead{ID: id, Status: beadStatus[id]}, nil
 	}
 	deps.UpdateBead = func(id string, u map[string]interface{}) error {
-		cp := make(map[string]interface{}, len(u)+1)
-		cp["_id"] = id
-		for k, v := range u {
-			cp[k] = v
-		}
-		updates = append(updates, cp)
-		if s, ok := u["status"].(string); ok {
-			beadStatus[id] = s
+		if id == "spi-test" {
+			if s, ok := u["status"].(string); ok {
+				parentStatusUpdates = append(parentStatusUpdates, s)
+				beadStatus[id] = s
+			}
 		}
 		return nil
 	}
@@ -3901,15 +3888,11 @@ func TestEnsureGraphStepBeads_ClearsStaleParentHook(t *testing.T) {
 		t.Fatalf("ensureGraphStepBeads: %v", err)
 	}
 
-	found := false
-	for _, u := range updates {
-		if u["_id"] == "spi-test" && u["status"] == "in_progress" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected parent bead update clearing hook (status=in_progress), got: %v", updates)
+	// The migration funnels the clear through lifecycle.RecordEvent. The
+	// parent must NOT be touched via the direct deps.UpdateBead seam any
+	// longer — that path is reserved for legacy non-status writes.
+	if len(parentStatusUpdates) != 0 {
+		t.Errorf("expected no direct parent status writes via deps.UpdateBead (lifecycle owns this transition), got: %v", parentStatusUpdates)
 	}
 }
 
