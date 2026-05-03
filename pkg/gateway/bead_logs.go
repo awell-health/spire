@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/awell-health/spire/pkg/board/logstream"
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/logartifact"
 	"github.com/awell-health/spire/pkg/logartifact/redact"
 	"github.com/awell-health/spire/pkg/store"
@@ -643,19 +644,57 @@ func decodeLogsCursor(s string) (logsCursor, error) {
 
 // scopeFromRequest derives the caller scope from request headers. Until
 // the gateway carries identity-aware RBAC, callers can pass
-// X-Spire-Scope with a known value; absent the header, requests default
-// to ScopeDesktop so engineer-only artifacts are not exposed by
-// accident. Internal/CLI callers that need raw bytes set the header
-// explicitly.
+// X-Spire-Scope with a known value to override the default.
+//
+// Default behavior depends on the gateway's deployment mode (spi-dhqv40):
+//   - local-native: defaults to ScopeEngineer. The gateway is bound to
+//     localhost and the only caller is the operator's own desktop/CLI;
+//     gating the operator from their own engineer-only artifacts breaks
+//     the bead-detail Logs tab without serving any threat model.
+//   - cluster-native / cluster-attached / unknown: defaults to
+//     ScopeDesktop. Foreign desktop callers exist in those topologies and
+//     engineer-only artifacts must not leak by default. Internal/CLI
+//     callers that need raw bytes set the header explicitly.
+//
+// Explicit headers always win over the default — operators can voluntarily
+// downgrade to ScopeDesktop or ScopePublic in any mode.
 func scopeFromRequest(r *http.Request) logartifact.CallerScope {
 	v := strings.TrimSpace(r.Header.Get("X-Spire-Scope"))
 	switch logartifact.CallerScope(v) {
 	case logartifact.ScopeEngineer:
 		return logartifact.ScopeEngineer
+	case logartifact.ScopeDesktop:
+		return logartifact.ScopeDesktop
 	case logartifact.ScopePublic:
 		return logartifact.ScopePublic
 	}
+	return defaultScopeForMode(scopeDeploymentModeFunc())
+}
+
+// defaultScopeForMode picks the no-header default scope for a deployment
+// mode. Pulled out as a pure function so tests can drive every mode
+// without standing up a real tower config.
+func defaultScopeForMode(mode config.DeploymentMode) logartifact.CallerScope {
+	if mode == config.DeploymentModeLocalNative {
+		return logartifact.ScopeEngineer
+	}
 	return logartifact.ScopeDesktop
+}
+
+// scopeDeploymentModeFunc resolves the active tower's deployment mode for
+// scopeFromRequest. Wrapped in a func so tests can stub it without
+// touching the real config dir; production callers use the package-level
+// resolver which mirrors handleRoster's resolveTowerForRosterFunc.
+//
+// On any resolution error, returns DeploymentModeUnknown so the
+// fall-through default is the safer ScopeDesktop, matching pre-spi-dhqv40
+// behavior.
+var scopeDeploymentModeFunc = func() config.DeploymentMode {
+	tower, err := config.ResolveTowerConfig()
+	if err != nil || tower == nil {
+		return config.DeploymentModeUnknown
+	}
+	return tower.EffectiveDeploymentMode()
 }
 
 // canReadVisibility mirrors the access matrix in pkg/logartifact.Render.

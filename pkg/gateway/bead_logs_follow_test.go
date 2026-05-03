@@ -418,8 +418,12 @@ func TestFollowBeadLogs_DesktopScopeSkipsEngineerOnly(t *testing.T) {
 	withLiveTail(t, nil)
 	s := newLogTestServer("")
 
-	// No X-Spire-Scope header → defaults to desktop.
+	// Explicit desktop scope: engineer_only artifacts are silently
+	// skipped regardless of the gateway's deployment-mode default
+	// (spi-dhqv40 — local-native defaults to engineer, so explicit
+	// header is required to test this path).
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs?follow=true", nil)
+	req.Header.Set("X-Spire-Scope", string(logartifact.ScopeDesktop))
 	rec := httptest.NewRecorder()
 	s.handleBeadByID(rec, req)
 

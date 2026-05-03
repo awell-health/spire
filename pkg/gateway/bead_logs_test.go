@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/logartifact"
 	"github.com/awell-health/spire/pkg/logartifact/redact"
 	"github.com/awell-health/spire/pkg/store"
@@ -571,7 +572,119 @@ func TestGetBeadLogRaw_EngineerOnlyDeniesDesktopScope(t *testing.T) {
 	s := newLogTestServer("")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/raw", nil)
-	// Default scope (no header) → desktop, which cannot read engineer_only.
+	// Explicit desktop scope: cannot read engineer_only regardless of
+	// the gateway's deployment-mode default (spi-dhqv40).
+	req.Header.Set("X-Spire-Scope", string(logartifact.ScopeDesktop))
+	rec := httptest.NewRecorder()
+	s.getBeadLogRaw(rec, req, "spi-test1", "log-a")
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d want 403 body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+// stubScopeDeploymentMode forces the no-header default scope branch in
+// scopeFromRequest to one deterministic mode for the duration of a test.
+// Restores the prior resolver on cleanup.
+func stubScopeDeploymentMode(t *testing.T, mode config.DeploymentMode) {
+	t.Helper()
+	prev := scopeDeploymentModeFunc
+	scopeDeploymentModeFunc = func() config.DeploymentMode { return mode }
+	t.Cleanup(func() { scopeDeploymentModeFunc = prev })
+}
+
+func TestScopeFromRequest_DefaultsByDeploymentMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode config.DeploymentMode
+		want logartifact.CallerScope
+	}{
+		{"local-native defaults to engineer", config.DeploymentModeLocalNative, logartifact.ScopeEngineer},
+		{"cluster-native defaults to desktop", config.DeploymentModeClusterNative, logartifact.ScopeDesktop},
+		{"unknown defaults to desktop", config.DeploymentModeUnknown, logartifact.ScopeDesktop},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubScopeDeploymentMode(t, tc.mode)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			got := scopeFromRequest(req)
+			if got != tc.want {
+				t.Fatalf("scopeFromRequest(no header, mode=%s) = %q want %q", tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScopeFromRequest_ExplicitHeaderOverridesDefault(t *testing.T) {
+	// Even in local-native (where the default is engineer), an explicit
+	// downgrade header must win — operators can voluntarily restrict.
+	stubScopeDeploymentMode(t, config.DeploymentModeLocalNative)
+	cases := []struct {
+		header string
+		want   logartifact.CallerScope
+	}{
+		{string(logartifact.ScopeEngineer), logartifact.ScopeEngineer},
+		{string(logartifact.ScopeDesktop), logartifact.ScopeDesktop},
+		{string(logartifact.ScopePublic), logartifact.ScopePublic},
+	}
+	for _, tc := range cases {
+		t.Run(tc.header, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("X-Spire-Scope", tc.header)
+			got := scopeFromRequest(req)
+			if got != tc.want {
+				t.Fatalf("scopeFromRequest(header=%q) = %q want %q", tc.header, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetBeadLogRaw_LocalNativeDefaultAllowsEngineerOnly(t *testing.T) {
+	// Regression for spi-dhqv40: in local-native mode the desktop hits
+	// the gateway with no X-Spire-Scope header. The bead-logs Logs tab
+	// must succeed — operator reading their own engineer-only artifacts.
+	stubScopeDeploymentMode(t, config.DeploymentModeLocalNative)
+
+	transcript := []byte(`{"type":"system"}` + "\n")
+	reader := &fakeLogReader{
+		manifests: []logartifact.Manifest{
+			makeManifest("log-a", func(m *logartifact.Manifest) {
+				m.ByteSize = int64(len(transcript))
+			}),
+		},
+		bytes: map[string][]byte{"log-a": transcript},
+	}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/raw", nil)
+	// No X-Spire-Scope header — exactly what spire-desktop sends today.
+	rec := httptest.NewRecorder()
+	s.getBeadLogRaw(rec, req, "spi-test1", "log-a")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), transcript) {
+		t.Fatalf("body=%q want %q", rec.Body.String(), transcript)
+	}
+}
+
+func TestGetBeadLogRaw_ClusterNativeDefaultStillDeniesEngineerOnly(t *testing.T) {
+	// Regression guard: cluster-native and cluster-attached must keep
+	// the conservative ScopeDesktop default. Foreign desktop callers
+	// exist in those topologies and engineer_only must not leak by
+	// default.
+	stubScopeDeploymentMode(t, config.DeploymentModeClusterNative)
+
+	reader := &fakeLogReader{
+		manifests: []logartifact.Manifest{makeManifest("log-a")},
+		bytes:     map[string][]byte{"log-a": []byte("hello\n")},
+	}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/raw", nil)
 	rec := httptest.NewRecorder()
 	s.getBeadLogRaw(rec, req, "spi-test1", "log-a")
 
