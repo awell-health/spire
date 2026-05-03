@@ -18,6 +18,7 @@ import (
 	"github.com/awell-health/spire/pkg/dolt"
 	"github.com/awell-health/spire/pkg/formula"
 	spgit "github.com/awell-health/spire/pkg/git"
+	"github.com/awell-health/spire/pkg/lifecycle"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/steward/intent"
 )
@@ -450,7 +451,9 @@ func (e *Executor) runDispatchWave(
 			name := fmt.Sprintf("%s-w%d-%d", e.agentName, waveIdx+1, idx+1)
 			e.log("  dispatching %s for %s", name, beadID)
 
-			e.deps.UpdateBead(beadID, map[string]interface{}{"status": "in_progress"})
+			if err := lifecycle.RecordEvent(context.Background(), beadID, lifecycle.FormulaStepStarted{Step: "implement"}); err != nil {
+				e.log("  warning: lifecycle dispatch transition for %s: %s", beadID, err)
+			}
 
 			started := time.Now()
 
@@ -615,7 +618,9 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 
 	for i, subtaskID := range subtasks {
 		e.log("=== sequential step %d/%d: %s ===", i+1, len(subtasks), subtaskID)
-		e.deps.UpdateBead(subtaskID, map[string]interface{}{"status": "in_progress"})
+		if err := lifecycle.RecordEvent(context.Background(), subtaskID, lifecycle.FormulaStepStarted{Step: "implement"}); err != nil {
+			e.log("warning: lifecycle dispatch transition for %s: %s", subtaskID, err)
+		}
 
 		name := fmt.Sprintf("%s-seq-%d", e.agentName, i+1)
 		started := time.Now()
