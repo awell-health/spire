@@ -50,6 +50,81 @@ func isRecoveryBead(beadID string, deps *Deps) bool {
 	return false
 }
 
+// MaxClericEscalationRetries bounds how many consecutive escalation
+// failures a recovery bead may suppress before the bead is closed and
+// labeled `needs-human`. Without this bound, a broken cleric (e.g. one
+// whose stdout fails to parse on every run) keeps the recovery bead
+// open forever; the steward then dispatches a fresh cleric on every
+// tick — burning an agent slot indefinitely. spi-9eopwy.
+const MaxClericEscalationRetries = 3
+
+// LabelClericRetry is the label prefix the recovery bead carries to
+// track suppressed escalations across cleric restarts. Persisted on
+// the bead because in-memory counters reset every steward restart.
+const LabelClericRetry = "cleric-retry:"
+
+// suppressRecoveryEscalation handles the recovery-bead branch of an
+// escalation: it adds the cascade-prevention comment, and persistently
+// counts the suppression. Once the count reaches
+// MaxClericEscalationRetries, the bead is labeled `needs-human` and
+// closed so the steward stops dispatching against it. Returns true so
+// the caller short-circuits the rest of its escalation logic
+// (createOrUpdateRecoveryBead, etc.) the same way the original guard
+// did.
+func suppressRecoveryEscalation(beadID, failureType, message string, deps *Deps) bool {
+	if !isRecoveryBead(beadID, deps) {
+		return false
+	}
+	if deps.AddComment != nil {
+		deps.AddComment(beadID, fmt.Sprintf(
+			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
+			failureType, message))
+	}
+
+	// Read the existing retry count from the bead's labels. Missing label
+	// = first failure (count was 0 before this one).
+	count := 0
+	prevLabel := ""
+	if deps.GetBead != nil {
+		if b, err := deps.GetBead(beadID); err == nil {
+			if val := store.HasLabel(b, LabelClericRetry); val != "" {
+				fmt.Sscanf(val, "%d", &count)
+				prevLabel = LabelClericRetry + val
+			}
+		}
+	}
+	count++
+
+	newLabel := fmt.Sprintf("%s%d", LabelClericRetry, count)
+	if prevLabel != "" && deps.RemoveLabel != nil {
+		// Best-effort: stale label is harmless because HasLabel returns
+		// the first match; the new one will sort first if added second
+		// only if labels are alphabetical, so remove explicitly.
+		_ = deps.RemoveLabel(beadID, prevLabel)
+	}
+	if deps.AddLabel != nil {
+		_ = deps.AddLabel(beadID, newLabel)
+	}
+
+	if count >= MaxClericEscalationRetries {
+		if deps.AddLabel != nil {
+			_ = deps.AddLabel(beadID, "needs-human")
+		}
+		if deps.AddComment != nil {
+			deps.AddComment(beadID, fmt.Sprintf(
+				"cleric-retry budget exhausted (%d failures): closing recovery bead and labeling `needs-human`. "+
+					"The repeated failure was: %s — %s",
+				count, failureType, message))
+		}
+		if deps.CloseBead != nil {
+			if err := deps.CloseBead(beadID); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: close exhausted recovery bead %s: %s\n", beadID, err)
+			}
+		}
+	}
+	return true
+}
+
 // executorBeadOps adapts executor.Deps to recovery.BeadOps.
 type executorBeadOps struct {
 	deps *Deps
@@ -98,8 +173,10 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 // provides better context (design bead, improved description, etc.).
 func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
-	if isRecoveryBead(beadID, deps) {
-		deps.AddComment(beadID, "Empty implement on recovery bead — escalation suppressed to prevent cascade.")
+	// Bounded retry: after MaxClericEscalationRetries, the recovery bead
+	// is closed and labeled `needs-human` so the steward stops
+	// re-dispatching against a stuck loop.
+	if suppressRecoveryEscalation(beadID, "empty-implement", "apprentice produced no code changes", deps) {
 		return
 	}
 
@@ -130,10 +207,10 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 // Failure types: "merge-failure", "build-failure", "repo-resolution", "arbiter-failure", "review-fix-merge-conflict"
 func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
-	if isRecoveryBead(beadID, deps) {
-		deps.AddComment(beadID, fmt.Sprintf(
-			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
-			failureType, message))
+	// Bounded retry: after MaxClericEscalationRetries, the recovery bead
+	// is closed and labeled `needs-human` so the steward stops
+	// re-dispatching against a stuck loop.
+	if suppressRecoveryEscalation(beadID, failureType, message, deps) {
 		return
 	}
 
@@ -163,10 +240,10 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 // the interruption label, alert title, comment, and message.
 func EscalateGraphStepFailure(beadID, agentName, failureType, message string, stepName, action, flow, workspace string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
-	if isRecoveryBead(beadID, deps) {
-		deps.AddComment(beadID, fmt.Sprintf(
-			"Failure on recovery bead (%s): %s — escalation suppressed to prevent cascade.",
-			failureType, message))
+	// Bounded retry: after MaxClericEscalationRetries, the recovery bead
+	// is closed and labeled `needs-human` so the steward stops
+	// re-dispatching against a stuck loop (spi-9eopwy).
+	if suppressRecoveryEscalation(beadID, failureType, message, deps) {
 		return
 	}
 

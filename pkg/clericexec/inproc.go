@@ -215,10 +215,13 @@ func (c *InProcClient) execCommentRequest(req cleric.ExecuteRequest) (cleric.Exe
 		return cleric.ExecuteResult{Message: "missing question arg"},
 			fmt.Errorf("clericexec: comment-request-input verb requires question arg")
 	}
+	body := "[cleric-request-input] " + question
+	if ctx := strings.TrimSpace(req.Proposal.Args["context"]); ctx != "" {
+		body += "\n\nContext: " + ctx
+	}
 	// Write to the recovery bead, not the source — the cleric is asking
 	// the human reviewer; the question lives next to the proposal.
-	if _, err := c.AddCommentFunc(req.RecoveryBeadID,
-		"[cleric-request-input] "+question); err != nil {
+	if _, err := c.AddCommentFunc(req.RecoveryBeadID, body); err != nil {
 		return cleric.ExecuteResult{Message: "comment-request: " + err.Error()}, err
 	}
 	return cleric.ExecuteResult{Success: true, Message: "wrote question to recovery bead"}, nil

@@ -104,8 +104,14 @@ func Manifest() map[string]ActionEntry {
 		"comment-request-input": {
 			Verb:        "comment-request-input",
 			Description: "Ask the human a question rather than proposing an action.",
+			// `context` is optional — the cleric model often emits a
+			// background paragraph alongside the question. Accepting it
+			// here keeps the parser tolerant of the canonical prompt
+			// vocabulary; clericexec.execCommentRequest appends it to
+			// the comment body when present (spi-9eopwy).
 			ArgsSchema: map[string]ArgSchema{
 				"question": {Required: true, Description: "The question to surface to the human."},
+				"context":  {Required: false, Description: "Optional background the human needs to answer the question."},
 			},
 			GatewayPath: "/cleric/actions/request-input",
 		},

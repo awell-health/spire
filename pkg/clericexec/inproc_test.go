@@ -171,6 +171,38 @@ func TestExecute_CommentRequest_WritesToRecoveryNotSource(t *testing.T) {
 	}
 }
 
+// TestExecute_CommentRequest_AppendsContext is the spi-9eopwy
+// follow-on: when the cleric emits both `question` and `context`, the
+// comment body must surface both so the human reviewer has the
+// background needed to answer.
+func TestExecute_CommentRequest_AppendsContext(t *testing.T) {
+	c, calls := fakeClient()
+	_, err := c.Execute(context.Background(), cleric.ExecuteRequest{
+		RecoveryBeadID: "spi-rec",
+		SourceBeadID:   "spi-src",
+		Proposal: cleric.ProposedAction{
+			Verb: "comment-request-input",
+			Args: map[string]string{
+				"question": "Should we dismiss?",
+				"context":  "Source bead is now closed and the work is obsolete.",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute err: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %d; want 1", len(*calls))
+	}
+	got := (*calls)[0].commentTxt
+	if !strings.Contains(got, "Should we dismiss?") {
+		t.Errorf("comment %q missing question", got)
+	}
+	if !strings.Contains(got, "Source bead is now closed") {
+		t.Errorf("comment %q missing context body", got)
+	}
+}
+
 func TestExecute_UpdateStatus_AppliesStatus(t *testing.T) {
 	c, calls := fakeClient()
 	_, err := c.Execute(context.Background(), cleric.ExecuteRequest{

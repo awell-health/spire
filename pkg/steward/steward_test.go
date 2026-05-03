@@ -2419,6 +2419,105 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_NoResummonOnRepeatSwee
 	}
 }
 
+// TestSweepHookedSteps_FailureEvidence_DoneRecovery_NoDispatch is the
+// spi-9eopwy regression test for the defensive `done`-status guard. The
+// existing closed-status branch handles `closed` recovery beads via
+// lifecycle.IsMutable, but `done` is also a terminal status and was
+// falling through to dispatch. The defensive check at the dispatch site
+// ensures both terminal statuses are skipped under any circumstance.
+func TestSweepHookedSteps_FailureEvidence_DoneRecovery_NoDispatch(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("SPIRE_CONFIG_DIR", cfgDir)
+	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
+
+	cleanup := stubFailureEvidenceHooks(t)
+	defer cleanup()
+
+	hookedStatus := beads.Status("awaiting_human")
+	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
+		if filter.Status != nil && *filter.Status == hookedStatus {
+			return []store.Bead{
+				{ID: "spi-parent-done", Status: "awaiting_human", Type: "task"},
+			}, nil
+		}
+		return nil, nil
+	}
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) {
+		if parentID == "spi-parent-done" {
+			return &store.Bead{ID: "spi-parent-done.attempt-1", Status: "in_progress"}, nil
+		}
+		return nil, nil
+	}
+	IsOwnedByInstanceFunc = func(attemptID, instanceID string) (bool, error) { return true, nil }
+	InstanceIDFunc = func() string { return "local-instance" }
+
+	GetHookedStepsFunc = func(parentID string) ([]store.Bead, error) {
+		if parentID == "spi-parent-done" {
+			return []store.Bead{
+				{ID: "spi-parent-done.step-impl", Status: "hooked", Labels: []string{"step:implement-failed"}},
+			}, nil
+		}
+		return nil, nil
+	}
+
+	GetBeadFunc = func(id string) (store.Bead, error) {
+		switch id {
+		case "spi-parent-done":
+			return store.Bead{
+				ID: "spi-parent-done", Status: "awaiting_human", Type: "task",
+				Labels: []string{"needs-human"},
+			}, nil
+		case "spi-recovery-done":
+			// `done` is a terminal status that historically slipped past
+			// lifecycle.IsMutable (which only excludes "closed"). The
+			// defensive guard at the dispatch site MUST still treat it
+			// as terminal.
+			return store.Bead{
+				ID: "spi-recovery-done", Status: "done", Type: "recovery",
+			}, nil
+		}
+		return store.Bead{}, fmt.Errorf("not found: %s", id)
+	}
+	GetCommentsFunc = func(id string) ([]*beads.Comment, error) { return nil, nil }
+
+	GetDependentsWithMetaFunc = func(id string) ([]*beads.IssueWithDependencyMetadata, error) {
+		if id == "spi-parent-done" {
+			return []*beads.IssueWithDependencyMetadata{
+				{
+					Issue:          beads.Issue{ID: "spi-recovery-done", IssueType: "recovery", Status: "done"},
+					DependencyType: "caused-by",
+				},
+			}, nil
+		}
+		return nil, nil
+	}
+	UnhookStepBeadFunc = func(id string) error { return nil }
+	UpdateBeadFunc = func(id string, fields map[string]interface{}) error { return nil }
+
+	// Sentinel: the defensive guard MUST short-circuit before claim.
+	var claimAttempts int
+	CreateAttemptBeadAtomicFunc = func(parentID, agentName, model, branch string) (string, error) {
+		claimAttempts++
+		return parentID + ".attempt-1", nil
+	}
+	StampAttemptInstanceFunc = func(attemptID string, meta store.InstanceMeta) error { return nil }
+	InstanceNameFunc = func() string { return "test-machine" }
+
+	backend := &spawnTrackingBackend{}
+	gsStore := &executor.FileGraphStateStore{ConfigDir: func() (string, error) { return cfgDir, nil }}
+
+	const sweeps = 3
+	for i := 0; i < sweeps; i++ {
+		_ = SweepHookedSteps(false, backend, "test-tower", gsStore, PhaseDispatch{})
+	}
+	if claimAttempts != 0 {
+		t.Errorf("claim attempts = %d, want 0 across %d sweeps (done recovery must not be re-claimed)", claimAttempts, sweeps)
+	}
+	if len(backend.spawns) != 0 {
+		t.Errorf("spawn count = %d, want 0 across %d sweeps", len(backend.spawns), sweeps)
+	}
+}
+
 // TestFindFailureEvidence_PrefersLatestRecovery verifies that
 // findFailureEvidence returns the newest recovery bead when a hooked parent
 // has both a historical (older) closed recovery and a current (newer) one.

@@ -118,6 +118,43 @@ func TestParseProposedAction_HonorsExplicitDestructive(t *testing.T) {
 	}
 }
 
+// TestParseProposedAction_CommentRequestInputAcceptsContext is the
+// spi-9eopwy regression test. The cleric model often emits a `context`
+// arg alongside `question` for the `comment-request-input` verb; the
+// parser must accept it (rather than rejecting and trapping the recovery
+// bead in a parse-failure loop). The clericexec adapter appends context
+// to the comment body when present.
+func TestParseProposedAction_CommentRequestInputAcceptsContext(t *testing.T) {
+	stdout := []byte(`{
+		"verb":"comment-request-input",
+		"args":{"question":"Should I dismiss this bead?","context":"Source bead is now closed."},
+		"reasoning":"Asking the human before taking destructive action.",
+		"failure_class":"step-failure"
+	}`)
+	pa, err := ParseProposedAction(stdout)
+	if err != nil {
+		t.Fatalf("ParseProposedAction with context: %v", err)
+	}
+	if pa.Verb != "comment-request-input" {
+		t.Errorf("Verb = %q, want comment-request-input", pa.Verb)
+	}
+	if pa.Args["question"] == "" {
+		t.Error("question arg lost during parse")
+	}
+	if pa.Args["context"] == "" {
+		t.Error("context arg lost during parse — must round-trip for the comment body to surface")
+	}
+}
+
+// TestParseProposedAction_CommentRequestInputBackwardCompatible verifies
+// payloads that omit `context` still parse — the field is optional.
+func TestParseProposedAction_CommentRequestInputBackwardCompatible(t *testing.T) {
+	stdout := []byte(`{"verb":"comment-request-input","args":{"question":"yes/no?"},"reasoning":"r","failure_class":"c"}`)
+	if _, err := ParseProposedAction(stdout); err != nil {
+		t.Fatalf("expected backward-compatible parse without context, got %v", err)
+	}
+}
+
 func TestProposedAction_MarshalRoundTrip(t *testing.T) {
 	src := ProposedAction{
 		Verb:         "reset --to <step>",

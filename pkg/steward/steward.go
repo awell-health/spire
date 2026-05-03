@@ -1861,6 +1861,20 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				continue
 			}
 
+			// Defensive: terminal recovery beads MUST NOT receive a fresh
+			// cleric dispatch under any circumstance. The branches above
+			// already handle `closed` and `awaiting_review`; this is the
+			// unconditional safety net (spi-9eopwy) for the `done` status
+			// and any future terminal state that does not flip
+			// `lifecycle.IsMutable` to false. Without it, a recovery bead
+			// stuck in a parser-failure loop kept getting a fresh cleric
+			// every steward tick — burning an agent slot and accumulating
+			// churn comments on the bead.
+			if recoveryBead.Status == "closed" || recoveryBead.Status == "done" {
+				log.Printf("[steward] hooked sweep: recovery %s status=%s — skipping dispatch (terminal)", evidence.RecoveryBeadID, recoveryBead.Status)
+				continue
+			}
+
 			// Recovery bead is still open — claim it before spawning a cleric.
 			clericName := "cleric-" + SanitizeK8sLabel(evidence.RecoveryBeadID)
 
