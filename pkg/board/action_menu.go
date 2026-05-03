@@ -79,7 +79,7 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 				MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
 			)
 		}
-	case "hooked":
+	case "awaiting_human":
 		items = append(items,
 			MenuAction{Key: 'S', Label: "Resume", Danger: DangerNone, ActionType: ActionResume},
 			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
@@ -88,6 +88,19 @@ func BuildActionMenu(bead *BoardBead, agents []LocalAgent) []MenuAction {
 			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
 		)
 	case "awaiting_review":
+		items = append(items,
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
+	case "needs_changes":
+		items = append(items,
+			MenuAction{Key: 'S', Label: "Resume", Danger: DangerNone, ActionType: ActionResume},
+			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
+			MenuAction{Key: 'r', Label: "Reset", Danger: DangerConfirm, ActionType: ActionResetSoft},
+			MenuAction{Key: 'R', Label: "Reset --hard", Danger: DangerDestructive, ActionType: ActionResetHard},
+			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},
+		)
+	case "merge_pending":
 		items = append(items,
 			MenuAction{Key: 'c', Label: "Comment", Danger: DangerNone, ActionType: ActionComment},
 			MenuAction{Key: 'x', Label: "Close", Danger: DangerConfirm, ActionType: ActionClose},

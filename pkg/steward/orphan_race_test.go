@@ -49,11 +49,11 @@ func TestSweepHookedSteps_RegistryClearedBeforeStatusUpdate(t *testing.T) {
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-race1", Status: "hooked", Type: "task"},
+				{ID: "spi-race1", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -81,7 +81,7 @@ func TestSweepHookedSteps_RegistryClearedBeforeStatusUpdate(t *testing.T) {
 		switch id {
 		case "spi-race1":
 			return store.Bead{
-				ID: "spi-race1", Status: "hooked", Type: "task",
+				ID: "spi-race1", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery1":
@@ -181,11 +181,11 @@ func TestSweepHookedSteps_StandardResume_RegistryClearedBeforeStatusUpdate(t *te
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-race2", Status: "hooked", Type: "task"},
+				{ID: "spi-race2", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -209,7 +209,7 @@ func TestSweepHookedSteps_StandardResume_RegistryClearedBeforeStatusUpdate(t *te
 		switch id {
 		case "spi-race2":
 			return store.Bead{
-				ID: "spi-race2", Status: "hooked", Type: "task",
+				ID: "spi-race2", Status: "awaiting_human", Type: "task",
 				Labels: []string{},
 			}, nil
 		}
@@ -311,19 +311,19 @@ func TestTowerCycle_OrphanSweepThenResume_NoClobber(t *testing.T) {
 	// cleric-success resolution.
 	var (
 		stateMu   sync.Mutex
-		parent    = store.Bead{ID: "spi-race3", Status: "hooked", Type: "task", Labels: []string{"needs-human"}}
+		parent    = store.Bead{ID: "spi-race3", Status: "awaiting_human", Type: "task", Labels: []string{"needs-human"}}
 		attempt   = store.Bead{ID: "spi-race3.attempt-1", Status: "in_progress", Parent: "spi-race3", Type: "attempt", Labels: []string{"attempt", "agent:" + wizardName}}
 		recBead   = store.Bead{ID: "spi-recovery3", Status: "closed", Type: "recovery", Metadata: map[string]string{recovery.KeyRecoveryOutcome: mustMarshalOutcome(t, recovery.RecoveryOutcome{SourceBeadID: "spi-race3", Decision: recovery.DecisionResume, VerifyVerdict: recovery.VerifyVerdictPass})}}
 		labelsAdd []string
 	)
 
 	// Wire the steward function vars to the in-memory state.
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		stateMu.Lock()
 		defer stateMu.Unlock()
 		if filter.Status != nil && *filter.Status == hookedStatus {
-			if parent.Status == "hooked" {
+			if parent.Status == "awaiting_human" {
 				return []store.Bead{parent}, nil
 			}
 			return nil, nil
@@ -401,8 +401,8 @@ func TestTowerCycle_OrphanSweepThenResume_NoClobber(t *testing.T) {
 	stateMu.Lock()
 	statusAfterSweep := parent.Status
 	stateMu.Unlock()
-	if statusAfterSweep != "hooked" {
-		t.Fatalf("after OrphanSweep parent.Status = %q, want hooked (OrphanSweep must skip reopening hooked beads)", statusAfterSweep)
+	if statusAfterSweep != "awaiting_human" {
+		t.Fatalf("after OrphanSweep parent.Status = %q, want awaiting_human (OrphanSweep must skip reopening parked beads)", statusAfterSweep)
 	}
 
 	// Step 2 of TowerCycle: SweepHookedSteps runs next. It detects the

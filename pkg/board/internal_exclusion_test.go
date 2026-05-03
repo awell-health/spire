@@ -73,18 +73,21 @@ func TestFetchBoard_InternalTypesExcluded(t *testing.T) {
 
 	// Walk every column slice and assert no internal bead leaked through.
 	allColumns := map[string][]BoardBead{
-		"Alerts":     result.Columns.Alerts,
-		"Hooked":     result.Columns.Hooked,
-		"Backlog":    result.Columns.Backlog,
-		"Ready":      result.Columns.Ready,
-		"InProgress": result.Columns.InProgress,
-		"Design":     result.Columns.Design,
-		"Plan":       result.Columns.Plan,
-		"Implement":  result.Columns.Implement,
-		"Review":     result.Columns.Review,
-		"Merge":      result.Columns.Merge,
-		"Done":       result.Columns.Done,
-		"Blocked":    result.Columns.Blocked,
+		"Alerts":         result.Columns.Alerts,
+		"AwaitingReview": result.Columns.AwaitingReview,
+		"NeedsChanges":   result.Columns.NeedsChanges,
+		"AwaitingHuman":  result.Columns.AwaitingHuman,
+		"MergePending":   result.Columns.MergePending,
+		"Backlog":        result.Columns.Backlog,
+		"Ready":          result.Columns.Ready,
+		"InProgress":     result.Columns.InProgress,
+		"Design":         result.Columns.Design,
+		"Plan":           result.Columns.Plan,
+		"Implement":      result.Columns.Implement,
+		"Review":         result.Columns.Review,
+		"Merge":          result.Columns.Merge,
+		"Done":           result.Columns.Done,
+		"Blocked":        result.Columns.Blocked,
 	}
 	for colName, beads := range allColumns {
 		for _, b := range beads {

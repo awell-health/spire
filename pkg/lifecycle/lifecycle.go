@@ -296,8 +296,8 @@ func BeginWork(deps Deps, reg wizardregistry.Registry, beadID string, opts Begin
 // Called from cmd/spire/claim.go.
 //
 // ClaimWork is the MINIMAL STATE MACHINE ONLY:
-//  1. Reads the bead status. Accepts: ready, dispatched, in_progress, hooked, open.
-//  2. If status is in_progress or hooked:
+//  1. Reads the bead status. Accepts: ready, dispatched, in_progress, awaiting_human, open.
+//  2. If status is in_progress or awaiting_human:
 //     - If an attempt exists owned by the same agentName → reclaim (return existing attemptID).
 //     - Otherwise → return error (different agent owns it).
 //  3. If status is ready, dispatched, open, or "":
@@ -319,7 +319,7 @@ func ClaimWork(deps Deps, reg wizardregistry.Registry, beadID string, opts Begin
 	}
 
 	switch bead.Status {
-	case "in_progress", "hooked":
+	case "in_progress", "awaiting_human":
 		// Reclaim path: find the active attempt.
 		active, err := findActiveAttempt(deps, beadID)
 		if err != nil {

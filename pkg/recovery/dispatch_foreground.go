@@ -63,7 +63,7 @@ type PhaseEvent struct {
 	Details map[string]any
 
 	// Err carries the error message when a phase completed with an
-	// error (hooked path or on_error=record). Empty when the phase
+	// error (parking path or on_error=record). Empty when the phase
 	// succeeded cleanly.
 	Err string
 

@@ -741,38 +741,40 @@ func TestDiagnose_NoRecoveryBead(t *testing.T) {
 	}
 }
 
-// TestDiagnose_HookedBeadWithoutFailureEvidence_IsNotRecoverable verifies that
-// a hooked bead with no recovery bead, no alert beads, and no interrupted:* label
-// is rejected — it's an approval gate or design wait, not a failure.
-func TestDiagnose_HookedBeadWithoutFailureEvidence_IsNotRecoverable(t *testing.T) {
+// TestDiagnose_AwaitingHumanWithoutFailureEvidence_IsNotRecoverable verifies
+// that an awaiting_human bead with no recovery bead, no alert beads, and no
+// interrupted:* label is rejected — it's an approval gate or design wait, not
+// a failure.
+func TestDiagnose_AwaitingHumanWithoutFailureEvidence_IsNotRecoverable(t *testing.T) {
 	deps := mockDeps()
 	deps.GetBead = func(id string) (DepBead, error) {
 		return DepBead{
 			ID:     id,
-			Title:  "Hooked approval gate",
-			Status: "hooked",
+			Title:  "approval gate",
+			Status: "awaiting_human",
 			Labels: []string{"phase:implement"},
 		}, nil
 	}
 
-	_, err := Diagnose("spi-hooked", deps)
+	_, err := Diagnose("spi-park", deps)
 	if err == nil {
-		t.Fatal("expected error for hooked bead with no failure evidence")
+		t.Fatal("expected error for awaiting_human bead with no failure evidence")
 	}
 	if !strings.Contains(err.Error(), "no failure evidence") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-// TestDiagnose_HookedBeadWithRecoveryBead_UsesFailureClass verifies that a hooked
-// bead with a linked recovery bead and alert bead classifies using the alert label.
-func TestDiagnose_HookedBeadWithRecoveryBead_UsesFailureClass(t *testing.T) {
+// TestDiagnose_AwaitingHumanWithRecoveryBead_UsesFailureClass verifies that an
+// awaiting_human bead with a linked recovery bead and alert bead classifies
+// using the alert label.
+func TestDiagnose_AwaitingHumanWithRecoveryBead_UsesFailureClass(t *testing.T) {
 	deps := mockDeps()
 	deps.GetBead = func(id string) (DepBead, error) {
 		return DepBead{
 			ID:     id,
-			Title:  "Hooked bead with recovery",
-			Status: "hooked",
+			Title:  "parked bead with recovery",
+			Status: "awaiting_human",
 			Labels: []string{"phase:implement"},
 		}, nil
 	}
@@ -784,7 +786,7 @@ func TestDiagnose_HookedBeadWithRecoveryBead_UsesFailureClass(t *testing.T) {
 		}, nil
 	}
 
-	diag, err := Diagnose("spi-hooked", deps)
+	diag, err := Diagnose("spi-park", deps)
 	if err != nil {
 		t.Fatalf("Diagnose returned error: %v", err)
 	}
@@ -796,15 +798,16 @@ func TestDiagnose_HookedBeadWithRecoveryBead_UsesFailureClass(t *testing.T) {
 	}
 }
 
-// TestDiagnose_HookedApprovalGate_DoesNotOfferRecoveryActions verifies that
-// a normal parked approval wait (hooked, no failure artifacts) is not recoverable.
-func TestDiagnose_HookedApprovalGate_DoesNotOfferRecoveryActions(t *testing.T) {
+// TestDiagnose_ApprovalGateAwaitingHuman_DoesNotOfferRecoveryActions verifies
+// that a normal parked approval wait (awaiting_human, no failure artifacts) is
+// not recoverable.
+func TestDiagnose_ApprovalGateAwaitingHuman_DoesNotOfferRecoveryActions(t *testing.T) {
 	deps := mockDeps()
 	deps.GetBead = func(id string) (DepBead, error) {
 		return DepBead{
 			ID:     id,
 			Title:  "Waiting for approval",
-			Status: "hooked",
+			Status: "awaiting_human",
 		}, nil
 	}
 
@@ -814,16 +817,16 @@ func TestDiagnose_HookedApprovalGate_DoesNotOfferRecoveryActions(t *testing.T) {
 	}
 }
 
-// TestDiagnose_HookedBeadWithCausedByRecoveryBead_IsRecoverable verifies that
-// a hooked bead with a caused-by recovery-bead dependent (current model) is
-// accepted as recoverable even without an interrupted:* label or alert beads.
-func TestDiagnose_HookedBeadWithCausedByRecoveryBead_IsRecoverable(t *testing.T) {
+// TestDiagnose_AwaitingHumanWithCausedByRecoveryBead_IsRecoverable verifies that
+// an awaiting_human bead with a caused-by recovery-bead dependent (current model)
+// is accepted as recoverable even without an interrupted:* label or alert beads.
+func TestDiagnose_AwaitingHumanWithCausedByRecoveryBead_IsRecoverable(t *testing.T) {
 	deps := mockDeps()
 	deps.GetBead = func(id string) (DepBead, error) {
 		return DepBead{
 			ID:     id,
-			Title:  "Hooked with caused-by recovery",
-			Status: "hooked",
+			Title:  "parked with caused-by recovery",
+			Status: "awaiting_human",
 			Labels: []string{"phase:implement"},
 		}, nil
 	}
@@ -834,7 +837,7 @@ func TestDiagnose_HookedBeadWithCausedByRecoveryBead_IsRecoverable(t *testing.T)
 		}, nil
 	}
 
-	diag, err := Diagnose("spi-hooked", deps)
+	diag, err := Diagnose("spi-park", deps)
 	if err != nil {
 		t.Fatalf("Diagnose returned error: %v", err)
 	}
@@ -846,16 +849,16 @@ func TestDiagnose_HookedBeadWithCausedByRecoveryBead_IsRecoverable(t *testing.T)
 	}
 }
 
-// TestDiagnose_HookedBeadWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBead
+// TestDiagnose_AwaitingHumanWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBead
 // verifies that when both a caused-by recovery bead and an alert bead exist,
 // the failure class comes from the alert and RecoveryBead is still populated.
-func TestDiagnose_HookedBeadWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBead(t *testing.T) {
+func TestDiagnose_AwaitingHumanWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBead(t *testing.T) {
 	deps := mockDeps()
 	deps.GetBead = func(id string) (DepBead, error) {
 		return DepBead{
 			ID:     id,
-			Title:  "Hooked with recovery + alert",
-			Status: "hooked",
+			Title:  "parked with recovery + alert",
+			Status: "awaiting_human",
 			Labels: []string{"phase:implement"},
 		}, nil
 	}
@@ -868,7 +871,7 @@ func TestDiagnose_HookedBeadWithCausedByRecoveryBeadAndAlert_PopulatesRecoveryBe
 		}, nil
 	}
 
-	diag, err := Diagnose("spi-hooked", deps)
+	diag, err := Diagnose("spi-park", deps)
 	if err != nil {
 		t.Fatalf("Diagnose returned error: %v", err)
 	}

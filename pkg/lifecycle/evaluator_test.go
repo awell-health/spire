@@ -14,7 +14,6 @@ var evaluatorLegalStatuses = []string{
 	"ready",
 	"dispatched",
 	"in_progress",
-	"hooked",
 	"blocked",
 	"deferred",
 	"awaiting_review",
@@ -73,7 +72,6 @@ func TestApplyEvent_CoreEvents(t *testing.T) {
 				"ready":           "in_progress",
 				"dispatched":      "dispatched",
 				"in_progress":     "in_progress",
-				"hooked":          "hooked",
 				"blocked":         "blocked",
 				"deferred":        "deferred",
 				"awaiting_review": "awaiting_review",
@@ -181,7 +179,7 @@ func TestApplyEvent_FormulaStepCompleted_OnCompleteMatch(t *testing.T) {
 				OnCompleteMatch: []formula.MatchClause{
 					{When: "outputs.verdict == 'approve'", Status: "closed"},
 					{When: "outputs.verdict != 'request_changes'", Status: "ready"},
-					{When: "outputs.tags contains 'flake'", Status: "hooked"},
+					{When: "outputs.tags contains 'flake'", Status: "awaiting_human"},
 				},
 			}},
 		},
@@ -198,7 +196,7 @@ func TestApplyEvent_FormulaStepCompleted_OnCompleteMatch(t *testing.T) {
 		// verdict != request_changes either.
 		{name: "ne_match_second_clause", outputs: map[string]any{"verdict": "merged"}, want: "ready"},
 		// First two fail; third (contains) wins on a slice.
-		{name: "contains_slice_third_clause", outputs: map[string]any{"verdict": "request_changes", "tags": []string{"flake", "build"}}, want: "hooked"},
+		{name: "contains_slice_third_clause", outputs: map[string]any{"verdict": "request_changes", "tags": []string{"flake", "build"}}, want: "awaiting_human"},
 		// No clause matches — fall back to OnComplete.
 		{name: "fallback_on_complete", outputs: map[string]any{"verdict": "request_changes"}, want: "in_progress"},
 	}
@@ -241,7 +239,7 @@ func TestApplyEvent_FormulaStepFailed(t *testing.T) {
 		f := &formula.FormulaStepGraph{
 			Steps: map[string]formula.StepConfig{
 				"implement": {Lifecycle: &formula.LifecycleConfig{
-					OnFail: &formula.FailAction{Status: "hooked"},
+					OnFail: &formula.FailAction{Status: "awaiting_human"},
 				}},
 			},
 		}
@@ -249,8 +247,8 @@ func TestApplyEvent_FormulaStepFailed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ApplyEvent err = %v", err)
 		}
-		if got != "hooked" {
-			t.Errorf("ApplyEvent = %q, want hooked", got)
+		if got != "awaiting_human" {
+			t.Errorf("ApplyEvent = %q, want awaiting_human", got)
 		}
 	})
 
@@ -276,7 +274,7 @@ func TestApplyEvent_FormulaStepFailed(t *testing.T) {
 		f := &formula.FormulaStepGraph{
 			Steps: map[string]formula.StepConfig{
 				"implement": {Lifecycle: &formula.LifecycleConfig{
-					OnFail: &formula.FailAction{Status: "hooked", Event: "Escalated"},
+					OnFail: &formula.FailAction{Status: "awaiting_human", Event: "Escalated"},
 				}},
 			},
 		}
@@ -284,8 +282,8 @@ func TestApplyEvent_FormulaStepFailed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ApplyEvent err = %v", err)
 		}
-		if got != "hooked" {
-			t.Errorf("ApplyEvent = %q, want hooked (Status beats Event delegation)", got)
+		if got != "awaiting_human" {
+			t.Errorf("ApplyEvent = %q, want awaiting_human (Status beats Event delegation)", got)
 		}
 	})
 

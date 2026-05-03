@@ -29,7 +29,7 @@ func TestValidStatusTransition_ClericFoundation(t *testing.T) {
 		{StatusAwaitingReview, beads.StatusInProgress, true},
 		// Disallowed: from awaiting_review to anything not in the allow-set.
 		{StatusAwaitingReview, beads.StatusOpen, false},
-		{StatusAwaitingReview, StatusHooked, false},
+		{StatusAwaitingReview, StatusAwaitingHuman, false},
 		{StatusAwaitingReview, beads.StatusBlocked, false},
 		// Same-status writes are always allowed.
 		{StatusAwaitingReview, StatusAwaitingReview, true},
@@ -39,10 +39,10 @@ func TestValidStatusTransition_ClericFoundation(t *testing.T) {
 		// in_progress → awaiting_review, which is the entry edge.
 		{beads.StatusInProgress, StatusAwaitingReview, true},
 		{beads.StatusInProgress, beads.StatusClosed, true},
-		{beads.StatusInProgress, StatusHooked, true},
+		{beads.StatusInProgress, StatusAwaitingHuman, true},
 		{beads.StatusOpen, beads.StatusInProgress, true},
 		{beads.StatusOpen, beads.StatusClosed, true},
-		{StatusHooked, beads.StatusInProgress, true},
+		{StatusAwaitingHuman, beads.StatusInProgress, true},
 	}
 	for _, c := range cases {
 		got := ValidStatusTransition(c.from, c.to)

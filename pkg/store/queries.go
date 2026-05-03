@@ -200,8 +200,9 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 	// status (e.g. "open") pass it explicitly and we honor their choice.
 	if filter.Status == "" {
 		// "ready" is not a built-in beads Status constant (v1.0.0 ships
-		// only open/in_progress/blocked/deferred/closed/pinned/hooked);
-		// it's registered in custom_statuses as category="active".
+		// only open/in_progress/blocked/deferred/closed/pinned plus the
+		// upstream library's own parked-state value); it's registered in
+		// custom_statuses as category="active".
 		filter.Status = beads.Status("ready")
 	}
 
@@ -242,8 +243,12 @@ func GetReadyWork(filter beads.WorkFilter) ([]Bead, error) {
 		if b.Status == "deferred" {
 			continue
 		}
-		// Skip hooked beads (parked waiting for a condition — approval, event, recovery)
-		if b.Status == "hooked" {
+		// Skip parked statuses (waiting on review, sage feedback, human
+		// action, or merge dispatch — none are eligible for the steward's
+		// "ready" pickup queue, even if they leak through as
+		// category="active").
+		switch b.Status {
+		case "awaiting_review", "needs_changes", "awaiting_human", "merge_pending":
 			continue
 		}
 		// Skip design beads (thinking artifacts, not work items)

@@ -112,8 +112,8 @@ func TestBuildActionMenu(t *testing.T) {
 		}
 	})
 
-	t.Run("hooked bead shows Resume", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-003", Status: "hooked", Type: "task"}
+	t.Run("awaiting_human bead shows Resume", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-003", Status: "awaiting_human", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
 		found := false
@@ -124,7 +124,7 @@ func TestBuildActionMenu(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Error("expected Resume action for hooked bead")
+			t.Error("expected Resume action for awaiting_human bead")
 		}
 	})
 
@@ -219,7 +219,7 @@ func TestBuildActionMenu(t *testing.T) {
 	})
 
 	t.Run("awaiting-approval appends Approve gate on y", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-010b", Status: "hooked", Type: "task", Labels: []string{"awaiting-approval", "needs-human"}}
+		bead := &BoardBead{ID: "spi-010b", Status: "awaiting_human", Type: "task", Labels: []string{"awaiting-approval", "needs-human"}}
 		items := BuildActionMenu(bead, nil)
 
 		var approve *MenuAction
@@ -290,15 +290,15 @@ func TestBuildActionMenu(t *testing.T) {
 		expectActions(t, items, []PendingAction{ActionSummon, ActionComment, ActionResetSoft, ActionResetHard, ActionClose, ActionApprove, ActionGrok, ActionTrace})
 	})
 
-	t.Run("hooked bead shows Resume and Reset", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-014", Status: "hooked", Type: "task"}
+	t.Run("awaiting_human bead shows Resume and Reset", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-014", Status: "awaiting_human", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
 		expectActions(t, items, []PendingAction{ActionResume, ActionComment, ActionResetSoft, ActionResetHard, ActionClose, ActionGrok, ActionTrace})
 	})
 
-	t.Run("hooked bead shows Resume not Resolve", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-020", Status: "hooked", Type: "task"}
+	t.Run("awaiting_human bead shows Resume not Resolve", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-020", Status: "awaiting_human", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
 		hasResume := false
@@ -312,15 +312,15 @@ func TestBuildActionMenu(t *testing.T) {
 			}
 		}
 		if !hasResume {
-			t.Error("expected Resume action for hooked bead")
+			t.Error("expected Resume action for awaiting_human bead")
 		}
 		if hasResolve {
-			t.Error("should not have Resolve action for hooked bead")
+			t.Error("should not have Resolve action for awaiting_human bead")
 		}
 	})
 
-	t.Run("hooked shows Resume Reset Close", func(t *testing.T) {
-		bead := &BoardBead{ID: "spi-021", Status: "hooked", Type: "task"}
+	t.Run("awaiting_human shows Resume Reset Close", func(t *testing.T) {
+		bead := &BoardBead{ID: "spi-021", Status: "awaiting_human", Type: "task"}
 		items := BuildActionMenu(bead, nil)
 
 		hasResume := false
@@ -338,13 +338,13 @@ func TestBuildActionMenu(t *testing.T) {
 			}
 		}
 		if !hasResume {
-			t.Error("expected Resume action for hooked bead")
+			t.Error("expected Resume action for awaiting_human bead")
 		}
 		if !hasReset {
-			t.Error("expected Reset action for hooked bead")
+			t.Error("expected Reset action for awaiting_human bead")
 		}
 		if !hasClose {
-			t.Error("expected Close action for hooked bead")
+			t.Error("expected Close action for awaiting_human bead")
 		}
 	})
 
@@ -370,7 +370,7 @@ func TestBuildActionMenu(t *testing.T) {
 	})
 
 	t.Run("comment present in all non-closed statuses", func(t *testing.T) {
-		for _, status := range []string{"open", "ready", "in_progress", "hooked", "deferred"} {
+		for _, status := range []string{"open", "ready", "in_progress", "awaiting_human", "deferred"} {
 			bead := &BoardBead{ID: "spi-040", Status: status, Type: "task"}
 			items := BuildActionMenu(bead, nil)
 			hasComment := false
@@ -1518,69 +1518,96 @@ func TestConfirmPromptForAction(t *testing.T) {
 	}
 }
 
-// --- TestHookedBeadCategorization ---
+// --- TestParkedBeadCategorization ---
 
-func TestHookedBeadCategorization(t *testing.T) {
-	t.Run("hooked bead routes to Hooked not Ready", func(t *testing.T) {
+func TestParkedBeadCategorization(t *testing.T) {
+	t.Run("awaiting_human bead routes to AwaitingHuman not Ready", func(t *testing.T) {
 		open := []BoardBead{
-			{ID: "spi-hk", Title: "Waiting for approval", Status: "hooked", Type: "task", Priority: 1},
+			{ID: "spi-hk", Title: "Waiting for approval", Status: "awaiting_human", Type: "task", Priority: 1},
 			{ID: "spi-ok", Title: "Normal task", Status: "open", Type: "task", Priority: 2},
 		}
 		cols := CategorizeColumnsFromStore(open, nil, nil, "test@test.dev")
-		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-hk" {
-			t.Errorf("expected spi-hk in Hooked, got: %v", cols.Hooked)
+		if len(cols.AwaitingHuman) != 1 || cols.AwaitingHuman[0].ID != "spi-hk" {
+			t.Errorf("expected spi-hk in AwaitingHuman, got: %v", cols.AwaitingHuman)
 		}
 		if len(cols.Backlog) != 1 || cols.Backlog[0].ID != "spi-ok" {
 			t.Errorf("expected spi-ok in Backlog, got: %v", cols.Backlog)
 		}
 	})
 
-	t.Run("non-hooked bead is NOT routed to Hooked", func(t *testing.T) {
-		// in_progress bead with needs-human label should go to InProgress, not Hooked.
+	t.Run("in_progress bead is NOT routed to a parked column", func(t *testing.T) {
+		// in_progress bead with needs-human label should go to InProgress, not a parked column.
 		open := []BoardBead{
 			{ID: "spi-design", Title: "Design review", Status: "in_progress", Type: "design", Priority: 1,
 				Labels: []string{"needs-human", "phase:design"}},
 		}
 		phaseMap := map[string]string{"spi-design": "design"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
-		if len(cols.Hooked) != 0 {
-			t.Errorf("in_progress bead with needs-human should NOT be in Hooked, got: %v", cols.Hooked)
+		if len(cols.AwaitingHuman) != 0 || len(cols.AwaitingReview) != 0 ||
+			len(cols.NeedsChanges) != 0 || len(cols.MergePending) != 0 {
+			t.Errorf("in_progress bead with needs-human should NOT be in any parked column, got: parked=%v",
+				cols.ParkedBeads())
 		}
 		if len(cols.InProgress) != 1 {
 			t.Errorf("in_progress bead should be in InProgress column, got: %v", cols.InProgress)
 		}
 	})
 
-	t.Run("hooked takes priority over phase routing", func(t *testing.T) {
+	t.Run("awaiting_human takes priority over phase routing", func(t *testing.T) {
 		open := []BoardBead{
-			{ID: "spi-stuck", Title: "Stuck in implement", Status: "hooked", Type: "task", Priority: 1,
+			{ID: "spi-stuck", Title: "Stuck in implement", Status: "awaiting_human", Type: "task", Priority: 1,
 				Labels: []string{"phase:implement"}},
 		}
 		phaseMap := map[string]string{"spi-stuck": "implement"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
-		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-stuck" {
-			t.Errorf("hooked bead should be in Hooked, got: %v", cols.Hooked)
+		if len(cols.AwaitingHuman) != 1 || cols.AwaitingHuman[0].ID != "spi-stuck" {
+			t.Errorf("awaiting_human bead should be in AwaitingHuman, got: %v", cols.AwaitingHuman)
 		}
 		if len(cols.InProgress) != 0 {
-			t.Errorf("hooked bead should NOT be in InProgress, got: %v", cols.InProgress)
+			t.Errorf("awaiting_human bead should NOT be in InProgress, got: %v", cols.InProgress)
 		}
 	})
 
-	t.Run("CategorizeWithPhases also routes hooked", func(t *testing.T) {
+	t.Run("CategorizeWithPhases also routes awaiting_human", func(t *testing.T) {
 		open := []BoardBead{
-			{ID: "spi-fail", Title: "Repo failure", Status: "hooked", Type: "feature", Priority: 0},
+			{ID: "spi-fail", Title: "Repo failure", Status: "awaiting_human", Type: "feature", Priority: 0},
 		}
 		phaseMap := map[string]string{"spi-fail": "review"}
 		cols := CategorizeWithPhases(open, nil, nil, phaseMap, "test@test.dev")
-		if len(cols.Hooked) != 1 || cols.Hooked[0].ID != "spi-fail" {
-			t.Errorf("expected spi-fail in Hooked, got: %v", cols.Hooked)
+		if len(cols.AwaitingHuman) != 1 || cols.AwaitingHuman[0].ID != "spi-fail" {
+			t.Errorf("expected spi-fail in AwaitingHuman, got: %v", cols.AwaitingHuman)
 		}
 		if len(cols.InProgress) != 0 {
-			t.Errorf("hooked bead should NOT be in InProgress, got: %v", cols.InProgress)
+			t.Errorf("awaiting_human bead should NOT be in InProgress, got: %v", cols.InProgress)
 		}
 		// Legacy phase fields should be empty.
 		if len(cols.Review) != 0 {
 			t.Errorf("legacy Review should be empty, got: %v", cols.Review)
+		}
+	})
+
+	t.Run("each new parking status maps to its own column", func(t *testing.T) {
+		open := []BoardBead{
+			{ID: "spi-ar", Status: "awaiting_review", Type: "task"},
+			{ID: "spi-nc", Status: "needs_changes", Type: "task"},
+			{ID: "spi-ah", Status: "awaiting_human", Type: "task"},
+			{ID: "spi-mp", Status: "merge_pending", Type: "task"},
+		}
+		cols := CategorizeColumnsFromStore(open, nil, nil, "test@test.dev")
+		if len(cols.AwaitingReview) != 1 || cols.AwaitingReview[0].ID != "spi-ar" {
+			t.Errorf("expected spi-ar in AwaitingReview, got: %v", cols.AwaitingReview)
+		}
+		if len(cols.NeedsChanges) != 1 || cols.NeedsChanges[0].ID != "spi-nc" {
+			t.Errorf("expected spi-nc in NeedsChanges, got: %v", cols.NeedsChanges)
+		}
+		if len(cols.AwaitingHuman) != 1 || cols.AwaitingHuman[0].ID != "spi-ah" {
+			t.Errorf("expected spi-ah in AwaitingHuman, got: %v", cols.AwaitingHuman)
+		}
+		if len(cols.MergePending) != 1 || cols.MergePending[0].ID != "spi-mp" {
+			t.Errorf("expected spi-mp in MergePending, got: %v", cols.MergePending)
+		}
+		if got := cols.ParkedBeads(); len(got) != 4 {
+			t.Errorf("ParkedBeads should aggregate all four columns, got %d: %v", len(got), got)
 		}
 	})
 }
@@ -1790,37 +1817,37 @@ func TestFetchRecoveryRef(t *testing.T) {
 // --- TestToJSON_RecoveryRefs ---
 
 func TestToJSON_RecoveryRefs(t *testing.T) {
-	t.Run("enriches interrupted beads with pre-fetched refs", func(t *testing.T) {
+	t.Run("enriches parked beads with pre-fetched refs", func(t *testing.T) {
 		cols := Columns{
-			Hooked: []BoardBead{
-				{ID: "spi-int1", Title: "interrupted1", Status: "in_progress", Type: "task", Labels: []string{"interrupted:merge-failure"}},
-				{ID: "spi-int2", Title: "interrupted2", Status: "in_progress", Type: "task", Labels: []string{"interrupted:build-failure"}},
+			AwaitingHuman: []BoardBead{
+				{ID: "spi-int1", Title: "interrupted1", Status: "awaiting_human", Type: "task", Labels: []string{"interrupted:merge-failure"}},
+				{ID: "spi-int2", Title: "interrupted2", Status: "awaiting_human", Type: "task", Labels: []string{"interrupted:build-failure"}},
 			},
 		}
 		refs := map[string]*RecoveryRef{
 			"spi-int1": {ID: "spi-rec1", Title: "recovery for int1"},
 		}
 		cj := cols.ToJSON(refs)
-		if cj.Hooked[0].RecoveryBead == nil {
+		if cj.AwaitingHuman[0].RecoveryBead == nil {
 			t.Fatal("expected RecoveryBead on spi-int1")
 		}
-		if cj.Hooked[0].RecoveryBead.ID != "spi-rec1" {
-			t.Errorf("expected spi-rec1, got %s", cj.Hooked[0].RecoveryBead.ID)
+		if cj.AwaitingHuman[0].RecoveryBead.ID != "spi-rec1" {
+			t.Errorf("expected spi-rec1, got %s", cj.AwaitingHuman[0].RecoveryBead.ID)
 		}
-		if cj.Hooked[1].RecoveryBead != nil {
-			t.Errorf("expected nil RecoveryBead on spi-int2, got %+v", cj.Hooked[1].RecoveryBead)
+		if cj.AwaitingHuman[1].RecoveryBead != nil {
+			t.Errorf("expected nil RecoveryBead on spi-int2, got %+v", cj.AwaitingHuman[1].RecoveryBead)
 		}
 	})
 
 	t.Run("nil refs leaves RecoveryBead nil", func(t *testing.T) {
 		cols := Columns{
-			Hooked: []BoardBead{
-				{ID: "spi-int1", Title: "interrupted1", Status: "in_progress", Type: "task", Labels: []string{"interrupted:merge-failure"}},
+			AwaitingHuman: []BoardBead{
+				{ID: "spi-int1", Title: "interrupted1", Status: "awaiting_human", Type: "task", Labels: []string{"interrupted:merge-failure"}},
 			},
 		}
 		cj := cols.ToJSON(nil)
-		if cj.Hooked[0].RecoveryBead != nil {
-			t.Errorf("expected nil RecoveryBead with nil refs, got %+v", cj.Hooked[0].RecoveryBead)
+		if cj.AwaitingHuman[0].RecoveryBead != nil {
+			t.Errorf("expected nil RecoveryBead with nil refs, got %+v", cj.AwaitingHuman[0].RecoveryBead)
 		}
 	})
 }
@@ -1847,7 +1874,10 @@ func TestCategorizeColumnsFromStore_ParentFiltering(t *testing.T) {
 			{"Done", cols.Done},
 			{"Blocked", cols.Blocked},
 			{"Alerts", cols.Alerts},
-			{"Hooked", cols.Hooked},
+			{"AwaitingReview", cols.AwaitingReview},
+			{"NeedsChanges", cols.NeedsChanges},
+			{"AwaitingHuman", cols.AwaitingHuman},
+			{"MergePending", cols.MergePending},
 		} {
 			for _, b := range col.beads {
 				if b.ID == "spi-epic.1" {
@@ -1907,7 +1937,10 @@ func TestCategorizeWithPhases_ParentFiltering(t *testing.T) {
 			{"Done", cols.Done},
 			{"Blocked", cols.Blocked},
 			{"Alerts", cols.Alerts},
-			{"Hooked", cols.Hooked},
+			{"AwaitingReview", cols.AwaitingReview},
+			{"NeedsChanges", cols.NeedsChanges},
+			{"AwaitingHuman", cols.AwaitingHuman},
+			{"MergePending", cols.MergePending},
 		} {
 			for _, b := range col.beads {
 				if childIDs[b.ID] {
@@ -2107,9 +2140,9 @@ func TestResolveKeyOpensResolveInput(t *testing.T) {
 	m := makeBoardMode()
 	m.ViewMode = ViewLower
 	m.SelSection = SectionLower
-	m.SelLowerCol = 1 // Hooked column
-	m.Cols.Hooked = []BoardBead{
-		{ID: "spi-nh1", Title: "Needs human", Status: "in_progress", Type: "task", Labels: []string{"needs-human"}},
+	m.SelLowerCol = 1 // parked column (awaiting_human)
+	m.Cols.AwaitingHuman = []BoardBead{
+		{ID: "spi-nh1", Title: "Needs human", Status: "awaiting_human", Type: "task", Labels: []string{"needs-human"}},
 	}
 	m.SelCard = 0
 
@@ -2241,17 +2274,17 @@ func TestRenderTabSidebar(t *testing.T) {
 		}
 	})
 
-	t.Run("separate blocked and hooked counts", func(t *testing.T) {
+	t.Run("separate blocked and parked counts", func(t *testing.T) {
 		sidebar := renderTabSidebar(ViewBoard, 0, 2, 1)
-		if !strings.Contains(sidebar, "BLK(2) HKD(1)") {
-			t.Errorf("sidebar should show 'BLK(2) HKD(1)' when both present, got: %s", sidebar)
+		if !strings.Contains(sidebar, "BLK(2) PRK(1)") {
+			t.Errorf("sidebar should show 'BLK(2) PRK(1)' when both present, got: %s", sidebar)
 		}
 	})
 
-	t.Run("only hooked count", func(t *testing.T) {
+	t.Run("only parked count", func(t *testing.T) {
 		sidebar := renderTabSidebar(ViewBoard, 0, 0, 3)
-		if !strings.Contains(sidebar, "HOOKED (3)") {
-			t.Errorf("sidebar should show 'HOOKED (3)' when only hooked, got: %s", sidebar)
+		if !strings.Contains(sidebar, "PARKED (3)") {
+			t.Errorf("sidebar should show 'PARKED (3)' when only parked, got: %s", sidebar)
 		}
 	})
 }
@@ -2340,7 +2373,7 @@ func TestViewRendersActiveMode(t *testing.T) {
 			PhaseMap:    map[string]string{},
 		}
 		output := m5.View()
-		if !strings.Contains(output, "No blocked or hooked") {
+		if !strings.Contains(output, "No blocked or parked") {
 			t.Error("ViewLower with empty data should show placeholder")
 		}
 	})

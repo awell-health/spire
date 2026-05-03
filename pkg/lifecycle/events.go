@@ -8,9 +8,9 @@ package lifecycle
 //	pkg/executor/action_dispatch.go:453         -> FormulaStepStarted{Step: "implement"}
 //	pkg/executor/action_dispatch.go:618         -> FormulaStepStarted{Step: "implement"}
 //	pkg/executor/executor_dag.go:248            -> FormulaStepStarted{Step: <review-substep>} after formula lifecycle declares OnStart="open" for the substep (treats reset as a fresh start); fall back to a new BeadReopened event if formula lifecycle authorship is deferred
-//	pkg/executor/graph_interpreter.go:213       -> FormulaStepStarted{Step: stepName} (parent resumes when last hooked step is unhooked; rely on formula lifecycle OnStart="in_progress")
-//	pkg/executor/graph_interpreter.go:342       -> FormulaStepFailed{Step: stepName, Err: result.Error} with formula lifecycle OnFail.Status="hooked"
-//	pkg/executor/graph_interpreter.go:389       -> FormulaStepCompleted{Step: stepName, Outputs: result.Outputs} with formula lifecycle OnCompleteMatch clause emitting "hooked" when result.Hooked is captured in Outputs (or add a dedicated FormulaStepHooked event if the OnCompleteMatch shape feels strained)
+//	pkg/executor/graph_interpreter.go:213       -> FormulaStepStarted{Step: stepName} (parent resumes when the parked step is reactivated; rely on formula lifecycle OnStart="in_progress")
+//	pkg/executor/graph_interpreter.go:342       -> FormulaStepFailed{Step: stepName, Err: result.Error} with formula lifecycle OnFail.Status="awaiting_human"
+//	pkg/executor/graph_interpreter.go:389       -> FormulaStepCompleted{Step: stepName, Outputs: result.Outputs} with formula lifecycle OnCompleteMatch clause emitting "awaiting_human" when the step parks (or add a dedicated FormulaStepHooked event if the OnCompleteMatch shape feels strained)
 //	pkg/executor/graph_interpreter.go:741       -> FormulaStepStarted{Step: "implement"} (injected task dispatch)
 //	pkg/executor/graph_interpreter.go:1274      -> FormulaStepStarted{Step: <inferred>} via inferPreHookParentStatus's target; if the target is "open" without a step context, a small new event (e.g., HookCleared) keeps the call site readable
 

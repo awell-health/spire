@@ -276,10 +276,11 @@ func fetchSnapshot(db beads.Storage, opts Opts, identity string, fetchAgents fun
 		}
 	}
 
-	// 8. Fetch recovery refs for hooked beads.
+	// 8. Fetch recovery refs for parked beads (awaiting_review,
+	// needs_changes, awaiting_human, merge_pending).
 	recoveryRefs := make(map[string]*RecoveryRef)
 	getDeps := storeDepsWith(ctx, db)
-	for _, b := range cols.Hooked {
+	for _, b := range cols.ParkedBeads() {
 		if ref := FetchRecoveryRef(b.ID, getDeps); ref != nil {
 			recoveryRefs[b.ID] = ref
 		}

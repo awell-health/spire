@@ -251,7 +251,7 @@ func TestHookStepBead(t *testing.T) {
 			issues: map[string]*beads.Issue{
 				"step-1": {ID: "step-1", IssueType: "step", Status: beads.StatusInProgress},
 			},
-			wantStatus: StatusHooked,
+			wantStatus: beads.Status("hooked"),
 		},
 		{
 			name:   "rejects non-step bead (task)",
@@ -335,7 +335,7 @@ func TestReopenStepBead(t *testing.T) {
 			name:   "reopens a hooked step bead to open",
 			stepID: "step-2",
 			issues: map[string]*beads.Issue{
-				"step-2": {ID: "step-2", IssueType: "step", Status: StatusHooked},
+				"step-2": {ID: "step-2", IssueType: "step", Status: beads.Status("hooked")},
 			},
 			wantUpdates: 1,
 			wantStatus:  "open",
@@ -413,7 +413,7 @@ func TestUnhookStepBead(t *testing.T) {
 			name:   "unhooks a hooked step back to open",
 			stepID: "step-1",
 			issues: map[string]*beads.Issue{
-				"step-1": {ID: "step-1", IssueType: "step", Status: StatusHooked},
+				"step-1": {ID: "step-1", IssueType: "step", Status: beads.Status("hooked")},
 			},
 			wantStatus: "open",
 		},
@@ -421,7 +421,7 @@ func TestUnhookStepBead(t *testing.T) {
 			name:   "rejects non-step bead",
 			stepID: "task-1",
 			issues: map[string]*beads.Issue{
-				"task-1": {ID: "task-1", IssueType: beads.TypeTask, Status: StatusHooked},
+				"task-1": {ID: "task-1", IssueType: beads.TypeTask, Status: beads.Status("hooked")},
 			},
 			wantErr: true,
 		},
@@ -473,7 +473,7 @@ func TestGetHookedSteps(t *testing.T) {
 				},
 				{
 					ID: "step-2", Title: "step:implement", IssueType: "step",
-					Status: StatusHooked, Labels: []string{"workflow-step", "step:implement"},
+					Status: beads.Status("hooked"), Labels: []string{"workflow-step", "step:implement"},
 				},
 				{
 					ID: "step-3", Title: "step:review", IssueType: "step",
@@ -481,12 +481,12 @@ func TestGetHookedSteps(t *testing.T) {
 				},
 				{
 					ID: "step-4", Title: "step:merge", IssueType: "step",
-					Status: StatusHooked, Labels: []string{"workflow-step", "step:merge"},
+					Status: beads.Status("hooked"), Labels: []string{"workflow-step", "step:merge"},
 				},
 				// A non-step child that should be filtered out even if status=hooked.
 				{
 					ID: "att-1", Title: "attempt: wizard", IssueType: "attempt",
-					Status: StatusHooked, Labels: []string{"attempt"},
+					Status: beads.Status("hooked"), Labels: []string{"attempt"},
 				},
 			},
 		},

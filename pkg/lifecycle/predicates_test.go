@@ -9,16 +9,13 @@ import (
 // legalStatuses enumerates every status string that may appear on a
 // bead today. Includes the four statuses spi-sqqero Landing 3
 // (spi-lkeuqy) introduces — awaiting_review, needs_changes,
-// awaiting_human, merge_pending — so the predicates remain well-defined
-// across the full taxonomy. None of them flip the predicates' answers
-// under legacy semantics; later landings (Task 7+) re-tune the
-// predicates against the new statuses.
+// awaiting_human, merge_pending — the parking statuses that replaced
+// the legacy single-bucket parked state.
 var legalStatuses = []string{
 	"open",
 	"ready",
 	"dispatched",
 	"in_progress",
-	"hooked",
 	"deferred",
 	"awaiting_review",
 	"needs_changes",
@@ -33,7 +30,6 @@ func TestIsActive(t *testing.T) {
 		"ready":           false,
 		"dispatched":      false,
 		"in_progress":     true,
-		"hooked":          false,
 		"deferred":        false,
 		"awaiting_review": false,
 		"needs_changes":   false,
@@ -64,7 +60,6 @@ func TestIsMutable(t *testing.T) {
 		"ready":           true,
 		"dispatched":      true,
 		"in_progress":     true,
-		"hooked":          true,
 		"deferred":        true,
 		"awaiting_review": true,
 		"needs_changes":   true,
@@ -93,7 +88,6 @@ func TestIsDispatchable(t *testing.T) {
 		"ready":           true,
 		"dispatched":      false,
 		"in_progress":     false,
-		"hooked":          true,
 		"deferred":        false,
 		"awaiting_review": false,
 		"needs_changes":   false,
@@ -105,7 +99,7 @@ func TestIsDispatchable(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			b := &store.Bead{Status: status}
 			got := IsDispatchable(b)
-			expected := b.Status == "ready" || b.Status == "open" || b.Status == "hooked"
+			expected := b.Status == "ready" || b.Status == "open"
 			if got != expected {
 				t.Errorf("IsDispatchable(%q) = %v, legacy expression = %v", status, got, expected)
 			}

@@ -1594,11 +1594,11 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 
 	// --- Primary path: bead-status-driven sweep ---
 	// Query for work beads parked on a hook condition. The bead constant
-	// lives in pkg/store (store.StatusHooked) so the literal does not
-	// appear in pkg/steward production code (spi-jzs5xq); Task 8
-	// (spi-x7c67k) atomically renames it to awaiting_human across all
-	// callers in wave 3.
-	hookedStatus := store.StatusHooked
+	// lives in pkg/store (store.StatusAwaitingHuman) so the literal does
+	// not appear in pkg/steward production code; spi-jzs5xq introduced
+	// the indirection and spi-x7c67k removed the legacy `hooked` value
+	// in favor of `awaiting_human`.
+	hookedStatus := store.StatusAwaitingHuman
 	hookedParents, err := ListBeadsFunc(beads.IssueFilter{Status: &hookedStatus})
 	if err != nil {
 		log.Printf("[steward] hooked sweep: list hooked beads: %s", err)
@@ -2018,7 +2018,11 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 		gs := entry.State
 
 		for stepName, ss := range gs.Steps {
-			if ss.Status != string(store.StatusHooked) {
+			// GraphStepState.Status uses the executor-internal parked
+			// label set by HookStepBead; the parent bead's status
+			// surfaces as StatusAwaitingHuman in the bead-status-driven
+			// sweep above, but graph state remains executor-owned.
+			if ss.Status != "hooked" {
 				continue
 			}
 
@@ -2081,9 +2085,9 @@ func SweepHookedSteps(dryRun bool, backend agent.Backend, towerName string, grap
 				}
 			}
 
-			// Check parent bead status and clear hooked if no more hooked steps.
+			// Check parent bead status and clear it if no more hooked steps.
 			parentBead, _ := GetBeadFunc(gs.BeadID)
-			if parentBead.Status == string(store.StatusHooked) {
+			if parentBead.Status == string(store.StatusAwaitingHuman) {
 				remainingHooked, _ := GetHookedStepsFunc(gs.BeadID)
 				if len(remainingHooked) == 0 {
 					if err := UpdateBeadFunc(gs.BeadID, map[string]interface{}{

@@ -259,11 +259,11 @@ func TestSweepHookedSteps_ClusterNative_SkipsRegistryRemove(t *testing.T) {
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-cnh1", Status: "hooked", Type: "task"},
+				{ID: "spi-cnh1", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -295,7 +295,7 @@ func TestSweepHookedSteps_ClusterNative_SkipsRegistryRemove(t *testing.T) {
 		switch id {
 		case "spi-cnh1":
 			return store.Bead{
-				ID: "spi-cnh1", Status: "hooked", Type: "task",
+				ID: "spi-cnh1", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery-cnh1":
@@ -362,10 +362,10 @@ func TestSweepHookedSteps_StandardResume_ClusterNative_SkipsRegistryRemove(t *te
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
-			return []store.Bead{{ID: "spi-cnh2", Status: "hooked", Type: "task"}}, nil
+			return []store.Bead{{ID: "spi-cnh2", Status: "awaiting_human", Type: "task"}}, nil
 		}
 		return nil, nil
 	}
@@ -381,7 +381,7 @@ func TestSweepHookedSteps_StandardResume_ClusterNative_SkipsRegistryRemove(t *te
 	}
 	GetBeadFunc = func(id string) (store.Bead, error) {
 		if id == "spi-cnh2" {
-			return store.Bead{ID: "spi-cnh2", Status: "hooked", Type: "task"}, nil
+			return store.Bead{ID: "spi-cnh2", Status: "awaiting_human", Type: "task"}, nil
 		}
 		return store.Bead{}, fmt.Errorf("not found: %s", id)
 	}

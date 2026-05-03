@@ -27,12 +27,14 @@ func IsMutable(b *store.Bead) bool {
 }
 
 // IsDispatchable reports whether the bead is in a status the steward
-// will consider for dispatch. Legacy semantics include "ready" (the
-// primary dispatch state), "open" (pre-ready candidates), and "hooked"
-// (parked beads that can be unhooked and dispatched).
+// will consider for dispatch. Semantics include "ready" (the primary
+// dispatch state) and "open" (pre-ready candidates). The
+// parked-after-work-started case is captured by `awaiting_human`,
+// which is not dispatchable here — formula-declared per-step
+// transitions in DispatchableBeads decide that.
 func IsDispatchable(b *store.Bead) bool {
 	if b == nil {
 		return false
 	}
-	return b.Status == "ready" || b.Status == "open" || b.Status == "hooked"
+	return b.Status == "ready" || b.Status == "open"
 }

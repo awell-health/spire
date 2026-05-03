@@ -154,10 +154,10 @@ func TestDispatchableBeads_FormulaWithDeclarations(t *testing.T) {
 
 // TestDispatchableBeads_FormulaWithoutDeclarations exercises the legacy
 // fallback. A formula whose Steps carry no Lifecycle blocks leaves the
-// dispatch decision to IsDispatchable — so a bead in `ready`, `open`,
-// or `hooked` is dispatchable, and a bead in `in_progress` is not.
-// This is the load-bearing back-compat contract for external/user
-// formulas that have not been ported to the new schema.
+// dispatch decision to IsDispatchable — so a bead in `ready` or `open`
+// is dispatchable, and a bead in `in_progress` is not. This is the
+// load-bearing back-compat contract for external/user formulas that
+// have not been ported to the new schema.
 func TestDispatchableBeads_FormulaWithoutDeclarations(t *testing.T) {
 	legacy := &formula.FormulaStepGraph{
 		Steps: map[string]formula.StepConfig{
@@ -172,7 +172,6 @@ func TestDispatchableBeads_FormulaWithoutDeclarations(t *testing.T) {
 	}{
 		{"ready", true},
 		{"open", true},
-		{"hooked", true},
 		{"in_progress", false},
 		{"dispatched", false},
 		{"awaiting_review", false},

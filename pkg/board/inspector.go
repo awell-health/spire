@@ -179,8 +179,13 @@ func FetchInspectorData(b BoardBead) InspectorData {
 		data.Messages = msgs
 	}
 
-	// Hooked step details.
-	if b.Status == "hooked" {
+	// Parked-step details: the inspector's hooked-step pane explains
+	// "why is this bead stuck?" — populated whenever the parent bead
+	// landed in any of the per-formula parking statuses. The DAG-level
+	// step status it reads (set by the executor via HookStepBead) is
+	// still labeled "hooked" because step beads are an executor-internal
+	// concern, distinct from the parent bead status taxonomy.
+	if isParkedBead(BoardBead{Status: b.Status}) {
 		data.HookedStep = findHookedStepInfo(b.ID, data.DAG)
 	}
 
@@ -623,7 +628,17 @@ func renderStatus(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("open")
 	case "in_progress":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("in_progress")
+	case "awaiting_review":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Render("awaiting_review")
+	case "needs_changes":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("needs_changes")
+	case "awaiting_human":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("awaiting_human")
+	case "merge_pending":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Render("merge_pending")
 	case "hooked":
+		// Step beads still use "hooked" as their executor-internal
+		// parked status (distinct from the parent bead taxonomy).
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("hooked")
 	case "closed":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("closed")
@@ -638,7 +653,10 @@ func statusIconStr(status string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓")
 	case "in_progress":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("▶")
+	case "awaiting_review", "needs_changes", "awaiting_human", "merge_pending":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("⏸")
 	case "hooked":
+		// Step bead executor-internal parked status.
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("⏸")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("○")

@@ -1574,7 +1574,7 @@ func TestSweepHookedSteps_SkipsForeignOwnedAttempt(t *testing.T) {
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && string(*filter.Status) == "hooked" {
 			return []store.Bead{
-				{ID: "spi-foreign1", Status: "hooked", Type: "task"},
+				{ID: "spi-foreign1", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -1750,11 +1750,11 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 	defer cleanup()
 
 	// Hooked parent bead returned by ListBeads.
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent1", Status: "hooked", Type: "task"},
+				{ID: "spi-parent1", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -1787,7 +1787,7 @@ func TestSweepHookedSteps_FailureEvidence_SummonsCleric(t *testing.T) {
 		switch id {
 		case "spi-parent1":
 			return store.Bead{
-				ID: "spi-parent1", Status: "hooked", Type: "task",
+				ID: "spi-parent1", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery1":
@@ -1863,11 +1863,11 @@ func TestSweepHookedSteps_FailureEvidence_AlreadyClaimed_Skips(t *testing.T) {
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent2", Status: "hooked", Type: "task"},
+				{ID: "spi-parent2", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -1897,7 +1897,7 @@ func TestSweepHookedSteps_FailureEvidence_AlreadyClaimed_Skips(t *testing.T) {
 		switch id {
 		case "spi-parent2":
 			return store.Bead{
-				ID: "spi-parent2", Status: "hooked", Type: "task",
+				ID: "spi-parent2", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery2":
@@ -1948,11 +1948,11 @@ func TestSweepHookedSteps_FailureEvidence_NoRecoveryBead_Skips(t *testing.T) {
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent3", Status: "hooked", Type: "task"},
+				{ID: "spi-parent3", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -1982,7 +1982,7 @@ func TestSweepHookedSteps_FailureEvidence_NoRecoveryBead_Skips(t *testing.T) {
 	GetBeadFunc = func(id string) (store.Bead, error) {
 		if id == "spi-parent3" {
 			return store.Bead{
-				ID: "spi-parent3", Status: "hooked", Type: "task",
+				ID: "spi-parent3", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		}
@@ -2018,11 +2018,11 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent4", Status: "hooked", Type: "task"},
+				{ID: "spi-parent4", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -2052,7 +2052,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericSucceeded_UnhooksAndResummons(t 
 		switch id {
 		case "spi-parent4":
 			return store.Bead{
-				ID: "spi-parent4", Status: "hooked", Type: "task",
+				ID: "spi-parent4", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery4":
@@ -2143,11 +2143,11 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent5", Status: "hooked", Type: "task"},
+				{ID: "spi-parent5", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -2177,7 +2177,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_StaysHooked(t *testing
 		switch id {
 		case "spi-parent5":
 			return store.Bead{
-				ID: "spi-parent5", Status: "hooked", Type: "task",
+				ID: "spi-parent5", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery5":
@@ -2236,11 +2236,11 @@ func TestSweepHookedSteps_FailureEvidence_ClericClosedWithoutOutcome_StaysHooked
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent6", Status: "hooked", Type: "task"},
+				{ID: "spi-parent6", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -2270,7 +2270,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericClosedWithoutOutcome_StaysHooked
 		switch id {
 		case "spi-parent6":
 			return store.Bead{
-				ID: "spi-parent6", Status: "hooked", Type: "task",
+				ID: "spi-parent6", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery6":
@@ -2327,11 +2327,11 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_NoResummonOnRepeatSwee
 	cleanup := stubFailureEvidenceHooks(t)
 	defer cleanup()
 
-	hookedStatus := beads.Status("hooked")
+	hookedStatus := beads.Status("awaiting_human")
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
 		if filter.Status != nil && *filter.Status == hookedStatus {
 			return []store.Bead{
-				{ID: "spi-parent-loop", Status: "hooked", Type: "task"},
+				{ID: "spi-parent-loop", Status: "awaiting_human", Type: "task"},
 			}, nil
 		}
 		return nil, nil
@@ -2358,7 +2358,7 @@ func TestSweepHookedSteps_FailureEvidence_ClericEscalated_NoResummonOnRepeatSwee
 		switch id {
 		case "spi-parent-loop":
 			return store.Bead{
-				ID: "spi-parent-loop", Status: "hooked", Type: "task",
+				ID: "spi-parent-loop", Status: "awaiting_human", Type: "task",
 				Labels: []string{"needs-human"},
 			}, nil
 		case "spi-recovery-escalated":

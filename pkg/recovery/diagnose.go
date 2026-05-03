@@ -36,9 +36,10 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 		}
 	}
 
-	// Accept hooked status (new model) or interrupted:* label (legacy).
-	if interruptLabel == "" && bead.Status != "hooked" {
-		return nil, fmt.Errorf("bead %s has no interrupted:* label and is not hooked — not in interrupted state", beadID)
+	// Accept awaiting_human status (parking-after-work-started) or
+	// interrupted:* label (legacy).
+	if interruptLabel == "" && bead.Status != "awaiting_human" {
+		return nil, fmt.Errorf("bead %s has no interrupted:* label and is not awaiting_human — not in interrupted state", beadID)
 	}
 
 	// 3. Count attempts and get latest result.
@@ -53,13 +54,14 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 	// 4. Find alert beads and recovery bead via dependents (single query).
 	alertBeads, recoveryBead := findLinkedBeads(beadID, deps)
 
-	// For hooked beads without an interrupted:* label, require failure evidence
-	// (a recovery bead or alert beads). Approval/design gates are hooked but
-	// have no failure artifacts — those are not recoverable.
-	if interruptLabel == "" && bead.Status == "hooked" {
+	// For awaiting_human beads without an interrupted:* label, require
+	// failure evidence (a recovery bead or alert beads). Approval/design
+	// gates also park as awaiting_human but have no failure artifacts —
+	// those are not recoverable.
+	if interruptLabel == "" && bead.Status == "awaiting_human" {
 		if recoveryBead != nil {
 			// Recovery bead exists — real failure. Use alert label for classification if available.
-			interruptLabel = "interrupted:hooked"
+			interruptLabel = "interrupted:awaiting_human"
 			for _, a := range alertBeads {
 				if strings.HasPrefix(a.Label, "alert:") {
 					interruptLabel = "interrupted:" + strings.TrimPrefix(a.Label, "alert:")
@@ -71,11 +73,11 @@ func Diagnose(beadID string, deps *Deps) (*Diagnosis, error) {
 			if strings.HasPrefix(alertBeads[0].Label, "alert:") {
 				interruptLabel = "interrupted:" + strings.TrimPrefix(alertBeads[0].Label, "alert:")
 			} else {
-				interruptLabel = "interrupted:hooked"
+				interruptLabel = "interrupted:awaiting_human"
 			}
 		} else {
 			// No failure evidence — this is an approval gate or design wait, not a failure.
-			return nil, fmt.Errorf("bead %s is hooked but has no failure evidence (no recovery or alert beads) — likely an approval gate, not recoverable", beadID)
+			return nil, fmt.Errorf("bead %s is awaiting_human but has no failure evidence (no recovery or alert beads) — likely an approval gate, not recoverable", beadID)
 		}
 	}
 

@@ -160,10 +160,11 @@ func cmdBoard(args []string) error {
 		if err != nil {
 			return err
 		}
-		// Pre-fetch recovery refs for interrupted beads.
+		// Pre-fetch recovery refs for parked beads (awaiting_review,
+		// needs_changes, awaiting_human, merge_pending).
 		recoveryRefs := make(map[string]*board.RecoveryRef)
 		getDeps := board.StoreDeps()
-		for _, b := range result.Columns.Hooked {
+		for _, b := range result.Columns.ParkedBeads() {
 			if ref := board.FetchRecoveryRef(b.ID, getDeps); ref != nil {
 				recoveryRefs[b.ID] = ref
 			}

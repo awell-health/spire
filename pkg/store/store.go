@@ -208,11 +208,6 @@ func FindParentID(deps []*beads.Dependency) string {
 	return ""
 }
 
-// StatusHooked is the "hooked" bead status — a step parked waiting for a
-// condition (human approval, external event, error recovery). Defined here
-// because the beads library has it in internal/types but does not re-export it.
-const StatusHooked beads.Status = "hooked"
-
 // StatusAwaitingReview is the "awaiting_review" bead status — used in two
 // contexts: (1) a recovery bead the cleric has annotated with a
 // ProposedAction and is now blocked on a human gate; (2) a task bead whose
@@ -230,8 +225,9 @@ const StatusNeedsChanges beads.Status = "needs_changes"
 
 // StatusAwaitingHuman is the "awaiting_human" bead status — a bead parked
 // waiting on a human action (cleric escalation, manual takeover, human
-// gate). Replaces the parked-after-work-started subset of the legacy
-// `hooked` status. Introduced by spi-sqqero Landing 3 (spi-lkeuqy).
+// gate). Captures the parked-after-work-started case in the
+// per-formula lifecycle taxonomy. Introduced by spi-sqqero Landing 3
+// (spi-lkeuqy).
 const StatusAwaitingHuman beads.Status = "awaiting_human"
 
 // StatusMergePending is the "merge_pending" bead status — a task bead whose
@@ -300,8 +296,6 @@ func ParseStatus(s string) beads.Status {
 		return beads.StatusDeferred
 	case "closed":
 		return beads.StatusClosed
-	case "hooked":
-		return StatusHooked
 	case "awaiting_review":
 		return StatusAwaitingReview
 	case "needs_changes":

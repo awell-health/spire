@@ -18,13 +18,16 @@ type ColDef struct {
 }
 
 // AllColumns returns all status-based columns in board display order, including empty ones.
-// Order: BACKLOG, READY, IN PROGRESS, HOOKED, DONE (5 columns per spec).
+// Order: BACKLOG, READY, IN PROGRESS, AWAITING REVIEW, NEEDS CHANGES, AWAITING HUMAN, MERGE PENDING, DONE.
 func AllColumns(cols Columns) []ColDef {
 	return []ColDef{
 		{"BACKLOG", lipgloss.Color("8"), cols.Backlog},
 		{"READY", lipgloss.Color("2"), cols.Ready},
 		{"IN PROGRESS", lipgloss.Color("6"), cols.InProgress},
-		{"HOOKED", lipgloss.Color("3"), cols.Hooked},
+		{"AWAITING REVIEW", lipgloss.Color("4"), cols.AwaitingReview},
+		{"NEEDS CHANGES", lipgloss.Color("1"), cols.NeedsChanges},
+		{"AWAITING HUMAN", lipgloss.Color("3"), cols.AwaitingHuman},
+		{"MERGE PENDING", lipgloss.Color("5"), cols.MergePending},
 		{"DONE", lipgloss.Color("8"), cols.Done},
 	}
 }
@@ -91,11 +94,17 @@ func isAlertBead(b BoardBead) bool {
 	return false
 }
 
-// isHookedBead returns true if the bead has status='hooked'.
-// This replaces the old label-based interrupted:* check — hooked status is now
-// set directly on beads by the executor when a step parks for human/external action.
-func isHookedBead(b BoardBead) bool {
-	return b.Status == "hooked"
+// isParkedBead returns true if the bead carries one of the per-formula
+// parking statuses — awaiting_review, needs_changes, awaiting_human, or
+// merge_pending. Replaces the legacy label-based `interrupted:*` check
+// and the single `hooked` bucket that preceded the formula-declared
+// taxonomy.
+func isParkedBead(b BoardBead) bool {
+	switch b.Status {
+	case "awaiting_review", "needs_changes", "awaiting_human", "merge_pending":
+		return true
+	}
+	return false
 }
 
 // CategorizeColumnsFromStore builds board columns from store API results.
@@ -126,10 +135,22 @@ func CategorizeColumnsFromStore(openBeads, closedBeads, blockedBeads []BoardBead
 		}
 
 		switch b.Status {
-		case "hooked":
-			c.Hooked = append(c.Hooked, b)
 		case "awaiting_review":
-			c.Hooked = append(c.Hooked, b)
+			if isWorkBoardBead(b) {
+				c.AwaitingReview = append(c.AwaitingReview, b)
+			}
+		case "needs_changes":
+			if isWorkBoardBead(b) {
+				c.NeedsChanges = append(c.NeedsChanges, b)
+			}
+		case "awaiting_human":
+			if isWorkBoardBead(b) {
+				c.AwaitingHuman = append(c.AwaitingHuman, b)
+			}
+		case "merge_pending":
+			if isWorkBoardBead(b) {
+				c.MergePending = append(c.MergePending, b)
+			}
 		case "deferred":
 			if isWorkBoardBead(b) {
 				c.Backlog = append(c.Backlog, b)
@@ -202,10 +223,22 @@ func CategorizeWithPhases(openBeads, closedBeads []BoardBead, blockedMap map[str
 		}
 
 		switch b.Status {
-		case "hooked":
-			c.Hooked = append(c.Hooked, b)
 		case "awaiting_review":
-			c.Hooked = append(c.Hooked, b)
+			if isWorkBoardBead(b) {
+				c.AwaitingReview = append(c.AwaitingReview, b)
+			}
+		case "needs_changes":
+			if isWorkBoardBead(b) {
+				c.NeedsChanges = append(c.NeedsChanges, b)
+			}
+		case "awaiting_human":
+			if isWorkBoardBead(b) {
+				c.AwaitingHuman = append(c.AwaitingHuman, b)
+			}
+		case "merge_pending":
+			if isWorkBoardBead(b) {
+				c.MergePending = append(c.MergePending, b)
+			}
 		case "deferred":
 			if isWorkBoardBead(b) {
 				c.Backlog = append(c.Backlog, b)
@@ -257,7 +290,8 @@ func CapDone(cols *Columns, n int) {
 func FilterEpic(cols Columns, epicID string) Columns {
 	linkedIDs := make(map[string]bool)
 	allSlices := [][]BoardBead{
-		cols.Alerts, cols.Hooked, cols.Backlog, cols.Ready, cols.InProgress,
+		cols.Alerts, cols.AwaitingReview, cols.NeedsChanges, cols.AwaitingHuman,
+		cols.MergePending, cols.Backlog, cols.Ready, cols.InProgress,
 		cols.Design, cols.Plan, cols.Implement, cols.Review, cols.Merge,
 		cols.Done, cols.Blocked,
 	}
@@ -294,18 +328,21 @@ func FilterEpic(cols Columns, epicID string) Columns {
 		return b.ID == epicID || b.Parent == epicID || strings.HasPrefix(b.ID, epicID+".") || linkedIDs[b.ID]
 	}
 	return Columns{
-		Alerts:     FilterBeads(cols.Alerts, match),
-		Hooked:     FilterBeads(cols.Hooked, match),
-		Backlog:    FilterBeads(cols.Backlog, match),
-		Ready:      FilterBeads(cols.Ready, match),
-		InProgress: FilterBeads(cols.InProgress, match),
-		Design:     FilterBeads(cols.Design, match),
-		Plan:       FilterBeads(cols.Plan, match),
-		Implement:  FilterBeads(cols.Implement, match),
-		Review:     FilterBeads(cols.Review, match),
-		Merge:      FilterBeads(cols.Merge, match),
-		Done:       FilterBeads(cols.Done, match),
-		Blocked:    FilterBeads(cols.Blocked, match),
+		Alerts:         FilterBeads(cols.Alerts, match),
+		AwaitingReview: FilterBeads(cols.AwaitingReview, match),
+		NeedsChanges:   FilterBeads(cols.NeedsChanges, match),
+		AwaitingHuman:  FilterBeads(cols.AwaitingHuman, match),
+		MergePending:   FilterBeads(cols.MergePending, match),
+		Backlog:        FilterBeads(cols.Backlog, match),
+		Ready:          FilterBeads(cols.Ready, match),
+		InProgress:     FilterBeads(cols.InProgress, match),
+		Design:         FilterBeads(cols.Design, match),
+		Plan:           FilterBeads(cols.Plan, match),
+		Implement:      FilterBeads(cols.Implement, match),
+		Review:         FilterBeads(cols.Review, match),
+		Merge:          FilterBeads(cols.Merge, match),
+		Done:           FilterBeads(cols.Done, match),
+		Blocked:        FilterBeads(cols.Blocked, match),
 	}
 }
 
@@ -399,18 +436,21 @@ func FilterTypeScope(cols Columns, scope TypeScope) Columns {
 		return scope.Match(b)
 	}
 	return Columns{
-		Alerts:     FilterBeads(cols.Alerts, match),
-		Hooked:     FilterBeads(cols.Hooked, match),
-		Backlog:    FilterBeads(cols.Backlog, match),
-		Ready:      FilterBeads(cols.Ready, match),
-		InProgress: FilterBeads(cols.InProgress, match),
-		Design:     FilterBeads(cols.Design, match),
-		Plan:       FilterBeads(cols.Plan, match),
-		Implement:  FilterBeads(cols.Implement, match),
-		Review:     FilterBeads(cols.Review, match),
-		Merge:      FilterBeads(cols.Merge, match),
-		Done:       FilterBeads(cols.Done, match),
-		Blocked:    FilterBeads(cols.Blocked, match),
+		Alerts:         FilterBeads(cols.Alerts, match),
+		AwaitingReview: FilterBeads(cols.AwaitingReview, match),
+		NeedsChanges:   FilterBeads(cols.NeedsChanges, match),
+		AwaitingHuman:  FilterBeads(cols.AwaitingHuman, match),
+		MergePending:   FilterBeads(cols.MergePending, match),
+		Backlog:        FilterBeads(cols.Backlog, match),
+		Ready:          FilterBeads(cols.Ready, match),
+		InProgress:     FilterBeads(cols.InProgress, match),
+		Design:         FilterBeads(cols.Design, match),
+		Plan:           FilterBeads(cols.Plan, match),
+		Implement:      FilterBeads(cols.Implement, match),
+		Review:         FilterBeads(cols.Review, match),
+		Merge:          FilterBeads(cols.Merge, match),
+		Done:           FilterBeads(cols.Done, match),
+		Blocked:        FilterBeads(cols.Blocked, match),
 	}
 }
 

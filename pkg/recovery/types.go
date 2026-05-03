@@ -194,7 +194,7 @@ const (
 type RepairMode string
 
 const (
-	// RepairModeNoop resumes the hooked bead without executing a repair —
+	// RepairModeNoop resumes the parked bead without executing a repair —
 	// used when decide determines no action is needed (e.g. after a human
 	// edit cleared the interruption).
 	RepairModeNoop RepairMode = "noop"
@@ -254,7 +254,7 @@ const (
 )
 
 // Decision is the wizard's terminal recovery decision consumed by the steward
-// to either resume the hooked parent or leave it escalated for human review.
+// to either resume the parked parent or leave it escalated for human review.
 type Decision string
 
 const (
@@ -278,7 +278,7 @@ type RepairPlan struct {
 // RecoveryOutcome is the structured record every recovery attempt emits to
 // bead metadata, the recovery_learnings SQL table, traces, and metrics. The
 // steward consumes it through recovery.ReadOutcome to decide resume vs
-// escalate for the hooked parent.
+// escalate for the parked parent.
 type RecoveryOutcome struct {
 	RecoveryAttemptID string              `json:"recovery_attempt_id"`
 	SourceBeadID      string              `json:"source_bead_id"`

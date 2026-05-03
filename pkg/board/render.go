@@ -15,20 +15,32 @@ type HeightBudgetResult struct {
 	Compact     bool // use 1-line compact cards instead of 4-line cards
 	MaxWarnings int  // max warning lines to show (system-level, above alerts)
 	MaxAlerts   int  // max alert lines to show
-	MaxHooked   int  // max hooked lines to show
+	MaxHooked   int  // max parked lines to show in the lower section
 	MaxBlocked  int  // max blocked lines to show
 	MaxAgents   int  // max agent lines to show in the agent panel (0 = hidden)
 }
 
+// showPipelineForStatus reports whether a bead's status warrants the
+// compact step-pipeline indicator. Beads beyond "ready" but before
+// "closed" all benefit from showing where they are in their formula.
+func showPipelineForStatus(status string) bool {
+	switch status {
+	case "in_progress", "dispatched",
+		"awaiting_review", "needs_changes", "awaiting_human", "merge_pending":
+		return true
+	}
+	return false
+}
+
 // CalcHeightBudget computes card limits based on terminal height.
 // Returns permissive defaults when termHeight is zero (non-TTY or unknown).
-func CalcHeightBudget(termHeight, warningCount, alertCount, hookedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
+func CalcHeightBudget(termHeight, warningCount, alertCount, parkedCount, blockedCount, colCount, agentCount int) HeightBudgetResult {
 	if termHeight <= 0 {
 		maxAg := agentCount
 		if maxAg > 5 {
 			maxAg = 5
 		}
-		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxHooked: hookedCount, MaxBlocked: 8, MaxAgents: maxAg}
+		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxHooked: parkedCount, MaxBlocked: 8, MaxAgents: maxAg}
 	}
 
 	const fixed = 7
@@ -62,11 +74,11 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, hookedCount, blocked
 		}
 	}
 
-	// BLOCKED and HOOKED share the same vertical space (rendered side-by-side).
+	// BLOCKED and PARKED share the same vertical space (rendered side-by-side).
 	// Allocate a single pool and deduct from available only once.
-	maxHooked := 0
+	maxParked := 0
 	maxBlocked := 0
-	if blockedCount > 0 || hookedCount > 0 {
+	if blockedCount > 0 || parkedCount > 0 {
 		maxLower := available / 5
 		if maxLower < 1 {
 			maxLower = 1
@@ -77,16 +89,16 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, hookedCount, blocked
 				maxBlocked = blockedCount
 			}
 		}
-		if hookedCount > 0 {
-			maxHooked = maxLower
-			if maxHooked > hookedCount {
-				maxHooked = hookedCount
+		if parkedCount > 0 {
+			maxParked = maxLower
+			if maxParked > parkedCount {
+				maxParked = parkedCount
 			}
 		}
 		// Deduct the taller of the two from available (they share vertical space).
 		deduct := maxBlocked
-		if maxHooked > deduct {
-			deduct = maxHooked
+		if maxParked > deduct {
+			deduct = maxParked
 		}
 		available -= deduct + 2
 		if available < 4 {
@@ -125,12 +137,12 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, hookedCount, blocked
 
 	return HeightBudgetResult{
 		MaxCards:    maxCards,
-		Compact:    compact,
+		Compact:     compact,
 		MaxWarnings: maxWarnings,
-		MaxAlerts:  maxAlerts,
-		MaxHooked:  maxHooked,
-		MaxBlocked: maxBlocked,
-		MaxAgents:  maxAgents,
+		MaxAlerts:   maxAlerts,
+		MaxHooked:   maxParked,
+		MaxBlocked:  maxBlocked,
+		MaxAgents:   maxAgents,
 	}
 }
 
@@ -177,7 +189,7 @@ const sidebarWidth = 16
 
 // renderTabSidebar renders a narrow vertical sidebar with tab labels.
 // The active tab is bright white/bold; inactive tabs are dim gray.
-func renderTabSidebar(mode ViewMode, alertCount, blockedCount, hookedCount int) string {
+func renderTabSidebar(mode ViewMode, alertCount, blockedCount, parkedCount int) string {
 	type tabDef struct {
 		label string
 		mode  ViewMode
@@ -186,10 +198,10 @@ func renderTabSidebar(mode ViewMode, alertCount, blockedCount, hookedCount int) 
 	// Build a combined label for the lower tab showing separate counts.
 	var lowerLabel string
 	switch {
-	case blockedCount > 0 && hookedCount > 0:
-		lowerLabel = fmt.Sprintf("BLK(%d) HKD(%d)", blockedCount, hookedCount)
-	case hookedCount > 0:
-		lowerLabel = fmt.Sprintf("HOOKED (%d)", hookedCount)
+	case blockedCount > 0 && parkedCount > 0:
+		lowerLabel = fmt.Sprintf("BLK(%d) PRK(%d)", blockedCount, parkedCount)
+	case parkedCount > 0:
+		lowerLabel = fmt.Sprintf("PARKED (%d)", parkedCount)
 	case blockedCount > 0:
 		lowerLabel = fmt.Sprintf("BLOCKED (%d)", blockedCount)
 	default:
@@ -313,7 +325,7 @@ func (m *BoardMode) View() string {
 	case ViewAlerts:
 		budget = CalcHeightBudget(m.Height, warningCount, alertCount, 0, 0, 0, len(m.Agents))
 	case ViewLower:
-		budget = CalcHeightBudget(m.Height, warningCount, 0, len(visibleCols.Hooked), len(visibleCols.Blocked), 0, len(m.Agents))
+		budget = CalcHeightBudget(m.Height, warningCount, 0, len(visibleCols.ParkedBeads()), len(visibleCols.Blocked), 0, len(m.Agents))
 	}
 
 	// Render active view mode content.
@@ -359,13 +371,13 @@ func (m *BoardMode) View() string {
 		}
 
 	case ViewBoard:
-		// Compact attention line — shows counts for hooked + alerts on one line.
-		hookedCount := len(visibleCols.Hooked)
-		if hookedCount > 0 || alertCount > 0 {
+		// Compact attention line — shows counts for parked beads + alerts on one line.
+		parkedCount := len(visibleCols.ParkedBeads())
+		if parkedCount > 0 || alertCount > 0 {
 			var parts []string
-			if hookedCount > 0 {
-				hookedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-				parts = append(parts, hookedStyle.Render(fmt.Sprintf("⏸ %d", hookedCount)))
+			if parkedCount > 0 {
+				parkedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+				parts = append(parts, parkedStyle.Render(fmt.Sprintf("⏸ %d", parkedCount)))
 			}
 			if alertCount > 0 {
 				alertStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
@@ -429,17 +441,18 @@ func (m *BoardMode) View() string {
 		}
 
 	case ViewLower:
-		// Blocked + Hooked fullscreen.
+		// Blocked + parked (awaiting_review/needs_changes/awaiting_human/merge_pending) fullscreen.
+		parked := visibleCols.ParkedBeads()
 		hasBlocked := len(visibleCols.Blocked) > 0
-		hasHooked := len(visibleCols.Hooked) > 0
-		if hasBlocked || hasHooked {
+		hasParked := len(parked) > 0
+		if hasBlocked || hasParked {
 			selLower := m.SelSection == SectionLower
 
 			lowerWidth := contentWidth
 			if lowerWidth <= 0 {
 				lowerWidth = 80
 			}
-			bothPresent := hasBlocked && hasHooked
+			bothPresent := hasBlocked && hasParked
 			subColWidth := lowerWidth
 			if bothPresent {
 				subColWidth = lowerWidth/2 - 2
@@ -478,34 +491,34 @@ func (m *BoardMode) View() string {
 				blockedStr = bb.String()
 			}
 
-			var hookedStr string
-			if hasHooked {
-				SortBeads(visibleCols.Hooked)
+			var parkedStr string
+			if hasParked {
+				SortBeads(parked)
 				var hb strings.Builder
-				hookedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+				parkedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 				if selLower && m.SelLowerCol == 1 {
-					hookedStyle = hookedStyle.Underline(true)
+					parkedStyle = parkedStyle.Underline(true)
 				}
-				hb.WriteString(hookedStyle.Render(fmt.Sprintf("⏸ HOOKED (%d)", len(visibleCols.Hooked))) + "\n")
-				for i, b := range visibleCols.Hooked {
+				hb.WriteString(parkedStyle.Render(fmt.Sprintf("⏸ PARKED (%d)", len(parked))) + "\n")
+				for i, b := range parked {
 					if i >= budget.MaxHooked {
 						dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-						hb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(visibleCols.Hooked)-budget.MaxHooked)) + "\n")
+						hb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(parked)-budget.MaxHooked)) + "\n")
 						break
 					}
-					// Show which step is hooked from step:<name> labels on child step beads.
-					hookedStep := ""
+					// Show which step is parked from step:<name> labels on child step beads.
+					parkedStep := ""
 					for _, l := range b.Labels {
 						if strings.HasPrefix(l, "hooked-step:") {
-							hookedStep = "[" + l[len("hooked-step:"):] + "] "
+							parkedStep = "[" + l[len("hooked-step:"):] + "] "
 							break
 						}
 					}
 					if selLower && m.SelLowerCol == 1 && i == m.SelCard {
 						cursor := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("▶")
-						hb.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), hookedStep, b.ID, Truncate(b.Title, 50)))
+						hb.WriteString(fmt.Sprintf("%s %s %s%s: %s\n", cursor, PriStr(b.Priority), parkedStep, b.ID, Truncate(b.Title, 50)))
 					} else {
-						hb.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), hookedStep, b.ID, Truncate(b.Title, 50)))
+						hb.WriteString(fmt.Sprintf("  %s %s%s: %s\n", PriStr(b.Priority), parkedStep, b.ID, Truncate(b.Title, 50)))
 					}
 					if m.Snapshot != nil && m.Snapshot.RecoveryRefs != nil {
 						if ref := m.Snapshot.RecoveryRefs[b.ID]; ref != nil {
@@ -514,21 +527,21 @@ func (m *BoardMode) View() string {
 						}
 					}
 				}
-				hookedStr = hb.String()
+				parkedStr = hb.String()
 			}
 
 			if bothPresent {
 				leftStyle := lipgloss.NewStyle().Width(subColWidth + 2)
-				mainContent.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(blockedStr), hookedStr))
+				mainContent.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(blockedStr), parkedStr))
 				mainContent.WriteString("\n")
 			} else if hasBlocked {
 				mainContent.WriteString(blockedStr)
 			} else {
-				mainContent.WriteString(hookedStr)
+				mainContent.WriteString(parkedStr)
 			}
 		} else {
 			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-			mainContent.WriteString(dimStyle.Render("No blocked or hooked beads") + "\n")
+			mainContent.WriteString(dimStyle.Render("No blocked or parked beads") + "\n")
 		}
 	}
 
@@ -716,8 +729,10 @@ func RenderCardStr(b BoardBead, clr color.Color, width int, selected ...bool) st
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress, dispatched, hooked, and awaiting_review beads.
-	if b.Status == "in_progress" || b.Status == "hooked" || b.Status == "dispatched" || b.Status == "awaiting_review" {
+	// Show compact DAG pipeline for beads with active or parked execution
+	// state — anything past "ready" but before "closed" benefits from the
+	// step icons.
+	if showPipelineForStatus(b.Status) {
 		if pipeline := RenderPipelineLipgloss(b.ID); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}
@@ -864,11 +879,11 @@ func RenderCardStrSnap(b BoardBead, phase string, dag *DAGProgress, clr color.Co
 		s.WriteString(fmt.Sprintf("  %s\n", dimStyle.Render(TimeAgo(b.CreatedAt))))
 	}
 
-	// Show compact DAG pipeline for in-progress, dispatched, and hooked beads.
-	// Dispatched beads haven't been claimed yet, so their DAG is usually
-	// empty — rendering still works and shows "○ ○ ○" to signal the bead
-	// is scheduled but unstarted.
-	if b.Status == "in_progress" || b.Status == "hooked" || b.Status == "dispatched" {
+	// Show compact DAG pipeline for beads with active or parked execution
+	// state. Dispatched beads haven't been claimed yet, so their DAG is
+	// usually empty — rendering still works and shows "○ ○ ○" to signal
+	// the bead is scheduled but unstarted.
+	if showPipelineForStatus(b.Status) {
 		if pipeline := RenderPipelineFromDAG(dag); pipeline != "" {
 			s.WriteString(fmt.Sprintf("  %s\n", pipeline))
 		}

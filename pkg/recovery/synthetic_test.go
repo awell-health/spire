@@ -116,7 +116,7 @@ func (f *fakeSyntheticWriter) hasCausedBy(issueID, dependsOnID string) bool {
 func newFakeWriter(originID string) *fakeSyntheticWriter {
 	return &fakeSyntheticWriter{
 		existing: map[string]store.Bead{
-			originID: {ID: originID, Type: "task", Status: "hooked"},
+			originID: {ID: originID, Type: "task", Status: "awaiting_human"},
 		},
 	}
 }
