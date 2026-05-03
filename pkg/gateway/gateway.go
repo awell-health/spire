@@ -357,7 +357,7 @@ func (s *Server) listBeads(w http.ResponseWriter, r *http.Request) {
 			Metadata:    bb.Metadata,
 		}
 	}
-	writeJSON(w, http.StatusOK, beadList)
+	writeJSON(w, http.StatusOK, wrapBeads(beadList))
 }
 
 // createBead handles POST /api/v1/beads
@@ -662,7 +662,7 @@ func (s *Server) getBead(w http.ResponseWriter, _ *http.Request, id string) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, wrapBead(b))
 }
 
 func (s *Server) updateBead(w http.ResponseWriter, r *http.Request, id string) {
@@ -1947,7 +1947,7 @@ func (s *Server) handleBeadReset(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 
-	writeJSON(w, http.StatusOK, bead)
+	writeJSON(w, http.StatusOK, wrapBeadPtr(bead))
 }
 
 // closeBeadFunc is the package-level seam through which handleBeadClose
