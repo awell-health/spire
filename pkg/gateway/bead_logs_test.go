@@ -835,6 +835,64 @@ func TestGetBeadLogPretty_RejectsNonTranscriptStream(t *testing.T) {
 	}
 }
 
+func TestGetBeadLogPretty_LocalNativeDefaultAllowsEngineerOnly(t *testing.T) {
+	// Regression for spi-dhqv40: /pretty must honor the same scope rules
+	// as /raw. Both endpoints share scopeFromRequest, so the local-native
+	// default lands here too — the desktop renders pretty events with no
+	// X-Spire-Scope header set.
+	stubScopeDeploymentMode(t, config.DeploymentModeLocalNative)
+
+	transcript := []byte(strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"s1","cwd":"/x"}`,
+		`{"type":"user","message":{"content":"hello"}}`,
+	}, "\n") + "\n")
+	reader := &fakeLogReader{
+		manifests: []logartifact.Manifest{
+			makeManifest("log-a", func(m *logartifact.Manifest) {
+				m.ByteSize = int64(len(transcript))
+			}),
+		},
+		bytes: map[string][]byte{"log-a": transcript},
+	}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/pretty", nil)
+	// No X-Spire-Scope header — exactly what spire-desktop sends today.
+	rec := httptest.NewRecorder()
+	s.getBeadLogPretty(rec, req, "spi-test1", "log-a")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetBeadLogPretty_ClusterNativeDefaultStillDeniesEngineerOnly(t *testing.T) {
+	// Threat-model regression guard for /pretty: cluster-native must keep
+	// denying engineer_only without an explicit header, mirroring /raw.
+	stubScopeDeploymentMode(t, config.DeploymentModeClusterNative)
+
+	transcript := []byte(`{"type":"system","subtype":"init","session_id":"s1","cwd":"/x"}` + "\n")
+	reader := &fakeLogReader{
+		manifests: []logartifact.Manifest{
+			makeManifest("log-a", func(m *logartifact.Manifest) {
+				m.ByteSize = int64(len(transcript))
+			}),
+		},
+		bytes: map[string][]byte{"log-a": transcript},
+	}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs/log-a/pretty", nil)
+	rec := httptest.NewRecorder()
+	s.getBeadLogPretty(rec, req, "spi-test1", "log-a")
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d want 403 body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBearerAuth_RejectsUnauthenticatedLogsRequest(t *testing.T) {
 	// Auth applies at the mux layer. We exercise the actual middleware
 	// chain on a token-protected server so the test catches a
