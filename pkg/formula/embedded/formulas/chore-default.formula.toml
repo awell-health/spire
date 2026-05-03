@@ -57,6 +57,10 @@ You are researching a chore before any implementation begins.
 Do NOT make code changes in this step — research and document your findings only.
 Output your summary to stdout.
 """
+[steps.research.lifecycle]
+on_start = "in_progress"
+on_complete = "in_progress"
+on_fail = { event = "Escalated" }
 
 # Step 2: Implement the chore in an isolated worktree.
 [steps.implement]
@@ -66,6 +70,10 @@ flow = "implement"
 needs = ["research"]
 workspace = "feature"
 title = "Implement changes"
+[steps.implement.lifecycle]
+on_start = "in_progress"
+on_complete = "awaiting_review"
+on_fail = { event = "Escalated" }
 
 # Step 3: Review via the subgraph-review sub-graph.
 [steps.review]
@@ -75,6 +83,13 @@ needs = ["implement"]
 workspace = "feature"
 graph = "subgraph-review"
 title = "Review changes"
+[steps.review.lifecycle]
+on_start = "awaiting_review"
+on_complete_match = [
+  { when = "outputs.verdict == 'approve'",         status = "merge_pending" },
+  { when = "outputs.verdict == 'request_changes'", status = "needs_changes" },
+]
+on_fail = { event = "Escalated" }
 
 # Step 4: Document what was done — update docs/wiki/ with learnings.
 [steps.document]
@@ -98,6 +113,10 @@ Focus only on documentation — do not change any code.
 """
 [steps.document.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "merge" }]
+[steps.document.lifecycle]
+on_start = "merge_pending"
+on_complete = "merge_pending"
+on_fail = { event = "Escalated" }
 
 # Step 5a: Merge to main after documentation is updated.
 [steps.merge]
@@ -108,6 +127,10 @@ workspace = "feature"
 title = "Merge to main"
 [steps.merge.with]
 strategy = "squash"
+[steps.merge.lifecycle]
+on_start = "merge_pending"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 # Step 6a: Close bead after successful merge.
 [steps.close]
@@ -118,6 +141,10 @@ terminal = true
 title = "Close chore"
 [steps.close.with]
 status = "closed"
+[steps.close.lifecycle]
+on_start = "closed"
+on_complete = "closed"
+on_fail = { event = "Escalated" }
 
 # Step 5b: Discard — fires when review outcome is discard.
 [steps.discard]
@@ -130,3 +157,7 @@ title = "Discard chore"
 status = "discard"
 [steps.discard.when]
 all = [{ left = "steps.review.outputs.outcome", op = "eq", right = "discard" }]
+[steps.discard.lifecycle]
+on_start = "needs_changes"
+on_complete = "closed"
+on_fail = { event = "Escalated" }

@@ -370,7 +370,7 @@ func TestBuildActionMenu(t *testing.T) {
 	})
 
 	t.Run("comment present in all non-closed statuses", func(t *testing.T) {
-		for _, status := range []string{"open", "ready", "in_progress", "awaiting_human", "deferred"} {
+		for _, status := range []string{"open", "ready", "in_progress", "awaiting_human", "awaiting_review", "needs_changes", "merge_pending", "deferred"} {
 			bead := &BoardBead{ID: "spi-040", Status: status, Type: "task"}
 			items := BuildActionMenu(bead, nil)
 			hasComment := false

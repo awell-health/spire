@@ -15,7 +15,7 @@ type HeightBudgetResult struct {
 	Compact     bool // use 1-line compact cards instead of 4-line cards
 	MaxWarnings int  // max warning lines to show (system-level, above alerts)
 	MaxAlerts   int  // max alert lines to show
-	MaxHooked   int  // max parked lines to show in the lower section
+	MaxParked   int  // max parked lines to show in the lower section
 	MaxBlocked  int  // max blocked lines to show
 	MaxAgents   int  // max agent lines to show in the agent panel (0 = hidden)
 }
@@ -40,7 +40,7 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, parkedCount, blocked
 		if maxAg > 5 {
 			maxAg = 5
 		}
-		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxHooked: parkedCount, MaxBlocked: 8, MaxAgents: maxAg}
+		return HeightBudgetResult{MaxCards: 99, MaxWarnings: warningCount, MaxAlerts: alertCount, MaxParked: parkedCount, MaxBlocked: 8, MaxAgents: maxAg}
 	}
 
 	const fixed = 7
@@ -140,7 +140,7 @@ func CalcHeightBudget(termHeight, warningCount, alertCount, parkedCount, blocked
 		Compact:     compact,
 		MaxWarnings: maxWarnings,
 		MaxAlerts:   maxAlerts,
-		MaxHooked:   maxParked,
+		MaxParked:   maxParked,
 		MaxBlocked:  maxBlocked,
 		MaxAgents:   maxAgents,
 	}
@@ -501,9 +501,9 @@ func (m *BoardMode) View() string {
 				}
 				hb.WriteString(parkedStyle.Render(fmt.Sprintf("⏸ PARKED (%d)", len(parked))) + "\n")
 				for i, b := range parked {
-					if i >= budget.MaxHooked {
+					if i >= budget.MaxParked {
 						dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-						hb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(parked)-budget.MaxHooked)) + "\n")
+						hb.WriteString(dimStyle.Render(fmt.Sprintf("  ... +%d more", len(parked)-budget.MaxParked)) + "\n")
 						break
 					}
 					// Show which step is parked from step:<name> labels on child step beads.

@@ -417,7 +417,14 @@ func (s *Server) createBead(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+	// Return the full bead (with legacy_status shim) so consumers see the
+	// canonical Landing-3 shape on every bead-returning endpoint.
+	bead, err := store.GetBead(id)
+	if err != nil {
+		writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+		return
+	}
+	writeJSON(w, http.StatusCreated, wrapBead(bead))
 }
 
 // appendArchmageLabels stamps the calling archmage onto the bead's labels
@@ -679,7 +686,14 @@ func (s *Server) updateBead(w http.ResponseWriter, r *http.Request, id string) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "updated"})
+	// Return the full bead (with legacy_status shim) so consumers see the
+	// canonical Landing-3 shape on every bead-returning endpoint.
+	bead, err := store.GetBead(id)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "updated"})
+		return
+	}
+	writeJSON(w, http.StatusOK, wrapBead(bead))
 }
 
 // --------------------------------------------------------------------------

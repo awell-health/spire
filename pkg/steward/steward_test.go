@@ -1572,7 +1572,7 @@ func TestSweepHookedSteps_SkipsForeignOwnedAttempt(t *testing.T) {
 	// Mock store: hooked parent bead.
 	origList := ListBeadsFunc
 	ListBeadsFunc = func(filter beads.IssueFilter) ([]store.Bead, error) {
-		if filter.Status != nil && string(*filter.Status) == "hooked" {
+		if filter.Status != nil && string(*filter.Status) == "awaiting_human" {
 			return []store.Bead{
 				{ID: "spi-foreign1", Status: "awaiting_human", Type: "task"},
 			}, nil
