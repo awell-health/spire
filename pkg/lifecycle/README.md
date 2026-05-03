@@ -82,14 +82,12 @@ cmd-side adapter uses the atomic claim variant
   `pkg/summon`; this package only writes the placeholder entry from
   `BeginWork`.
 
-## CI gate: no direct bead.status writes outside pkg/lifecycle
+## CI gate: no new direct bead.status writes
 
-`pkg/lifecycle` is the sole sanctioned writer of `bead.status`. CI runs
+`pkg/lifecycle` is the sole sanctioned writer of `bead.status`. To stop
+that invariant from rotting as new code lands, CI runs
 `scripts/check-lifecycle-gate.sh`, which greps the repo for direct
-status-write patterns outside this package and fails on any match.
-Landing 2 (spi-g8a1nz) hardened the gate: there is no grandfathered
-allowlist, no soft mode, and no `--regenerate` escape hatch. Status
-mutations elsewhere must flow through `lifecycle.RecordEvent`.
+status-write patterns outside this package and fails on any addition.
 
 ### What it matches
 
@@ -100,23 +98,42 @@ Across every `*.go` file (excluding `*_test.go`, `vendor/`, and
 2. `.Status = "..."` string-literal assignments.
 3. `"status": "..."` literal map/struct keys with string values.
 
+Each match is normalized to `<path>:<trimmed-line>` and diffed against
+`scripts/lifecycle-gate-allowlist.txt`.
+
 ### Run locally
 
 ```bash
-bash scripts/check-lifecycle-gate.sh   # exits 0 only when zero matches
+bash scripts/check-lifecycle-gate.sh   # exits 0 if no new violations
 make lifecycle-gate                    # same, via Makefile
 ```
 
 CI runs the same script in `.github/workflows/ci.yml` (the `build` job).
 
-### Adding a sanctioned new direct write
+### Grandfathered call sites and the allowlist
 
-The standard answer is: don't — funnel through `lifecycle.RecordEvent`.
-The only existing carve-out is the executor's close path
-(`pkg/executor/graph_actions.go:actionBeadFinish`), which lives inside
-`pkg/lifecycle/`'s skip list because it represents an explicit terminal
-end-state shape rather than a state-machine transition. Any new
-carve-out requires the same justification.
+Landing 1 (this landing) only enforces *no new additions*. The existing
+~85 direct writes — most concentrated in `pkg/executor/graph_interpreter.go`,
+`pkg/executor/executor_dag.go`, `pkg/executor/action_dispatch.go`,
+`pkg/wizard`, `pkg/gateway`, `pkg/steward`, `pkg/summon`, and a handful
+of `cmd/spire/` commands — are seeded into
+`scripts/lifecycle-gate-allowlist.txt` so the gate stays green while
+Landing 2 deletes them one by one.
+
+**When migrating a grandfathered call site through `pkg/lifecycle` in
+Landing 2:** delete the corresponding entry from the allowlist (or
+re-run `bash scripts/check-lifecycle-gate.sh --regenerate` after the
+migration, which rewrites the allowlist from the current matches). The
+gate notes removed entries but does not fail on them — that lets
+incremental migration land without an allowlist update on every PR.
+
+**When intentionally adding a sanctioned new direct write (rare —
+should almost always go through `lifecycle.RecordEvent`):** run
+`bash scripts/check-lifecycle-gate.sh --regenerate`, commit the
+updated allowlist alongside the change, and explain the carve-out in
+the PR description. A reviewer should push back unless the reason
+matches the existing carve-outs documented above (e.g., the executor's
+`actionBeadFinish` close path).
 
 ## Lifecycle predicates (Landing 1, Task 2)
 

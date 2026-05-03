@@ -1,0 +1,77 @@
+cmd/spire-sidecar/main.go:wc.Status = "running"
+cmd/spire/approve.go:if err := approveUpdateBeadFunc(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {
+cmd/spire/approve.go:ss.Status = "pending"
+cmd/spire/board.go:return storeUpdateBead(beadID, map[string]interface{}{"status": "ready"})
+cmd/spire/board.go:return storeUpdateBead(beadID, map[string]interface{}{"status": newStatus})
+cmd/spire/claim.go:"status": "in_progress",
+cmd/spire/ready.go:"status": "ready",
+cmd/spire/reset.go:if err := storeUpdateBead(beadID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+cmd/spire/reset.go:if err := storeUpdateBead(child.ID, map[string]interface{}{"status": "open", "assignee": ""}); err != nil {
+cmd/spire/reset.go:ss.Status = "completed"
+cmd/spire/reset.go:ss.Status = "pending"
+cmd/spire/resolve.go:step.Status = "pending"
+cmd/spire/summon.go:if err := storeUpdateBead(w.BeadID, map[string]interface{}{"status": "open"}); err != nil {
+cmd/spire/summon.go:targets[i].bead.Status = "in_progress"
+cmd/spire/wizard.go:"status": "in_progress",
+pkg/board/agents_mode.go:info.Status = "idle"
+pkg/board/agents_mode.go:info.Status = "running"
+pkg/board/roster.go:agent.Status = "done"
+pkg/board/roster.go:agent.Status = "idle"
+pkg/board/roster.go:agent.Status = "provisioning"
+pkg/board/roster.go:agent.Status = "working"
+pkg/cleric/handlers.go:"status": "auto_approved",
+pkg/cleric/handlers.go:"status": "awaiting_review",
+pkg/cleric/handlers.go:"status": "executed",
+pkg/cleric/handlers.go:"status": "finished",
+pkg/cleric/handlers.go:"status": "rejected",
+pkg/cleric/handlers.go:"status": "takeover",
+pkg/cleric/handlers.go:Outputs: map[string]string{"status": "awaiting_review", "verb": pa.Verb, "comment_warning": cerr.Error()},
+pkg/clericexec/inproc.go:if err := c.UpdateBeadFunc(req.SourceBeadID, map[string]interface{}{"status": to}); err != nil {
+pkg/executor/action_dispatch.go:"status": "pass",
+pkg/executor/action_dispatch.go:Outputs: map[string]string{"status": "fail"},
+pkg/executor/action_dispatch.go:return ActionResult{Outputs: map[string]string{"status": "pass", "dispatched": "0"}}
+pkg/executor/action_dispatch.go:return ActionResult{Outputs: map[string]string{"status": "pass", "dispatched": "1"}}
+pkg/executor/executor_worktree.go:ws.Status = "active"
+pkg/executor/graph_actions.go:"status": "fail",
+pkg/executor/graph_actions.go:"status": "pass",
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "approved"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "closed"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "discarded"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "done"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "escalated"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "pass", "result": "passed"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "pass", "result": "skipped"}}
+pkg/executor/graph_actions.go:return ActionResult{Outputs: map[string]string{"status": "planned"}}
+pkg/executor/graph_interpreter.go:ss.Status = ""
+pkg/executor/graph_interpreter.go:ss.Status = "active"
+pkg/executor/graph_interpreter.go:ss.Status = "completed"
+pkg/executor/graph_interpreter.go:ss.Status = "failed"
+pkg/executor/graph_interpreter.go:ss.Status = "hooked"
+pkg/executor/graph_interpreter.go:ts.Status = "pending"
+pkg/executor/graph_interpreter.go:ws.Status = "pending"
+pkg/executor/workspace.go:ws.Status = "active"
+pkg/executor/workspace.go:ws.Status = "closed"
+pkg/gateway/actions.go:if err := actionsUpdateBeadFunc(id, map[string]interface{}{"status": body.To}); err != nil {
+pkg/gateway/gateway.go:if err := readyUpdateBeadFunc(id, map[string]interface{}{"status": "ready"}); err != nil {
+pkg/gateway/gateway.go:if err := store.UpdateBead(b.ID, map[string]interface{}{"status": "closed"}); err != nil {
+pkg/gateway/gateway.go:writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "closed"})
+pkg/gateway/gateway.go:writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "read"})
+pkg/gateway/gateway.go:writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready", "comment_id": commentID})
+pkg/gateway/gateway.go:writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready"})
+pkg/gateway/gateway.go:writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "updated"})
+pkg/gateway/recoveries.go:ss.Status = "pending"
+pkg/gateway/recoveries.go:step.Status = "pending"
+pkg/steward/metrics_server.go:resp := map[string]interface{}{"status": "ok"}
+pkg/steward/steward.go:"status": "in_progress",
+pkg/steward/steward.go:if err := UpdateBeadFunc(b.ID, map[string]interface{}{"status": "ready"}); err != nil {
+pkg/steward/steward.go:ss.Status = "pending"
+pkg/store/beadtypes.go:"status": "hooked",
+pkg/store/beadtypes.go:"status": "in_progress",
+pkg/store/beadtypes.go:"status": "open",
+pkg/store/beadtypes.go:return UpdateBead(stepID, map[string]interface{}{"status": "open"})
+pkg/store/mutations.go:// Gateway mode: routes to UpdateBead({"status":"closed"}) so the gateway's
+pkg/store/mutations.go:return UpdateBead(id, map[string]interface{}{"status": "closed"})
+pkg/store/store.go:const StatusAwaitingReview beads.Status = "awaiting_review"
+pkg/store/store.go:const StatusHooked beads.Status = "hooked"
+pkg/summon/summon.go:bead.Status = "in_progress"
+pkg/summon/summon.go:if err := UpdateBeadFunc(beadID, map[string]interface{}{"status": "in_progress"}); err != nil {

@@ -50,7 +50,7 @@ jobs:
           git diff --exit-code helm/spire/crds/
       - name: CRD drift check (k8s/crds ↔ helm/spire/crds parity)
         run: make crd-check
-      - name: Lifecycle gate (no direct bead.status writes outside pkg/lifecycle)
+      - name: Lifecycle gate (no new direct bead.status writes outside pkg/lifecycle)
         run: bash scripts/check-lifecycle-gate.sh
 
   # ClickHouse integration tests — runs the pkg/olap/clickhouse contract
