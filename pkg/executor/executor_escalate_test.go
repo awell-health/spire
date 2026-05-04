@@ -136,47 +136,98 @@ func TestSeedRecoveryMetadata_EmptyRecoveryID(t *testing.T) {
 // fresh cleric on every tick — burning an agent slot indefinitely.
 //
 // The fix counts suppressions on a `cleric-retry:N` label and, on the
-// MaxClericEscalationRetries-th failure, closes the recovery bead and
-// labels it `needs-human` so the steward stops re-dispatching.
+// cap-th failure, closes the recovery bead and labels it `needs-human`
+// so the steward stops re-dispatching. Parameterized over multiple
+// cap values so we exercise both the legacy 3-retry boundary that
+// f7b9d05 introduced and the new default of 25 (spi-1u84ec).
 func TestSuppressRecoveryEscalation_BoundedRetry(t *testing.T) {
-	beadID := "spi-rec"
-	state := &fakeRecoveryBeadState{
-		bead: Bead{ID: beadID, Type: "recovery"},
+	tests := []struct {
+		name string
+		cap  int // value injected via Deps.ClericRetryCap; 0 means "use default"
+		want int // effective cap the test asserts against
+	}{
+		{name: "default cap (zero in Deps)", cap: 0, want: DefaultClericRetryCap},
+		{name: "explicit small cap (legacy 3)", cap: 3, want: 3},
+		{name: "explicit cap matching default", cap: 25, want: 25},
+		{name: "negative cap falls back to default", cap: -1, want: DefaultClericRetryCap},
 	}
 
-	deps := &Deps{
-		GetBead:     func(id string) (Bead, error) { return state.get(id), nil },
-		AddComment:  func(id, text string) error { state.recordComment(id, text); return nil },
-		AddLabel:    func(id, label string) error { state.addLabel(id, label); return nil },
-		RemoveLabel: func(id, label string) error { state.removeLabel(id, label); return nil },
-		CloseBead:   func(id string) error { state.close(id); return nil },
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beadID := "spi-rec"
+			state := &fakeRecoveryBeadState{
+				bead: Bead{ID: beadID, Type: "recovery"},
+			}
 
-	// First two failures: bead stays open, retry label increments.
-	for i := 1; i <= MaxClericEscalationRetries-1; i++ {
-		if !suppressRecoveryEscalation(beadID, "step-failure", "parser bug", deps) {
-			t.Fatalf("attempt %d: suppress returned false; want true on a recovery bead", i)
-		}
-		if state.closed {
-			t.Fatalf("attempt %d: bead closed prematurely (count=%d, max=%d)", i, i, MaxClericEscalationRetries)
-		}
-		gotLabel := store.HasLabel(state.bead, LabelClericRetry)
-		var got int
-		fmt.Sscanf(gotLabel, "%d", &got)
-		if got != i {
-			t.Errorf("attempt %d: cleric-retry = %q (parsed %d), want %d", i, gotLabel, got, i)
-		}
-	}
+			deps := &Deps{
+				ClericRetryCap: tt.cap,
+				GetBead:        func(id string) (Bead, error) { return state.get(id), nil },
+				AddComment:     func(id, text string) error { state.recordComment(id, text); return nil },
+				AddLabel:       func(id, label string) error { state.addLabel(id, label); return nil },
+				RemoveLabel:    func(id, label string) error { state.removeLabel(id, label); return nil },
+				CloseBead:      func(id string) error { state.close(id); return nil },
+			}
 
-	// Final failure: bead must close + carry needs-human label.
-	if !suppressRecoveryEscalation(beadID, "step-failure", "parser bug", deps) {
-		t.Fatalf("final attempt: suppress returned false; want true on a recovery bead")
+			// All but the last failure: bead stays open, retry label increments.
+			for i := 1; i <= tt.want-1; i++ {
+				if !suppressRecoveryEscalation(beadID, "step-failure", "parser bug", deps) {
+					t.Fatalf("attempt %d: suppress returned false; want true on a recovery bead", i)
+				}
+				if state.closed {
+					t.Fatalf("attempt %d: bead closed prematurely (count=%d, cap=%d)", i, i, tt.want)
+				}
+				gotLabel := store.HasLabel(state.bead, LabelClericRetry)
+				var got int
+				fmt.Sscanf(gotLabel, "%d", &got)
+				if got != i {
+					t.Errorf("attempt %d: cleric-retry = %q (parsed %d), want %d", i, gotLabel, got, i)
+				}
+			}
+
+			// Final failure: bead must close + carry needs-human label.
+			if !suppressRecoveryEscalation(beadID, "step-failure", "parser bug", deps) {
+				t.Fatalf("final attempt: suppress returned false; want true on a recovery bead")
+			}
+			if !state.closed {
+				t.Errorf("bead should be closed after %d suppressed failures", tt.want)
+			}
+			if !state.hasLabel("needs-human") {
+				t.Errorf("bead should carry needs-human label after exhaustion; labels=%v", state.bead.Labels)
+			}
+		})
 	}
-	if !state.closed {
-		t.Errorf("bead should be closed after %d suppressed failures", MaxClericEscalationRetries)
+}
+
+// TestEffectiveClericRetryCap covers the cap-resolution helper directly
+// so the precedence of the Deps field over the default is exercised
+// outside the multi-step suppression flow.
+func TestEffectiveClericRetryCap(t *testing.T) {
+	tests := []struct {
+		name string
+		deps *Deps
+		want int
+	}{
+		{"nil deps", nil, DefaultClericRetryCap},
+		{"zero ClericRetryCap", &Deps{ClericRetryCap: 0}, DefaultClericRetryCap},
+		{"negative ClericRetryCap", &Deps{ClericRetryCap: -5}, DefaultClericRetryCap},
+		{"positive ClericRetryCap", &Deps{ClericRetryCap: 7}, 7},
+		{"default value passes through", &Deps{ClericRetryCap: DefaultClericRetryCap}, DefaultClericRetryCap},
 	}
-	if !state.hasLabel("needs-human") {
-		t.Errorf("bead should carry needs-human label after exhaustion; labels=%v", state.bead.Labels)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveClericRetryCap(tt.deps); got != tt.want {
+				t.Errorf("effectiveClericRetryCap(%+v) = %d, want %d", tt.deps, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDefaultClericRetryCap pins the default value so a future bump of
+// the constant is an explicit decision (and the operator-facing tower
+// docs stay consistent with the binary). spi-1u84ec set this to 25.
+func TestDefaultClericRetryCap(t *testing.T) {
+	if DefaultClericRetryCap != 25 {
+		t.Errorf("DefaultClericRetryCap = %d, want 25", DefaultClericRetryCap)
 	}
 }
 

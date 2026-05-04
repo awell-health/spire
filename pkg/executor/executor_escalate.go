@@ -50,27 +50,50 @@ func isRecoveryBead(beadID string, deps *Deps) bool {
 	return false
 }
 
-// MaxClericEscalationRetries bounds how many consecutive escalation
-// failures a recovery bead may suppress before the bead is closed and
-// labeled `needs-human`. Without this bound, a broken cleric (e.g. one
-// whose stdout fails to parse on every run) keeps the recovery bead
-// open forever; the steward then dispatches a fresh cleric on every
-// tick — burning an agent slot indefinitely. spi-9eopwy.
-const MaxClericEscalationRetries = 3
+// DefaultClericRetryCap is the default upper bound on consecutive
+// cleric escalation failures a single recovery bead may suppress
+// before the bead is closed and labeled `needs-human`. Without a
+// bound, a broken cleric (e.g. one whose stdout fails to parse on
+// every run) keeps the recovery bead open forever; the steward then
+// dispatches a fresh cleric on every tick — burning an agent slot
+// indefinitely. spi-9eopwy / spi-1u84ec.
+//
+// The cap is intentionally high so genuinely-recoverable failures
+// (transient model flakes, network blips) get plenty of cleric
+// attempts before flipping to needs-human. At a 10s steward poll
+// cadence, 25 retries = ~4 minutes of recovery budget — long enough
+// for real recovery to land, short enough that pathological loops
+// self-cap.
+//
+// Operators can override per-tower via TowerConfig.ClericRetryCap or
+// per-process via SPIRE_CLERIC_RETRY_CAP.
+const DefaultClericRetryCap = 25
 
 // LabelClericRetry is the label prefix the recovery bead carries to
 // track suppressed escalations across cleric restarts. Persisted on
 // the bead because in-memory counters reset every steward restart.
 const LabelClericRetry = "cleric-retry:"
 
+// effectiveClericRetryCap returns deps.ClericRetryCap when set to a
+// positive value, falling back to DefaultClericRetryCap. 0 (zero
+// value of the JSON field) and negative values both resolve to the
+// default — operators tune the cap by setting a positive integer,
+// not by clearing the field.
+func effectiveClericRetryCap(deps *Deps) int {
+	if deps != nil && deps.ClericRetryCap > 0 {
+		return deps.ClericRetryCap
+	}
+	return DefaultClericRetryCap
+}
+
 // suppressRecoveryEscalation handles the recovery-bead branch of an
 // escalation: it adds the cascade-prevention comment, and persistently
-// counts the suppression. Once the count reaches
-// MaxClericEscalationRetries, the bead is labeled `needs-human` and
-// closed so the steward stops dispatching against it. Returns true so
-// the caller short-circuits the rest of its escalation logic
-// (createOrUpdateRecoveryBead, etc.) the same way the original guard
-// did.
+// counts the suppression. Once the count reaches the effective cap
+// (DefaultClericRetryCap, or deps.ClericRetryCap when set), the bead
+// is labeled `needs-human` and closed so the steward stops dispatching
+// against it. Returns true so the caller short-circuits the rest of
+// its escalation logic (createOrUpdateRecoveryBead, etc.) the same way
+// the original guard did.
 func suppressRecoveryEscalation(beadID, failureType, message string, deps *Deps) bool {
 	if !isRecoveryBead(beadID, deps) {
 		return false
@@ -106,15 +129,16 @@ func suppressRecoveryEscalation(beadID, failureType, message string, deps *Deps)
 		_ = deps.AddLabel(beadID, newLabel)
 	}
 
-	if count >= MaxClericEscalationRetries {
+	cap := effectiveClericRetryCap(deps)
+	if count >= cap {
 		if deps.AddLabel != nil {
 			_ = deps.AddLabel(beadID, "needs-human")
 		}
 		if deps.AddComment != nil {
 			deps.AddComment(beadID, fmt.Sprintf(
-				"cleric-retry budget exhausted (%d failures): closing recovery bead and labeling `needs-human`. "+
+				"cleric-retry budget exhausted (%d/%d failures): closing recovery bead and labeling `needs-human`. "+
 					"The repeated failure was: %s — %s",
-				count, failureType, message))
+				count, cap, failureType, message))
 		}
 		if deps.CloseBead != nil {
 			if err := deps.CloseBead(beadID); err != nil {
@@ -173,9 +197,10 @@ func MessageArchmage(from, beadID, message string, deps *Deps) {
 // provides better context (design bead, improved description, etc.).
 func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
-	// Bounded retry: after MaxClericEscalationRetries, the recovery bead
-	// is closed and labeled `needs-human` so the steward stops
-	// re-dispatching against a stuck loop.
+	// Bounded retry: after the cleric-retry cap (DefaultClericRetryCap or
+	// the operator's tower override), the recovery bead is closed and
+	// labeled `needs-human` so the steward stops re-dispatching against
+	// a stuck loop.
 	if suppressRecoveryEscalation(beadID, "empty-implement", "apprentice produced no code changes", deps) {
 		return
 	}
@@ -207,9 +232,10 @@ func EscalateEmptyImplement(beadID, agentName string, deps *Deps) {
 // Failure types: "merge-failure", "build-failure", "repo-resolution", "arbiter-failure", "review-fix-merge-conflict"
 func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
-	// Bounded retry: after MaxClericEscalationRetries, the recovery bead
-	// is closed and labeled `needs-human` so the steward stops
-	// re-dispatching against a stuck loop.
+	// Bounded retry: after the cleric-retry cap (DefaultClericRetryCap or
+	// the operator's tower override), the recovery bead is closed and
+	// labeled `needs-human` so the steward stops re-dispatching against
+	// a stuck loop.
 	if suppressRecoveryEscalation(beadID, failureType, message, deps) {
 		return
 	}
@@ -240,9 +266,10 @@ func EscalateHumanFailure(beadID, agentName, failureType, message string, deps *
 // the interruption label, alert title, comment, and message.
 func EscalateGraphStepFailure(beadID, agentName, failureType, message string, stepName, action, flow, workspace string, deps *Deps) {
 	// Circuit breaker: don't cascade if this is already a recovery bead.
-	// Bounded retry: after MaxClericEscalationRetries, the recovery bead
-	// is closed and labeled `needs-human` so the steward stops
-	// re-dispatching against a stuck loop (spi-9eopwy).
+	// Bounded retry: after the cleric-retry cap (DefaultClericRetryCap or
+	// the operator's tower override), the recovery bead is closed and
+	// labeled `needs-human` so the steward stops re-dispatching against
+	// a stuck loop (spi-9eopwy / spi-1u84ec).
 	if suppressRecoveryEscalation(beadID, failureType, message, deps) {
 		return
 	}

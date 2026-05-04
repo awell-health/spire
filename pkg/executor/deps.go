@@ -149,6 +149,14 @@ type Deps struct {
 	// overrides via step.With["max-apprentices"] take precedence.
 	MaxApprentices int
 
+	// ClericRetryCap bounds how many consecutive cleric escalation
+	// failures a recovery bead may suppress before the bead is closed
+	// and labeled `needs-human`. 0 means "use built-in default" — the
+	// executor resolves to DefaultClericRetryCap (25). Resolved by the
+	// bridge from env SPIRE_CLERIC_RETRY_CAP > tower.ClericRetryCap >
+	// 0. spi-1u84ec.
+	ClericRetryCap int
+
 	// Agent run recording
 	RecordAgentRun func(run AgentRun) (string, error)
 

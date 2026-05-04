@@ -51,6 +51,13 @@ type TowerConfig struct {
 	MaxConcurrent int                          `json:"max_concurrent,omitempty"` // max simultaneous wizards; 0 = unlimited
 	Clusters      []ClusterAttachment          `json:"clusters,omitempty"`
 
+	// ClericRetryCap bounds how many consecutive cleric escalation
+	// failures a single recovery bead may suppress before the bead is
+	// closed and labeled `needs-human`. 0 means "use built-in default"
+	// (executor.DefaultClericRetryCap, currently 25). The env var
+	// SPIRE_CLERIC_RETRY_CAP overrides this field. spi-1u84ec.
+	ClericRetryCap int `json:"cleric_retry_cap,omitempty"`
+
 	// RemoteKind selects the auth / transport convention for DolthubRemote.
 	// Empty = "dolthub" (legacy). "remotesapi" means a self-hosted dolt-sql-server
 	// reached over the remotesapi gRPC port (typically :50051), authed with

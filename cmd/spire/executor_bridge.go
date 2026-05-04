@@ -195,6 +195,7 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		GraphStateStore: gsStore,
 
 		MaxApprentices: resolveMaxApprenticesForRepo(repoPath),
+		ClericRetryCap: resolveClericRetryCap(),
 
 		// Store operations
 		GetBead:               storeGetBead,
@@ -409,6 +410,32 @@ func resolveMaxApprenticesForRepo(repoDir string) int {
 		assertRepoConfigReachable(dir, "resolveMaxApprentices")
 	}
 	return cfg.Agent.MaxApprentices
+}
+
+// resolveClericRetryCap returns the cleric escalation retry cap honoring
+// the precedence: SPIRE_CLERIC_RETRY_CAP env > active tower's
+// ClericRetryCap > 0 (the executor's effective-cap helper falls back to
+// executor.DefaultClericRetryCap when the value is non-positive).
+//
+// Invalid env values (non-int or ≤0) are ignored so a typo can never
+// silently shrink the budget to zero. Tower-config read failures fall
+// through to 0 — the executor still defaults — rather than erroring,
+// because escalation must remain best-effort even when the tower file
+// is missing or malformed. spi-1u84ec.
+func resolveClericRetryCap() int {
+	if raw := os.Getenv("SPIRE_CLERIC_RETRY_CAP"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	tower, err := activeTowerConfig()
+	if err != nil || tower == nil {
+		return 0
+	}
+	if tower.ClericRetryCap > 0 {
+		return tower.ClericRetryCap
+	}
+	return 0
 }
 
 // assertRepoConfigReachable is a thin cmd-side mirror of the pkg/agent
