@@ -64,19 +64,35 @@ func runGitAllow(dir string, args ...string) string {
 }
 
 // testExecutor returns an Executor minimal enough for validateWorkspaceForDispatch
-// tests. captured collects log lines so tests can assert on the recovery
-// event strings.
-func testExecutor(t *testing.T, beadID string) (*Executor, *[]string) {
+// tests. logs collects log lines so tests can assert on the recovery
+// event strings; comments collects (id, text) pairs from AddComment so
+// tests can assert on the comment-targeting behavior of the stash branch.
+func testExecutor(t *testing.T, beadID string) (*Executor, *[]string, *[]commentRecord) {
 	t.Helper()
 	logs := &[]string{}
+	comments := &[]commentRecord{}
 	e := &Executor{
 		beadID:    beadID,
 		agentName: "wizard-test",
 		log: func(format string, args ...interface{}) {
 			*logs = append(*logs, fmt.Sprintf(format, args...))
 		},
+		deps: &Deps{
+			AddComment: func(id, text string) error {
+				*comments = append(*comments, commentRecord{ID: id, Text: text})
+				return nil
+			},
+		},
 	}
-	return e, logs
+	return e, logs, comments
+}
+
+// commentRecord captures one AddComment(id, text) call so workspace_validate
+// tests can assert that the stash branch posted to the source bead and
+// nowhere else.
+type commentRecord struct {
+	ID   string
+	Text string
 }
 
 // =============================================================================
@@ -93,7 +109,7 @@ func TestStepDispatch_RecoversMissingWorkspace(t *testing.T) {
 	wtDir := filepath.Join(t.TempDir(), "wt-gone")
 	// wtDir never exists on disk — simulate a workspace whose path was cleaned.
 
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "feat/ghost",
@@ -129,7 +145,7 @@ func TestStepDispatch_FailsCleanlyWhenBranchGone(t *testing.T) {
 	repo := newValidateTestRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "wt-gone")
 
-	e, _ := testExecutor(t, "spi-bead")
+	e, _, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "feat/ghost",
@@ -186,7 +202,7 @@ func TestWorkspaceValidate_RebaseInProgress(t *testing.T) {
 		t.Fatalf("test setup: expected .git/rebase-merge, got %v", err)
 	}
 
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "feat/x",
@@ -229,7 +245,7 @@ func TestWorkspaceValidate_MergeInProgress(t *testing.T) {
 		t.Fatalf("test setup: expected MERGE_HEAD, got %v", err)
 	}
 
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "main",
@@ -259,7 +275,7 @@ func TestWorkspaceValidate_StaleLockfile(t *testing.T) {
 	old := time.Now().Add(-5 * time.Minute)
 	os.Chtimes(lockPath, old, old)
 
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "main",
@@ -283,7 +299,7 @@ func TestWorkspaceValidate_DetachedHEAD_NoBranchName(t *testing.T) {
 	headSHA := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
 	runGit(t, repo, "checkout", "-q", "--detach", headSHA)
 
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "main",
@@ -303,16 +319,107 @@ func TestWorkspaceValidate_DetachedHEAD_NoBranchName(t *testing.T) {
 	}
 }
 
-// TestWorkspaceValidate_DirtyWorkingTree — uncommitted changes present.
-// Policy is fail-loudly: validation returns an error naming the path and
-// listing changed files. Silent stashing can lose work.
-func TestWorkspaceValidate_DirtyWorkingTree(t *testing.T) {
+// TestWorkspaceValidate_DirtyWorkingTree_AutoStashes — uncommitted changes
+// present. Policy was changed for spi-wlb84w from "refuse to dispatch" to
+// "auto-stash and notify": validation now runs `git stash push -u` so the
+// next agent (cleric or retry) gets a clean workspace and the work is
+// preserved on the stash list. The previous deadlock — apprentice dies
+// dirty, cleric refuses on the same dirty tree — is broken because the
+// validator stashes before any handoff.
+func TestWorkspaceValidate_DirtyWorkingTree_AutoStashes(t *testing.T) {
 	repo := newValidateTestRepo(t)
 
-	// Leave an uncommitted change.
-	os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("unstaged\n"), 0644)
+	// Mix of tracked-and-modified plus untracked so we exercise the `-u`
+	// path the way an apprentice-half-edit would leave the tree.
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# modified\n"), 0644); err != nil {
+		t.Fatalf("modify README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("new\n"), 0644); err != nil {
+		t.Fatalf("create untracked: %v", err)
+	}
 
-	e, _ := testExecutor(t, "spi-bead")
+	e, logs, comments := testExecutor(t, "spi-bead")
+	handle := &WorkspaceHandle{
+		Kind:   WorkspaceKindOwnedWorktree,
+		Branch: "main",
+		Path:   repo,
+	}
+	if err := e.validateWorkspaceForDispatch(repo, "implement", "step-impl", handle); err != nil {
+		t.Fatalf("validateWorkspaceForDispatch: dispatch should proceed after auto-stash, got %v", err)
+	}
+
+	// (a) Stash entry exists with our subject.
+	stashList := runGit(t, repo, "stash", "list")
+	if !strings.Contains(stashList, "spire-autoStash:spi-bead:implement") {
+		t.Errorf("stash list missing entry for spi-bead/implement: %q", stashList)
+	}
+
+	// (b) Workspace is clean — both tracked-modified and untracked are gone.
+	status := runGit(t, repo, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Errorf("workspace not clean after stash: %q", status)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "untracked.txt")); !os.IsNotExist(err) {
+		t.Errorf("expected untracked.txt removed by stash -u, stat=%v", err)
+	}
+
+	// (c) Comment was posted on the wizard's source bead, never on a step
+	// bead or recovery bead. Acceptance criteria are explicit: cleric
+	// beads are invisible in the desktop UI, so the comment must land on
+	// the parent task (e.beadID).
+	if len(*comments) != 1 {
+		t.Fatalf("expected exactly 1 comment, got %d: %+v", len(*comments), *comments)
+	}
+	rec := (*comments)[0]
+	if rec.ID != "spi-bead" {
+		t.Errorf("comment posted on %q, want %q (the source bead, not the step or recovery bead)", rec.ID, "spi-bead")
+	}
+	if !strings.Contains(rec.Text, "stash@{0}") {
+		t.Errorf("comment missing stash ref: %s", rec.Text)
+	}
+	if !strings.Contains(rec.Text, "README.md") {
+		t.Errorf("comment missing README.md from file list: %s", rec.Text)
+	}
+	if !strings.Contains(rec.Text, "untracked.txt") {
+		t.Errorf("comment missing untracked.txt from file list: %s", rec.Text)
+	}
+	if !strings.Contains(rec.Text, "stash list") || !strings.Contains(rec.Text, "stash pop") {
+		t.Errorf("comment missing inspect/restore guidance (stash list/pop): %s", rec.Text)
+	}
+
+	// (d) Recovery event logged for observability.
+	if !containsEvent(*logs, "workspace_stashed") {
+		t.Errorf("expected workspace_stashed recovery log, got: %v", *logs)
+	}
+}
+
+// TestWorkspaceValidate_DirtyWorkingTree_StashFailureFallsBack — when
+// `git stash push` itself fails (corrupted refs / index), the validator
+// must surface the original "uncommitted changes" error wrapped with the
+// stash failure cause so the operator gets both signals. Acceptance:
+// "If git stash itself fails (e.g. corrupted index), fall back to current
+// escalation behavior with a clear error message."
+func TestWorkspaceValidate_DirtyWorkingTree_StashFailureFallsBack(t *testing.T) {
+	repo := newValidateTestRepo(t)
+
+	// Leave an uncommitted change so the validator enters the stash branch.
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("unstaged\n"), 0644); err != nil {
+		t.Fatalf("write dirty: %v", err)
+	}
+
+	// Pre-create refs/stash as a directory containing a child file. Git
+	// stash push tries to write the ref at refs/stash, which fails because
+	// a non-empty directory already lives there. This leaves `git status`
+	// (read-only) working but blocks the stash push specifically.
+	stashRefDir := filepath.Join(repo, ".git", "refs", "stash")
+	if err := os.MkdirAll(stashRefDir, 0755); err != nil {
+		t.Fatalf("mkdir refs/stash: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stashRefDir, "blocker"), []byte(""), 0644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	e, _, comments := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "main",
@@ -320,14 +427,22 @@ func TestWorkspaceValidate_DirtyWorkingTree(t *testing.T) {
 	}
 	err := e.validateWorkspaceForDispatch(repo, "implement", "step-impl", handle)
 	if err == nil {
-		t.Fatal("expected error for dirty workspace")
+		t.Fatal("expected error when stash itself fails")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, repo) {
-		t.Errorf("error does not mention path: %s", msg)
+	if !strings.Contains(msg, "uncommitted changes") {
+		t.Errorf("error should mention uncommitted changes: %s", msg)
+	}
+	if !strings.Contains(msg, "stash failed") {
+		t.Errorf("error should mention stash failure: %s", msg)
 	}
 	if !strings.Contains(msg, "dirty.txt") {
-		t.Errorf("error does not list dirty file: %s", msg)
+		t.Errorf("error should list the dirty file: %s", msg)
+	}
+	// No comment should have been posted — stash didn't succeed, so there's
+	// nothing to tell the operator about restoring.
+	if len(*comments) != 0 {
+		t.Errorf("expected no comment on stash failure, got %d: %+v", len(*comments), *comments)
 	}
 }
 
@@ -340,7 +455,7 @@ func TestWorkspaceValidate_DirtyWorkingTree(t *testing.T) {
 func TestWorkspaceValidate_CleanWorkspace(t *testing.T) {
 	repo := newValidateTestRepo(t)
 
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindOwnedWorktree,
 		Branch: "main",
@@ -360,7 +475,7 @@ func TestWorkspaceValidate_CleanWorkspace(t *testing.T) {
 // the caller may legitimately have no workspace (e.g. repo-kind with path
 // already populated upstream).
 func TestWorkspaceValidate_NilHandle(t *testing.T) {
-	e, _ := testExecutor(t, "spi-bead")
+	e, _, _ := testExecutor(t, "spi-bead")
 	if err := e.validateWorkspaceForDispatch("/tmp/anywhere", "step", "", nil); err != nil {
 		t.Errorf("validateWorkspaceForDispatch nil handle: %v", err)
 	}
@@ -370,7 +485,7 @@ func TestWorkspaceValidate_NilHandle(t *testing.T) {
 // validated (the executor never mutates it). Validation returns nil without
 // touching disk.
 func TestWorkspaceValidate_RepoKindSkipped(t *testing.T) {
-	e, logs := testExecutor(t, "spi-bead")
+	e, logs, _ := testExecutor(t, "spi-bead")
 	handle := &WorkspaceHandle{
 		Kind:   WorkspaceKindRepo,
 		Branch: "main",
