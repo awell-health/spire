@@ -8,17 +8,14 @@ import (
 	"time"
 )
 
-// recordingWake is a PoolWake that captures every Broadcast call so
-// tests can assert which pools were woken (and how many times). Wait
-// is a no-op since Sweep never calls it.
+// recordingWake captures every Broadcast for assertion. Wait is a
+// no-op since Sweep never calls it.
 type recordingWake struct {
 	mu         sync.Mutex
 	broadcasts []string
 }
 
-func (w *recordingWake) Wait(ctx context.Context, pool string) error {
-	return nil
-}
+func (w *recordingWake) Wait(ctx context.Context, pool string) error { return nil }
 
 func (w *recordingWake) Broadcast(pool string) error {
 	w.mu.Lock()
@@ -36,9 +33,6 @@ func (w *recordingWake) snapshot() []string {
 	return out
 }
 
-// twoPoolConfig builds a Config covering one subscription slot ("sub-a")
-// and one api-key slot ("key-a") so tests can exercise both branches of
-// Sweep's slot->pool lookup with a single fixture.
 func twoPoolConfig() *Config {
 	return &Config{
 		Subscription: []SlotConfig{{Name: "sub-a", MaxConcurrent: 4}},
@@ -189,7 +183,7 @@ func TestSweep_MultipleSlotsMixedStaleness(t *testing.T) {
 	}
 
 	want := []string{"api-key", "subscription"}
-	if b := wake.snapshot(); !equalStrings(b, want) {
+	if b := wake.snapshot(); !equalStringSlices(b, want) {
 		t.Errorf("broadcasts = %v, want %v", b, want)
 	}
 }
@@ -283,10 +277,9 @@ func TestSweep_EmptyDir(t *testing.T) {
 	}
 }
 
-// TestSweep_SlotNotInConfig covers the case where stateDir contains a
-// state file for a slot that's been removed from cfg (e.g. the operator
-// rotated out a credential). The stale claim should still be removed
-// from the file, but no broadcast fires for an unknown pool.
+// TestSweep_SlotNotInConfig: a state file for a slot that's been removed
+// from cfg (e.g. operator rotated out a credential). The stale claim is
+// still pruned, but no broadcast fires for an unknown pool.
 func TestSweep_SlotNotInConfig(t *testing.T) {
 	dir := t.TempDir()
 	stale := time.Now().Add(-2 * time.Minute)
@@ -343,10 +336,8 @@ func TestSweep_NilConfig(t *testing.T) {
 	}
 }
 
-// TestSweep_BoundaryHeartbeat asserts the bead's contract: a claim is
-// dropped iff time.Since(HeartbeatAt) > staleAge — equality is kept.
-// We synthesize the boundary by writing one claim a hair past the
-// threshold and one strictly inside it.
+// TestSweep_BoundaryHeartbeat asserts the cutoff: claims strictly older
+// than staleAge are dropped; claims inside it are kept.
 func TestSweep_BoundaryHeartbeat(t *testing.T) {
 	dir := t.TempDir()
 	staleAge := 60 * time.Second
@@ -403,7 +394,7 @@ func TestSweep_ZeroHeartbeat(t *testing.T) {
 	}
 }
 
-func equalStrings(a, b []string) bool {
+func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
