@@ -36,21 +36,32 @@ func cmdConfigAuth(args []string) error {
 	case "default":
 		return cmdConfigAuthDefault(args[1:])
 	case "show":
-		return cmdConfigAuthShow(args[1:])
+		return cmdConfigAuthShowPool(args[1:])
 	case "remove":
 		return cmdConfigAuthRemove(args[1:])
+	case "pool":
+		return cmdConfigAuthPool(args[1:])
+	case "probe":
+		return cmdConfigAuthProbe(args[1:])
+	case "migrate-from-credentials":
+		return cmdConfigAuthMigrate(args[1:])
 	default:
 		return fmt.Errorf("unknown auth subcommand: %q\n%s", args[0], authUsage())
 	}
 }
 
 func authUsage() string {
-	return "usage: spire config auth <set|default|show|remove> ...\n" +
+	return "usage: spire config auth <set|default|show|remove|pool|probe|migrate-from-credentials> ...\n" +
 		"  spire config auth set subscription --token <t> [--token-stdin]\n" +
 		"  spire config auth set api-key --key <k> [--key-stdin]\n" +
 		"  spire config auth default <subscription|api-key>\n" +
 		"  spire config auth show\n" +
-		"  spire config auth remove <subscription|api-key>"
+		"  spire config auth remove <subscription|api-key>\n" +
+		"  spire config auth pool add <subscription|api-key> <name> --max-concurrent N (--token-stdin|--key-stdin)\n" +
+		"  spire config auth pool remove <subscription|api-key> <name>\n" +
+		"  spire config auth pool set <name> --max-concurrent N\n" +
+		"  spire config auth probe\n" +
+		"  spire config auth migrate-from-credentials"
 }
 
 // cmdConfigAuthSet: spire config auth set <slot> [--token|--key] <v> | [--token-stdin|--key-stdin]
