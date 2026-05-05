@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	toml "github.com/pelletier/go-toml/v2"
+	"github.com/BurntSushi/toml"
 )
 
 // PoolNameSubscription and PoolNameAPIKey are the only legal values for
@@ -90,7 +90,6 @@ func WriteConfig(towerDir string, cfg *Config) error {
 	}
 	var buf bytes.Buffer
 	enc := toml.NewEncoder(&buf)
-	enc.SetIndentTables(true)
 	if err := enc.Encode(configTOML{Auth: *cfg}); err != nil {
 		return fmt.Errorf("pool: encode auth.toml: %w", err)
 	}

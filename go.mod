@@ -5,6 +5,7 @@ go 1.26
 require (
 	charm.land/lipgloss/v2 v2.0.2
 	cloud.google.com/go/storage v1.62.1
+	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.45.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/charmbracelet/bubbles v1.0.0
