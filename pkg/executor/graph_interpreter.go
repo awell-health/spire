@@ -770,8 +770,17 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 			remaining = append(remaining, taskID)
 			continue
 		}
+		cfg, releaseSlot, acquireErr := acquireAuthPoolSlot(context.Background(), e.deps, cfg, name)
+		if acquireErr != nil {
+			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, acquireErr,
+				withParentRun(e.currentRunID))
+			e.log("warning: acquire auth slot for injected task %s: %s", taskID, acquireErr)
+			remaining = append(remaining, taskID)
+			continue
+		}
 		h, spawnErr := e.deps.Spawner.Spawn(cfg)
 		if spawnErr != nil {
+			releaseSlot()
 			e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
 				withParentRun(e.currentRunID))
 			e.log("warning: spawn injected task %s: %s", taskID, spawnErr)
@@ -780,6 +789,7 @@ func (e *Executor) dispatchInjectedTasks(state *GraphState) {
 		}
 
 		waitErr := e.waitHandleWithHeartbeat(h)
+		releaseSlot()
 		e.recordAgentRun(name, taskID, e.beadID, model, "apprentice", "implement", started, waitErr,
 			withParentRun(e.currentRunID))
 

@@ -1058,6 +1058,18 @@ func (b *K8sBackend) buildEnvVars(cfg SpawnConfig, ident runtime.RepoIdentity) [
 		env = append(env, corev1.EnvVar{Name: "SPIRE_HANDOFF_MODE", Value: string(cfg.Run.HandoffMode)})
 	}
 
+	// Multi-token auth pool: surface the slot identity + state dir so
+	// the in-pod claude subprocess can apply rate_limit_event lines
+	// from the JSONL stream back to the slot's cached state. Mirrors
+	// the process-spawn path; absent vars mean the legacy single-token
+	// flow.
+	if cfg.AuthSlot != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_AUTH_SLOT", Value: cfg.AuthSlot})
+	}
+	if cfg.PoolStateDir != "" {
+		env = append(env, corev1.EnvVar{Name: "SPIRE_AUTH_POOL_STATE_DIR", Value: cfg.PoolStateDir})
+	}
+
 	// OTEL resource attributes carry the canonical RunContext vocabulary
 	// (docs/design/spi-xplwy-runtime-contract.md §1.4) so every
 	// trace/log/metric correlates to the same identity set the wizard

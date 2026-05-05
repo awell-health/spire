@@ -463,6 +463,20 @@ func applyProcessEnv(cmd *exec.Cmd, cfg SpawnConfig) {
 	if len(cfg.AuthEnv) > 0 {
 		applyAuthEnv(cmd, cfg.AuthEnv)
 	}
+
+	// Multi-token auth pool: when the executor has reserved a slot from
+	// pkg/auth/pool, the spawned subprocess needs the slot name + state
+	// dir to apply rate_limit_event lines from claude's JSONL stream
+	// back to the slot's on-disk state file. Both vars are unset when no
+	// pool is configured — the legacy single-token path stays
+	// untouched. AuthSlot may be set without PoolStateDir on legacy
+	// summon paths; emit each independently.
+	if cfg.AuthSlot != "" {
+		setEnv(cmd, "SPIRE_AUTH_SLOT", cfg.AuthSlot)
+	}
+	if cfg.PoolStateDir != "" {
+		setEnv(cmd, "SPIRE_AUTH_POOL_STATE_DIR", cfg.PoolStateDir)
+	}
 }
 
 // applyAuthEnv merges Anthropic-credential entries from authEnv into

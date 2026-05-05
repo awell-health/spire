@@ -267,6 +267,15 @@ func buildExecutorDepsForBead(beadID string, spawner AgentBackend) (*executor.De
 		// Spawner
 		Spawner: spawner,
 
+		// AuthPool wires the multi-token auth pool selector when the
+		// active tower has an auth.toml (or a legacy credentials.toml the
+		// pool loader promotes). Construction failure is surfaced as a
+		// log line — a malformed auth.toml should not silently disable
+		// pool dispatch, so a non-nil error here returns nil and the
+		// executor falls through to the legacy per-bead AuthContext
+		// path. Operators see the error in the wizard log.
+		AuthPool: resolveAuthPoolForExecutor(),
+
 		// ClusterChildDispatcher is wired only when the active tower's
 		// effective deployment mode is cluster-native. The dispatcher
 		// adapts intent.NewDoltPublisher (the .1-introduced canonical

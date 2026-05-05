@@ -498,6 +498,14 @@ func (e *Executor) runDispatchWave(
 				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: contractErr}
 				return
 			}
+			cfg, releaseSlot, acquireErr := acquireAuthPoolSlot(context.Background(), e.deps, cfg, name)
+			if acquireErr != nil {
+				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, acquireErr,
+					withParentRun(e.currentRunID))
+				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: acquireErr}
+				return
+			}
+			defer releaseSlot()
 			h, spawnErr := e.deps.Spawner.Spawn(cfg)
 			if spawnErr != nil {
 				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, spawnErr,
@@ -667,13 +675,21 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 				withParentRun(e.currentRunID))
 			return allResults, fmt.Errorf("handoff selection for %s: %w", subtaskID, contractErr)
 		}
+		cfg, releaseSlot, acquireErr := acquireAuthPoolSlot(context.Background(), e.deps, cfg, name)
+		if acquireErr != nil {
+			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, acquireErr,
+				withParentRun(e.currentRunID))
+			return allResults, fmt.Errorf("acquire auth slot for %s: %w", subtaskID, acquireErr)
+		}
 		handle, spawnErr := e.deps.Spawner.Spawn(cfg)
 		if spawnErr != nil {
+			releaseSlot()
 			e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, spawnErr,
 				withParentRun(e.currentRunID))
 			return allResults, fmt.Errorf("spawn apprentice for %s: %w", subtaskID, spawnErr)
 		}
 		waitErr := e.waitHandleWithHeartbeat(handle)
+		releaseSlot()
 		e.recordAgentRun(name, subtaskID, e.beadID, model, "apprentice", "implement", started, waitErr,
 			withParentRun(e.currentRunID))
 
@@ -793,6 +809,13 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 			withParentRun(e.currentRunID))
 		return fmt.Errorf("handoff selection: %w", contractErr)
 	}
+	cfg, releaseSlot, acquireErr := acquireAuthPoolSlot(context.Background(), e.deps, cfg, apprenticeName)
+	if acquireErr != nil {
+		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, acquireErr,
+			withParentRun(e.currentRunID))
+		return fmt.Errorf("acquire auth slot: %w", acquireErr)
+	}
+	defer releaseSlot()
 	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {
 		e.recordAgentRun(apprenticeName, e.beadID, "", model, "apprentice", "implement", started, err,

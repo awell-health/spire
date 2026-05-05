@@ -176,6 +176,15 @@ func (s *DockerSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 	for _, e := range cfg.AuthEnv {
 		args = append(args, "-e", e)
 	}
+	// Multi-token auth pool: surface the slot identity + state dir so the
+	// in-pod claude subprocess can apply rate_limit_event lines back to
+	// the slot's cached state. Mirrors the process-spawn path.
+	if cfg.AuthSlot != "" {
+		args = append(args, "-e", fmt.Sprintf("SPIRE_AUTH_SLOT=%s", cfg.AuthSlot))
+	}
+	if cfg.PoolStateDir != "" {
+		args = append(args, "-e", fmt.Sprintf("SPIRE_AUTH_POOL_STATE_DIR=%s", cfg.PoolStateDir))
+	}
 	// SPIRE_TOWER: prefer explicit cfg.Tower, fall back to env.
 	if tower := cfg.Tower; tower != "" {
 		args = append(args, "-e", fmt.Sprintf("SPIRE_TOWER=%s", tower))

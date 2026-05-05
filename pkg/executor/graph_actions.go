@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -740,6 +742,23 @@ func wizardRunSpawnWithHandoff(e *Executor, stepName string, step StepConfig, st
 			withAttemptNumber(attemptNum))
 		return ActionResult{Outputs: map[string]string{"result": "dispatched"}}
 	}
+
+	// Reserve an auth-pool slot before the spawn (no-op when AuthPool is
+	// nil). On *RateLimitedError, park the step with the carried ResetsAt
+	// so the steward / human can resume after the cooldown.
+	cfg, releaseSlot, acquireErr := acquireAuthPoolSlot(context.Background(), e.deps, cfg, spawnName)
+	if acquireErr != nil {
+		var rl *RateLimitedError
+		if errors.As(acquireErr, &rl) {
+			outputs := map[string]string{"result": "rate_limited"}
+			if !rl.ResetsAt.IsZero() {
+				outputs["resets_at"] = rl.ResetsAt.Format(time.RFC3339)
+			}
+			return ActionResult{Outputs: outputs, Hooked: true, Error: acquireErr}
+		}
+		return ActionResult{Error: fmt.Errorf("acquire auth slot for %s: %w", stepName, acquireErr)}
+	}
+	defer releaseSlot()
 
 	handle, err := e.deps.Spawner.Spawn(cfg)
 	if err != nil {

@@ -219,6 +219,15 @@ type SpawnConfig struct {
 	// by observability sites to tag agent_runs rows. Empty when AuthEnv is
 	// nil.
 	AuthSlot string
+
+	// PoolStateDir is the directory holding the multi-token auth pool's
+	// per-slot state JSON files. When set alongside AuthSlot, the spawned
+	// subprocess receives SPIRE_AUTH_POOL_STATE_DIR + SPIRE_AUTH_SLOT in
+	// its env so the in-process rate-limit-event sink can apply
+	// rate_limit_event JSONL lines from the claude stream back to the
+	// slot's <stateDir>/<slot>.json. Empty when no pool is configured —
+	// the legacy single-token path leaves it untouched.
+	PoolStateDir string
 }
 
 // NewSpawner returns a Spawner for the given backend.

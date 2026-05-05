@@ -1795,6 +1795,15 @@ func runWizardClaudeOnce(ctx context.Context, args []string, worktreeDir, agentR
 	if stream != nil {
 		stdoutTee = io.MultiWriter(&buf, stream.stdout)
 	}
+	// When the executor reserved an auth-pool slot for this dispatch,
+	// SPIRE_AUTH_SLOT and SPIRE_AUTH_POOL_STATE_DIR carry the slot
+	// identity. Layer a rate-limit-event sink onto the stdout tee so
+	// rate_limit_event lines from claude flow back to the slot's
+	// cached state file. The sink is io.Discard when the env vars are
+	// unset, so the legacy single-token path stays a no-op.
+	if slot, dir := os.Getenv("SPIRE_AUTH_SLOT"), os.Getenv("SPIRE_AUTH_POOL_STATE_DIR"); slot != "" && dir != "" {
+		stdoutTee = io.MultiWriter(stdoutTee, newRateLimitEventSink(dir, slot))
+	}
 	var stderrTee io.Writer = os.Stderr
 	if stream != nil {
 		stderrTee = io.MultiWriter(os.Stderr, stream.stderr)
