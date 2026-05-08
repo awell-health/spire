@@ -3544,6 +3544,12 @@ func towerCycleTestSetup(t *testing.T) func() {
 	// Tests that need to drive specific candidates override this hook.
 	origDispatchable := DispatchableBeadsFunc
 	DispatchableBeadsFunc = func(_ context.Context) ([]*store.Bead, error) { return nil, nil }
+	// Stub the per-bead invariant check so dispatched candidates aren't
+	// quarantined as "multiple open attempts" against an uninitialized store.
+	origAttempt := GetActiveAttemptFunc
+	GetActiveAttemptFunc = func(parentID string) (*store.Bead, error) { return nil, nil }
+	origAlert := RaiseCorruptedBeadAlertFunc
+	RaiseCorruptedBeadAlertFunc = func(beadID string, err error) {}
 	// Stub InstanceIDFunc.
 	origInstanceID := InstanceIDFunc
 	InstanceIDFunc = func() string { return "test-instance" }
@@ -3553,6 +3559,8 @@ func towerCycleTestSetup(t *testing.T) func() {
 		CommitPendingFunc = origCommit
 		ListBeadsFunc = origList
 		DispatchableBeadsFunc = origDispatchable
+		GetActiveAttemptFunc = origAttempt
+		RaiseCorruptedBeadAlertFunc = origAlert
 		InstanceIDFunc = origInstanceID
 	}
 }
@@ -3579,7 +3587,8 @@ func TestTowerCycle_SkipsBeadsForUnboundPrefixes(t *testing.T) {
 	origLoadTower := LoadTowerConfigFunc
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
 		return &config.TowerConfig{
-			Name: "test-tower",
+			Name:           "test-tower",
+			DeploymentMode: config.DeploymentModeLocalNative,
 			LocalBindings: map[string]*config.LocalRepoBinding{
 				"web": {Prefix: "web", State: "bound", LocalPath: "/path/to/web"},
 				"api": {Prefix: "api", State: "skipped"},
@@ -3628,7 +3637,8 @@ func TestTowerCycle_SpawnsBeadsForBoundPrefixes(t *testing.T) {
 	origLoadTower := LoadTowerConfigFunc
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
 		return &config.TowerConfig{
-			Name: "test-tower",
+			Name:           "test-tower",
+			DeploymentMode: config.DeploymentModeLocalNative,
 			LocalBindings: map[string]*config.LocalRepoBinding{
 				"spi": {Prefix: "spi", State: "bound", LocalPath: "/path/to/spi"},
 				"web": {Prefix: "web", State: "bound", LocalPath: "/path/to/web"},
@@ -3673,7 +3683,8 @@ func TestTowerCycle_SpawnConfigUsesRoleWizardAndInstanceID(t *testing.T) {
 	origLoadTower := LoadTowerConfigFunc
 	LoadTowerConfigFunc = func(name string) (*config.TowerConfig, error) {
 		return &config.TowerConfig{
-			Name: "test-tower",
+			Name:           "test-tower",
+			DeploymentMode: config.DeploymentModeLocalNative,
 			LocalBindings: map[string]*config.LocalRepoBinding{
 				"spi": {Prefix: "spi", State: "bound", LocalPath: "/path/to/spi"},
 			},
