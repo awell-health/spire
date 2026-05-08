@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"golang.org/x/sys/unix"
 )
@@ -66,8 +65,13 @@ func (w *InotifyPoolWake) Broadcast(pool string) error {
 }
 
 // Wait blocks until an IN_CLOSE_WRITE event is observed on the wake
-// file for pool, or ctx is cancelled. On ctx cancellation the inotify
-// fd is closed to unblock the read goroutine.
+// file for pool, or ctx is cancelled.
+//
+// The inotify fd is opened non-blocking and polled with a short
+// timeout so ctx cancellation is detected without closing the fd from
+// another goroutine — closing a descriptor that another thread is
+// reading is undefined on Linux and was the source of a hang on
+// ctx-cancel where the in-flight Read never returned.
 func (w *InotifyPoolWake) Wait(ctx context.Context, pool string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -76,56 +80,41 @@ func (w *InotifyPoolWake) Wait(ctx context.Context, pool string) error {
 		return fmt.Errorf("inotify pool wake: ensure wake file: %w", err)
 	}
 
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return fmt.Errorf("inotify pool wake: init: %w", err)
 	}
+	defer unix.Close(fd)
 
 	if _, err := unix.InotifyAddWatch(fd, w.wakeFilePath(pool), unix.IN_CLOSE_WRITE); err != nil {
-		_ = unix.Close(fd)
 		return fmt.Errorf("inotify pool wake: add watch: %w", err)
 	}
 
-	type readResult struct {
-		ok  bool
-		err error
-	}
-	rch := make(chan readResult, 1)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 4096)
-		n, rerr := unix.Read(fd, buf)
-		if rerr != nil {
-			rch <- readResult{err: rerr}
-			return
+	pfds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	buf := make([]byte, 4096)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		rch <- readResult{ok: n > 0}
-	}()
-
-	var result error
-	select {
-	case r := <-rch:
-		if r.err != nil {
-			if errors.Is(r.err, unix.EBADF) || errors.Is(r.err, unix.EINTR) {
-				if cerr := ctx.Err(); cerr != nil {
-					result = cerr
-				} else {
-					result = r.err
-				}
-			} else {
-				result = r.err
+		// 100ms poll timeout bounds cancellation latency without
+		// burning CPU. Real wake events fire well within this.
+		n, perr := unix.Poll(pfds, 100)
+		if perr != nil {
+			if errors.Is(perr, unix.EINTR) {
+				continue
 			}
-		} else if !r.ok {
-			result = errors.New("inotify pool wake: empty read")
+			return fmt.Errorf("inotify pool wake: poll: %w", perr)
 		}
-	case <-ctx.Done():
-		result = ctx.Err()
+		if n == 0 || pfds[0].Revents&unix.POLLIN == 0 {
+			continue
+		}
+		_, rerr := unix.Read(fd, buf)
+		if rerr != nil {
+			if errors.Is(rerr, unix.EAGAIN) {
+				continue
+			}
+			return rerr
+		}
+		return nil
 	}
-
-	_ = unix.Close(fd)
-	wg.Wait()
-	return result
 }
