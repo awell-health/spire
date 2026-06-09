@@ -3,18 +3,19 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/awell-health/spire/cmd/spire/embedded"
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/scaffold"
 )
 
-// spireWorkProtocol is the work lifecycle section added to CLAUDE.md.
-// Used by both writeCLAUDEMD and the hooks (PostCompact/SubagentStart).
+// spireWorkProtocol is the work lifecycle section written into the repo's
+// instructions file (scaffold.instructions_file, default AGENTS.md) by
+// checkInstructionsFile. The text is agent-agnostic.
 func spireWorkProtocol(prefix string) string {
 	return fmt.Sprintf(`## Spire — Work Coordination
 
@@ -206,14 +207,14 @@ print(json.dumps({
 `, repoPath, repoPath, prefix, prefix, roleCases, prefix, prefix)
 }
 
-// renderRoleHookCases emits one `<role>) read -r -d '' ROLE_CATALOG <<EOF...EOF ;;`
+// renderRoleHookCases emits one `<role>) read -r -d ” ROLE_CATALOG <<EOF...EOF ;;`
 // bash case branch per known scaffold role.
 //
-// We use `read -r -d ''` rather than `$(cat <<...)` because bash's
+// We use `read -r -d ”` rather than `$(cat <<...)` because bash's
 // parser chokes on apostrophes inside a heredoc that is nested in a
 // `$(...)` command substitution (the heredoc is balanced correctly but
 // bash's tokenizer tracks outer single-quotes through the substitution).
-// `read -d ''` reads the heredoc as a single NUL-terminated token into
+// `read -d ”` reads the heredoc as a single NUL-terminated token into
 // the variable, returning exit code 1 at EOF — the outer script does
 // not run under `set -e` so that is harmless.
 //
@@ -235,43 +236,74 @@ func renderRoleHookCases() string {
 	return b.String()
 }
 
-// installSpireSkills installs bundled Spire skills into Claude and Codex skill
-// directories, then copies global Claude spire-* skills into the project.
-func installSpireSkills(claudeDir string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		installBundledSpireSkills(filepath.Join(claudeDir, "skills"))
-		installBundledCodexSkills()
-		return
-	}
+// installSpireSkills installs the bundled Spire skills into the repo's
+// canonical skills directory (sc.SkillsDir, default .agents/skills) as real
+// directories, then creates a relative symlink for each installed skill
+// inside every tool-specific directory listed in sc.SkillsSymlinks (default
+// .claude/skills). It also seeds the global ~/.codex/skills tree so the
+// skills ship with the binary for ad-hoc Codex sessions.
+//
+// Symlinks are repaired in place via ensureSymlink, so a stale or broken
+// link (e.g. one left behind pointing at a since-removed target) is
+// recreated rather than silently skipped.
+func installSpireSkills(repoPath string, sc repoconfig.ScaffoldConfig) {
+	canonicalDir := filepath.Join(repoPath, sc.SkillsDir)
 
-	globalSkillsDir := filepath.Join(home, ".claude", "skills")
-	projectSkillsDir := filepath.Join(claudeDir, "skills")
-
-	// Seed the home-level and repo-level skill trees from the bundled assets so
-	// the skill ships with the Spire binary instead of relying on preexisting
-	// ~/.claude content.
-	installBundledSpireSkills(globalSkillsDir)
-	installBundledSpireSkills(projectSkillsDir)
+	// Install the bundled skills as real directories in the canonical
+	// location, plus the global Codex tree.
+	installBundledSpireSkills(canonicalDir)
 	installBundledCodexSkills()
 
-	entries, err := os.ReadDir(globalSkillsDir)
+	entries, err := os.ReadDir(canonicalDir)
 	if err != nil {
 		return
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, linkRoot := range sc.SkillsSymlinks {
+		dstRoot := filepath.Join(repoPath, linkRoot)
+		if err := os.MkdirAll(dstRoot, 0755); err != nil {
+			fmt.Printf("  Warning: could not create %s: %s\n", linkRoot, err)
 			continue
 		}
-		// Only copy spire-* skills
-		if !strings.HasPrefix(entry.Name(), "spire") {
-			continue
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "spire") {
+				continue
+			}
+			linkPath := filepath.Join(dstRoot, entry.Name())
+			target, err := filepath.Rel(dstRoot, filepath.Join(canonicalDir, entry.Name()))
+			if err != nil {
+				// Fall back to an absolute target if a relative path
+				// cannot be computed (e.g. different volumes).
+				target = filepath.Join(canonicalDir, entry.Name())
+			}
+			if err := ensureSymlink(target, linkPath); err != nil {
+				fmt.Printf("  Warning: could not link %s: %s\n", linkPath, err)
+			}
 		}
-		srcDir := filepath.Join(globalSkillsDir, entry.Name())
-		dstDir := filepath.Join(projectSkillsDir, entry.Name())
-		copyDir(srcDir, dstDir)
 	}
+}
+
+// ensureSymlink makes linkPath a symlink pointing at target, repairing a
+// stale or broken existing symlink. target may be relative to linkPath's
+// parent directory. It refuses to clobber a real file or directory already
+// at linkPath (returning an error) so existing user content is never
+// destroyed.
+func ensureSymlink(target, linkPath string) error {
+	if fi, err := os.Lstat(linkPath); err == nil {
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("%s exists and is not a symlink", linkPath)
+		}
+		if cur, _ := os.Readlink(linkPath); cur == target {
+			return nil // already correct
+		}
+		if err := os.Remove(linkPath); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0755); err != nil {
+		return err
+	}
+	return os.Symlink(target, linkPath)
 }
 
 func installBundledSpireSkills(dstRoot string) {
@@ -319,33 +351,4 @@ func copyEmbeddedDir(srcFS fs.FS, srcRoot, dstRoot string) error {
 		}
 		return os.WriteFile(dstPath, data, 0644)
 	})
-}
-
-// copyDir recursively copies a directory tree from src to dst.
-func copyDir(src, dst string) {
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return
-	}
-	os.MkdirAll(dst, 0755)
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-		if entry.IsDir() {
-			copyDir(srcPath, dstPath)
-			continue
-		}
-		srcFile, err := os.Open(srcPath)
-		if err != nil {
-			continue
-		}
-		dstFile, err := os.Create(dstPath)
-		if err != nil {
-			srcFile.Close()
-			continue
-		}
-		io.Copy(dstFile, srcFile)
-		srcFile.Close()
-		dstFile.Close()
-	}
 }

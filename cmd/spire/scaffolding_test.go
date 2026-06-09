@@ -6,53 +6,51 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/awell-health/spire/pkg/scaffold"
 )
 
-func TestInstallSpireSkills_InstallsBundledSkillEverywhere(t *testing.T) {
+// defaultScaffold returns the resolved generic scaffold conventions
+// (AGENTS.md + .agents/skills canonical + .claude/skills symlinks).
+func defaultScaffold() repoconfig.ScaffoldConfig {
+	return repoconfig.ResolveScaffold(repoconfig.ScaffoldConfig{})
+}
+
+func TestInstallSpireSkills_InstallsCanonicalAndSymlinks(t *testing.T) {
 	home := t.TempDir()
 	codexHome := filepath.Join(home, "codex-home")
 	repo := filepath.Join(home, "repo")
-	claudeDir := filepath.Join(repo, ".claude")
 
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", codexHome)
 
-	if err := os.MkdirAll(filepath.Join(home, ".claude", "skills", "spire-work"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".claude", "skills", "spire-work", "SKILL.md"), []byte("legacy"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	installSpireSkills(repo, defaultScaffold())
 
-	installSpireSkills(claudeDir)
+	// Canonical skills are installed as real directories under .agents/skills.
+	canonicalConflicts := filepath.Join(repo, ".agents", "skills", "spire-conflicts")
+	assertFileContains(t, filepath.Join(canonicalConflicts, "SKILL.md"), "dolt sql")
+	assertFileContains(t, filepath.Join(canonicalConflicts, "agents", "openai.yaml"), "display_name: \"Spire Conflicts\"")
+	assertFileContains(t, filepath.Join(repo, ".agents", "skills", "spire-design", "SKILL.md"), "design bead")
 
-	assertFileContains(t, filepath.Join(home, ".claude", "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
-	assertFileContains(t, filepath.Join(claudeDir, "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
-	assertFileContains(t, filepath.Join(claudeDir, "skills", "spire-conflicts", "agents", "openai.yaml"), "display_name: \"Spire Conflicts\"")
+	// The Codex global tree is still seeded.
 	assertFileContains(t, filepath.Join(codexHome, "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
-
-	assertFileContains(t, filepath.Join(home, ".claude", "skills", "spire-design", "SKILL.md"), "design bead")
-	assertFileContains(t, filepath.Join(claudeDir, "skills", "spire-design", "SKILL.md"), "design bead")
 	assertFileContains(t, filepath.Join(codexHome, "skills", "spire-design", "SKILL.md"), "design bead")
+
+	// .claude/skills entries are relative symlinks back to the canonical dir.
+	assertSymlink(t, filepath.Join(repo, ".claude", "skills", "spire-conflicts"), "../../.agents/skills/spire-conflicts")
+	assertSymlink(t, filepath.Join(repo, ".claude", "skills", "spire-design"), "../../.agents/skills/spire-design")
+	// Reading through the symlink resolves to the canonical content.
+	assertFileContains(t, filepath.Join(repo, ".claude", "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
 }
 
-func TestCheckSpireSkills_FixInstallsBundledConflictSkill(t *testing.T) {
+func TestCheckSpireSkills_FixInstallsBundledSkills(t *testing.T) {
 	home := t.TempDir()
 	repo := filepath.Join(home, "repo")
-	claudeSkills := filepath.Join(repo, ".claude", "skills")
 
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, "codex-home"))
 
-	if err := os.MkdirAll(filepath.Join(claudeSkills, "spire-work"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(claudeSkills, "spire-work", "SKILL.md"), []byte("legacy"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	r := checkSpireSkills(repo)
+	r := checkSpireSkills(repo, defaultScaffold())
 	if r.Status != statusMissing {
 		t.Fatalf("expected missing status, got %s (%s)", r.Status, r.Detail)
 	}
@@ -65,7 +63,43 @@ func TestCheckSpireSkills_FixInstallsBundledConflictSkill(t *testing.T) {
 
 	r.FixFunc()
 
-	assertFileContains(t, filepath.Join(claudeSkills, "spire-conflicts", "SKILL.md"), "dolt sql")
+	if r2 := checkSpireSkills(repo, defaultScaffold()); r2.Status != statusOK {
+		t.Fatalf("expected OK after fix, got %s (%s)", r2.Status, r2.Detail)
+	}
+	assertFileContains(t, filepath.Join(repo, ".agents", "skills", "spire-conflicts", "SKILL.md"), "dolt sql")
+	assertFileContains(t, filepath.Join(repo, ".claude", "skills", "spire-design", "SKILL.md"), "design bead")
+}
+
+// TestCheckSpireSkills_RepairsBrokenSymlink covers the original bug: a
+// dangling symlink in a tool skills dir (target removed) must be reported
+// as missing and repaired by the fix rather than left permanently stuck.
+func TestCheckSpireSkills_RepairsBrokenSymlink(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex-home"))
+
+	// Plant a broken symlink where spire-design should resolve.
+	claudeSkills := filepath.Join(repo, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../.agents/skills/spire-design", filepath.Join(claudeSkills, "spire-design")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := checkSpireSkills(repo, defaultScaffold())
+	if r.Status != statusMissing {
+		t.Fatalf("expected missing status for broken symlink, got %s (%s)", r.Status, r.Detail)
+	}
+
+	r.FixFunc()
+
+	if r2 := checkSpireSkills(repo, defaultScaffold()); r2.Status != statusOK {
+		t.Fatalf("expected OK after repair, got %s (%s)", r2.Status, r2.Detail)
+	}
+	assertSymlink(t, filepath.Join(claudeSkills, "spire-design"), "../../.agents/skills/spire-design")
 	assertFileContains(t, filepath.Join(claudeSkills, "spire-design", "SKILL.md"), "design bead")
 }
 
@@ -183,6 +217,25 @@ func extractRoleCaseBranch(t *testing.T, script string, role scaffold.Role) stri
 		t.Fatalf("could not find `;;` terminator for role %q case branch", role)
 	}
 	return remainder[:end]
+}
+
+func assertSymlink(t *testing.T, path, wantTarget string) {
+	t.Helper()
+
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink", path)
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", path, err)
+	}
+	if target != wantTarget {
+		t.Fatalf("%s points at %q, want %q", path, target, wantTarget)
+	}
 }
 
 func assertFileContains(t *testing.T, path, needle string) {

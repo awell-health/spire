@@ -158,7 +158,7 @@ func cmdClaim(args []string) error {
 		}
 	}
 
-	// Output result as JSON for easy consumption by spire-work
+	// Output result as JSON for easy consumption by callers
 	result := map[string]string{
 		"id":            target.ID,
 		"title":         target.Title,

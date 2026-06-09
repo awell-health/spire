@@ -33,9 +33,14 @@ pr:
   labels: ["agent-generated"]
 
 context:
-  - CLAUDE.md
+  - AGENTS.md
   - PLAYBOOK.md
   - docs/
+
+scaffold:
+  instructions_file: AGENTS.md        # file that gets the "## Spire" section
+  skills_dir: .agents/skills          # canonical skills location (real dirs)
+  skills_symlinks: [.claude/skills]   # tool dirs filled with symlinks → skills_dir
 ```
 
 ---
@@ -163,6 +168,41 @@ Context files are assembled by `spire focus` and injected into the wizard's prom
 - Project-specific conventions the agent must follow
 - Architecture decisions that affect how code is written
 - API contracts the agent must respect
+
+---
+
+## `scaffold`
+
+Controls how `spire doctor --fix` lays out agent conventions in the repo. The
+defaults are tool-agnostic: work instructions live in `AGENTS.md`, skills are
+installed as real directories under `.agents/skills`, and each tool-specific
+skills directory (e.g. `.claude/skills`) is populated with symlinks back to
+the canonical skill.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `instructions_file` | string | `AGENTS.md` | Repo-root file that receives the `## Spire` work-coordination section. |
+| `skills_dir` | string | `.agents/skills` | Canonical directory where bundled skills are installed as real directories. |
+| `skills_symlinks` | list | `[.claude/skills]` | Tool-specific skills directories populated with symlinks pointing at `skills_dir/<skill>`. |
+
+Symlinks are repaired in place: a stale or broken link (e.g. one pointing at
+a since-removed target) is recreated by `--fix` rather than skipped. A real
+file or directory already occupying a link path is left untouched (a warning
+is printed) so existing content is never destroyed.
+
+**Legacy Claude-only layout.** To keep the pre-generic behavior (instructions
+in `CLAUDE.md`, skills as real directories under `.claude/skills`, no
+symlinks):
+
+```yaml
+scaffold:
+  instructions_file: CLAUDE.md
+  skills_dir: .claude/skills
+  skills_symlinks: []        # explicit empty list = create no symlinks
+```
+
+> An explicitly empty `skills_symlinks: []` means "no symlinks." Omitting the
+> field entirely yields the default (`[.claude/skills]`).
 
 ---
 

@@ -85,6 +85,10 @@ func cmdDoctor(args []string) error {
 		return fmt.Errorf("cannot determine working directory: %w", err)
 	}
 
+	// Resolve the repo's scaffold conventions (instructions file, skills
+	// layout) once; reused by the initial and re-check repo checks.
+	scaffoldCfg := resolveScaffoldConfig(cwd)
+
 	// Build check categories. System and Tower always run.
 	// Repo checks only run if the current directory is a registered instance.
 	categories := []checkCategory{
@@ -135,11 +139,11 @@ func cmdDoctor(args []string) error {
 	inst := findInstanceByPath(cfg, cwd)
 	if inst != nil {
 		repoChecks := []checkResult{
-			checkCLAUDEMD(cwd),
+			checkInstructionsFile(cwd, scaffoldCfg),
 			checkSPIREMD(cwd),
 			checkSettingsJSON(cwd),
 			checkSpireHookSH(cwd),
-			checkSpireSkills(cwd),
+			checkSpireSkills(cwd, scaffoldCfg),
 		}
 		repoChecks = append(repoChecks, checkStaleBranches(cwd)...)
 		categories = append(categories, checkCategory{
@@ -251,11 +255,11 @@ func cmdDoctor(args []string) error {
 	}
 	if inst != nil {
 		reRepoChecks := []checkResult{
-			checkCLAUDEMD(cwd),
+			checkInstructionsFile(cwd, scaffoldCfg),
 			checkSPIREMD(cwd),
 			checkSettingsJSON(cwd),
 			checkSpireHookSH(cwd),
-			checkSpireSkills(cwd),
+			checkSpireSkills(cwd, scaffoldCfg),
 		}
 		reRepoChecks = append(reRepoChecks, checkStaleBranches(cwd)...)
 		reCategories = append(reCategories, checkCategory{
@@ -836,10 +840,23 @@ func parseCredentialFile(path string) map[string]bool {
 	return keys
 }
 
-// checkCLAUDEMD verifies CLAUDE.md exists and contains the ## Spire section.
-func checkCLAUDEMD(repoPath string) checkResult {
-	path := filepath.Join(repoPath, "CLAUDE.md")
-	name := "CLAUDE.md (## Spire section)"
+// resolveScaffoldConfig loads spire.yaml for the repo (walking up, with
+// defaults if absent) and returns the scaffold conventions with generic
+// defaults applied.
+func resolveScaffoldConfig(repoPath string) repoconfig.ScaffoldConfig {
+	cfg, _ := repoconfig.Load(repoPath)
+	if cfg == nil {
+		cfg = &repoconfig.RepoConfig{}
+	}
+	return repoconfig.ResolveScaffold(cfg.Scaffold)
+}
+
+// checkInstructionsFile verifies the configured instructions file (default
+// AGENTS.md) exists and contains the ## Spire section.
+func checkInstructionsFile(repoPath string, sc repoconfig.ScaffoldConfig) checkResult {
+	file := sc.InstructionsFile
+	path := filepath.Join(repoPath, file)
+	name := file + " (## Spire section)"
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -850,11 +867,11 @@ func checkCLAUDEMD(repoPath string) checkResult {
 			FixFunc: func() {
 				prefix := detectPrefixFromPath(repoPath)
 				section := spireWorkProtocol(prefix)
-				content := "# CLAUDE.md\n\n" + section
+				content := "# " + file + "\n\n" + section
 				if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-					fmt.Printf("    Warning: could not write CLAUDE.md: %s\n", err)
+					fmt.Printf("    Warning: could not write %s: %s\n", file, err)
 				} else {
-					fmt.Println("    CLAUDE.md created")
+					fmt.Printf("    %s created\n", file)
 				}
 			},
 		}
@@ -873,9 +890,9 @@ func checkCLAUDEMD(repoPath string) checkResult {
 			section := spireWorkProtocol(prefix)
 			updated := append(data, []byte("\n"+section)...)
 			if err := os.WriteFile(path, updated, 0644); err != nil {
-				fmt.Printf("    Warning: could not update CLAUDE.md: %s\n", err)
+				fmt.Printf("    Warning: could not update %s: %s\n", file, err)
 			} else {
-				fmt.Println("    CLAUDE.md updated (Spire section appended)")
+				fmt.Printf("    %s updated (Spire section appended)\n", file)
 			}
 		},
 	}
@@ -1039,36 +1056,46 @@ func checkSpireHookSH(repoPath string) checkResult {
 	return checkResult{Name: name, Status: statusOK}
 }
 
-// checkSpireSkills verifies required Spire Claude skills exist in the repo.
-func checkSpireSkills(repoPath string) checkResult {
-	baseDir := filepath.Join(repoPath, ".claude", "skills")
-	name := ".claude/skills/"
-	required := []string{"spire-work", "spire-conflicts", "spire-design"}
-	var missing []string
-	for _, skill := range required {
-		dir := filepath.Join(baseDir, skill)
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
-			missing = append(missing, skill)
-		}
-	}
-	if len(missing) > 0 {
-		return checkResult{
-			Name:   ".claude/skills/",
-			Status: statusMissing,
-			Detail: "missing " + strings.Join(missing, ", "),
-			FixFunc: func() {
-				claudeDir := filepath.Join(repoPath, ".claude")
-				installSpireSkills(claudeDir)
-				var stillMissing []string
-				for _, skill := range required {
-					dir := filepath.Join(baseDir, skill)
-					if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-						stillMissing = append(stillMissing, skill)
-					}
+// requiredSpireSkills lists the bundled skills that every Spire repo must
+// have. Kept in sync with cmd/spire/embedded/skills.
+var requiredSpireSkills = []string{"spire-conflicts", "spire-design"}
+
+// checkSpireSkills verifies the bundled Spire skills exist as real
+// directories under the canonical skills dir (sc.SkillsDir) and that each
+// configured tool-specific dir (sc.SkillsSymlinks) has a resolvable entry
+// for them. os.Stat follows symlinks, so a dangling/broken link is reported
+// as a problem and repaired by the fix rather than silently passing.
+func checkSpireSkills(repoPath string, sc repoconfig.ScaffoldConfig) checkResult {
+	name := sc.SkillsDir + "/"
+
+	// collectProblems returns the set of "<dir>/<skill>" paths that are
+	// absent or do not resolve to a directory (broken symlinks included).
+	collectProblems := func() []string {
+		var problems []string
+		for _, skill := range requiredSpireSkills {
+			canonical := filepath.Join(repoPath, sc.SkillsDir, skill)
+			if info, err := os.Stat(canonical); err != nil || !info.IsDir() {
+				problems = append(problems, filepath.Join(sc.SkillsDir, skill))
+			}
+			for _, linkRoot := range sc.SkillsSymlinks {
+				link := filepath.Join(repoPath, linkRoot, skill)
+				if info, err := os.Stat(link); err != nil || !info.IsDir() {
+					problems = append(problems, filepath.Join(linkRoot, skill))
 				}
-				if len(stillMissing) > 0 {
-					fmt.Printf("    Warning: skills still missing after install: %s\n", strings.Join(stillMissing, ", "))
+			}
+		}
+		return problems
+	}
+
+	if problems := collectProblems(); len(problems) > 0 {
+		return checkResult{
+			Name:   name,
+			Status: statusMissing,
+			Detail: "missing/unresolved: " + strings.Join(problems, ", "),
+			FixFunc: func() {
+				installSpireSkills(repoPath, sc)
+				if still := collectProblems(); len(still) > 0 {
+					fmt.Printf("    Warning: skills still missing after install: %s\n", strings.Join(still, ", "))
 				} else {
 					fmt.Println("    Spire skills installed")
 				}
