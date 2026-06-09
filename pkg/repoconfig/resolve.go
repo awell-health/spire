@@ -47,7 +47,42 @@ const (
 	// when no value is set in spire.yaml, the operator env, or the formula
 	// step.
 	DefaultMaxApprentices = 3
+
+	// DefaultInstructionsFile is the repo-root file that receives the
+	// Spire work-coordination section when scaffold.instructions_file is
+	// unset. AGENTS.md is the cross-tool convention (Claude Code, Codex,
+	// Cursor) rather than the Claude-specific CLAUDE.md.
+	DefaultInstructionsFile = "AGENTS.md"
+
+	// DefaultSkillsDir is the canonical, tool-agnostic directory where
+	// bundled skills are installed as real directories when
+	// scaffold.skills_dir is unset.
+	DefaultSkillsDir = ".agents/skills"
 )
+
+// DefaultSkillsSymlinks lists the tool-specific skills directories that
+// receive symlinks back to DefaultSkillsDir when scaffold.skills_symlinks
+// is omitted from spire.yaml.
+var DefaultSkillsSymlinks = []string{".claude/skills"}
+
+// ResolveScaffold returns a copy of the given ScaffoldConfig with the
+// generic defaults applied to any omitted field. An explicitly empty
+// SkillsSymlinks slice (skills_symlinks: [] in spire.yaml) is preserved
+// as "no symlinks" — only a nil slice (the field omitted entirely) is
+// replaced with DefaultSkillsSymlinks.
+func ResolveScaffold(cfg ScaffoldConfig) ScaffoldConfig {
+	out := cfg
+	if out.InstructionsFile == "" {
+		out.InstructionsFile = DefaultInstructionsFile
+	}
+	if out.SkillsDir == "" {
+		out.SkillsDir = DefaultSkillsDir
+	}
+	if out.SkillsSymlinks == nil {
+		out.SkillsSymlinks = append([]string(nil), DefaultSkillsSymlinks...)
+	}
+	return out
+}
 
 // ResolveModel returns the first non-empty value in the precedence chain:
 // formula phase model > spire.yaml model > system default.

@@ -16,13 +16,41 @@ import (
 
 // RepoConfig is the top-level schema for spire.yaml.
 type RepoConfig struct {
-	Runtime RuntimeConfig `yaml:"runtime"`
-	Agent   AgentConfig   `yaml:"agent"`
-	Branch  BranchConfig  `yaml:"branch"`
-	PR      PRConfig      `yaml:"pr"`
-	Design  DesignConfig  `yaml:"design"`
-	Cleric  ClericConfig  `yaml:"cleric"`
-	Context []string      `yaml:"context"`
+	Runtime  RuntimeConfig  `yaml:"runtime"`
+	Agent    AgentConfig    `yaml:"agent"`
+	Branch   BranchConfig   `yaml:"branch"`
+	PR       PRConfig       `yaml:"pr"`
+	Design   DesignConfig   `yaml:"design"`
+	Cleric   ClericConfig   `yaml:"cleric"`
+	Scaffold ScaffoldConfig `yaml:"scaffold"`
+	Context  []string       `yaml:"context"`
+}
+
+// ScaffoldConfig controls how `spire doctor --fix` lays out agent
+// conventions in a repo. The defaults are tool-agnostic: the work
+// instructions live in AGENTS.md, skills are real directories under
+// .agents/skills, and each tool-specific skills directory (e.g.
+// .claude/skills) is populated with symlinks back to the canonical
+// skill. Set these fields to retain the legacy Claude-only layout
+// (instructions_file: CLAUDE.md, skills_dir: .claude/skills,
+// skills_symlinks: []).
+//
+// All fields resolve through ResolveScaffold, which applies the
+// generic defaults when a field is omitted. An explicitly empty
+// skills_symlinks list ([]) is honored as "create no symlinks" and is
+// distinct from omitting the field (which yields the default).
+type ScaffoldConfig struct {
+	// InstructionsFile is the repo-root file that receives the
+	// "## Spire" work-coordination section. Default: AGENTS.md.
+	InstructionsFile string `yaml:"instructions_file"`
+	// SkillsDir is the canonical directory (relative to the repo root)
+	// where bundled Spire skills are installed as real directories.
+	// Default: .agents/skills.
+	SkillsDir string `yaml:"skills_dir"`
+	// SkillsSymlinks lists tool-specific skills directories (relative
+	// to the repo root) that should be populated with symlinks pointing
+	// at the canonical skills under SkillsDir. Default: [.claude/skills].
+	SkillsSymlinks []string `yaml:"skills_symlinks"`
 }
 
 // ClericConfig controls the cleric (recovery agent) promotion policy.
