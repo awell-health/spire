@@ -278,14 +278,23 @@ func GetLogArtifactByIdentity(
 	return rec, nil
 }
 
-// ListLogArtifactsForBead returns every manifest row for a bead, ordered by
-// (attempt_id, run_id, sequence) ascending so callers see the artifacts in
-// the order they were produced.
+// ListLogArtifactsForBead returns every manifest row for a bead, ordered
+// most-recent-attempt-first. Attempt groups are ranked by the earliest
+// artifact timestamp in the group (descending), so the freshest attempt's
+// rows come first; within a single attempt the rows stay contiguous and in
+// natural ascending (run_id, sequence) order so one attempt reads top-to-
+// bottom. attempt_id is a random short code (e.g. spd-th36), not a
+// chronological value, so recency must come from created_at — not from the
+// attempt ID. The ordering is fully deterministic across repeated calls
+// (id ASC is the final tiebreak), which keeps the gateway's offset-based
+// logs cursor stable; see pkg/gateway/bead_logs.go.
 func ListLogArtifactsForBead(ctx context.Context, db *sql.DB, beadID string) ([]LogArtifactRecord, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT `+logArtifactColumns+` FROM agent_log_artifacts
          WHERE bead_id = ?
-         ORDER BY attempt_id ASC, run_id ASC, sequence ASC, created_at ASC`,
+         ORDER BY MIN(created_at) OVER (PARTITION BY attempt_id) DESC,
+                  attempt_id ASC,
+                  run_id ASC, sequence ASC, created_at ASC, id ASC`,
 		beadID,
 	)
 	if err != nil {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"strings"
 	"testing"
@@ -303,7 +304,13 @@ func TestListLogArtifactsForBead(t *testing.T) {
 			"2026-04-28 01:00:00", "2026-04-28 01:01:00",
 			0, LogArtifactVisibilityEngineerOnly, nil, nil,
 		)
-	mock.ExpectQuery(`SELECT .+ FROM agent_log_artifacts\s+WHERE bead_id = \?`).
+	// The query must order attempt groups most-recent-first via a window
+	// function over created_at — never by attempt_id, which is a random
+	// short code. Pin the clause so a regression back to `attempt_id ASC`
+	// fails here. (sqlmock does not execute ORDER BY; the ordering
+	// *semantics* are proven against real Dolt in the dolt_integration
+	// build — see TestListLogArtifactsForBead_RecencyOrdering_RealDolt.)
+	mock.ExpectQuery(`ORDER BY MIN\(created_at\) OVER \(PARTITION BY attempt_id\) DESC`).
 		WithArgs("spi-x").
 		WillReturnRows(rows)
 
@@ -319,6 +326,64 @@ func TestListLogArtifactsForBead(t *testing.T) {
 	}
 	if got[1].ByteSize == nil || *got[1].ByteSize != 100 {
 		t.Errorf("expected byte_size=100 on second row, got %v", got[1].ByteSize)
+	}
+}
+
+// TestListLogArtifactsForBead_RecencyOrdering documents the contract the
+// recency ordering must satisfy: the latest attempt's rows come first, and
+// they stay contiguous in ascending sequence order. The fixture uses two
+// attempts whose IDs sort in the OPPOSITE direction to their timestamps —
+// spi-att-aaa (alphabetically first) is the OLDER attempt, spi-att-zzz
+// (alphabetically last) is the NEWER one — so a query that ordered by
+// attempt_id would surface them in the wrong order. sqlmock returns rows in
+// the order given rather than executing ORDER BY, so this test feeds the
+// rows in the order real Dolt produces (verified in the dolt_integration
+// build) and asserts the helper preserves it; the SQL-level regression
+// guard is the window-function ExpectQuery in TestListLogArtifactsForBead.
+func TestListLogArtifactsForBead_RecencyOrdering(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	row := func(id, attemptID, runID string, seq int, createdAt string) []driver.Value {
+		return []driver.Value{
+			id, "awell", "spi-x", attemptID, runID,
+			"wizard-spi-x", "wizard", "implement", "claude", "transcript",
+			seq, "file:///" + id + ".jsonl", nil, nil,
+			LogArtifactStatusFinalized, nil, nil,
+			createdAt, createdAt,
+			0, LogArtifactVisibilityEngineerOnly, nil, nil,
+		}
+	}
+	// Rows in latest-attempt-first order: spi-att-zzz (newer) before
+	// spi-att-aaa (older), each attempt internally seq 0 then 1.
+	rows := sqlmock.NewRows(logArtifactColumnNames()).
+		AddRow(row("log-z0", "spi-att-zzz", "run-2", 0, "2026-06-01 09:00:00")...).
+		AddRow(row("log-z1", "spi-att-zzz", "run-2", 1, "2026-06-01 09:02:00")...).
+		AddRow(row("log-a0", "spi-att-aaa", "run-1", 0, "2026-01-01 10:00:00")...).
+		AddRow(row("log-a1", "spi-att-aaa", "run-1", 1, "2026-01-01 10:05:00")...)
+	mock.ExpectQuery(`ORDER BY MIN\(created_at\) OVER \(PARTITION BY attempt_id\) DESC`).
+		WithArgs("spi-x").
+		WillReturnRows(rows)
+
+	got, err := ListLogArtifactsForBead(context.Background(), db, "spi-x")
+	if err != nil {
+		t.Fatalf("ListLogArtifactsForBead: %v", err)
+	}
+	wantIDs := []string{"log-z0", "log-z1", "log-a0", "log-a1"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("got %d records, want %d", len(got), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if got[i].ID != want {
+			t.Errorf("row %d: id = %q, want %q", i, got[i].ID, want)
+		}
+	}
+	// The newest attempt's rows must lead the list.
+	if got[0].AttemptID != "spi-att-zzz" {
+		t.Errorf("first row attempt = %q, want spi-att-zzz (newest)", got[0].AttemptID)
 	}
 }
 
