@@ -20,6 +20,39 @@ import (
 // The executor should re-materialize the workspace before re-dispatching.
 var ErrWorkspacePathMissing = errors.New("process backend: cfg.Workspace.Path does not exist")
 
+// ResolveSpireBinary returns the path to the spire binary this process
+// should re-invoke when spawning child agents (apprentice, sage, cleric,
+// reviewer). Resolution order:
+//
+//  1. SPIRE_BIN env override, when set and the file exists on disk.
+//  2. os.Executable(), but ONLY when the resolved path actually exists.
+//  3. exec.LookPath("spire") — the binary on PATH.
+//
+// os.Executable() alone is insufficient. When the daemon/steward is launched
+// from a macOS .app bundle, os.Executable() reports the bundled
+// .../Spire.app/Contents/Resources/bin/spire path; if that artifact is stale
+// or missing, spawning it dies with "fork/exec ...: no such file or
+// directory" and every wizard/reviewer dispatch fails. Validating existence
+// and falling back to PATH mirrors the resolution already used by
+// cmd/spire/up.go.
+func ResolveSpireBinary() (string, error) {
+	if bin := os.Getenv("SPIRE_BIN"); bin != "" && fileExists(bin) {
+		return bin, nil
+	}
+	if exe, err := os.Executable(); err == nil && fileExists(exe) {
+		return exe, nil
+	}
+	if bin, err := exec.LookPath("spire"); err == nil {
+		return bin, nil
+	}
+	return "", fmt.Errorf("cannot resolve spire binary: not found via SPIRE_BIN, os.Executable, or PATH")
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
 // ProcessSpawner spawns agents as local OS processes.
 type ProcessSpawner struct{}
 
@@ -50,7 +83,7 @@ func (s *ProcessSpawner) Spawn(cfg SpawnConfig) (Handle, error) {
 		}
 	}
 
-	spireBin, err := os.Executable()
+	spireBin, err := ResolveSpireBinary()
 	if err != nil {
 		return nil, fmt.Errorf("find spire binary: %w", err)
 	}
