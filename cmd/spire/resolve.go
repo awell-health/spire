@@ -178,15 +178,17 @@ func resolveCleanWorktrees(beadID string) {
 		}
 	}
 
-	// Remove in-repo worktree
-	cwd, _ := os.Getwd()
-	inRepoWt := filepath.Join(cwd, ".worktrees", beadID)
+	// Remove in-repo worktree. Resolve the bead's bound repo rather than the
+	// process cwd — `spire resolve` may run from any directory (same defect
+	// as reset's worktree cleanup, see repoDirForBead).
+	repoDir := repoDirForBead(beadID)
+	inRepoWt := filepath.Join(repoDir, ".worktrees", beadID)
 	if err := os.RemoveAll(inRepoWt); err == nil {
 		fmt.Printf("  %s✓ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
 	}
 
 	// Remove subtask worktrees
-	wtMatches, _ := filepath.Glob(filepath.Join(cwd, ".worktrees", beadID+"-*"))
+	wtMatches, _ := filepath.Glob(filepath.Join(repoDir, ".worktrees", beadID+"-*"))
 	for _, m := range wtMatches {
 		if err := os.RemoveAll(m); err == nil {
 			fmt.Printf("  %s✓ subtask worktree removed: %s%s\n", dim, filepath.Base(m), reset)

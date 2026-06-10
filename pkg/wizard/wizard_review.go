@@ -588,7 +588,11 @@ func ReviewMerge(beadID, beadTitle, branch, baseBranch, repoPath string, deps *D
 // subprocess call — invoking os.Executable() from a go test binary
 // recursively re-runs the test suite.
 var reviewFixSendMessage = func(wizardName, feedbackText, beadID, reviewerName string) {
-	spireBin, _ := os.Executable()
+	spireBin, err := agent.ResolveSpireBinary()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reviewFixSendMessage: cannot deliver feedback to %s: %v\n", wizardName, err)
+		return
+	}
 	sendCmd := exec.Command(spireBin, "send", wizardName, feedbackText, "--ref", beadID, "--as", reviewerName)
 	sendCmd.Env = os.Environ()
 	sendCmd.Stderr = os.Stderr

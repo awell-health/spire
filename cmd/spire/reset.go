@@ -672,6 +672,21 @@ func hardResetBeadCore(beadID string) error {
 	// --- 6. Git cleanup: worktrees + branches ---
 	resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName)
 
+	// --- 6b. Cascade git cleanup to subtask children. The sweep above is
+	// keyed on the reset target's ID (feat/<beadID>, .worktrees/<beadID>-*).
+	// When the target is an epic, its children carry their OWN bead IDs
+	// (feat/<child>, .worktrees/<child>-feature) which that sweep never
+	// matches — so without this loop the children's worktrees + branches
+	// survive a `--hard` reset of the epic and the next implement wave
+	// collides on `git branch -f`. The children were reopened above; tear
+	// down their git artifacts to match.
+	for _, child := range processable {
+		if isInternalDAGBead(child) {
+			continue
+		}
+		resetCleanWorktreesAndBranches(child.ID, "", "wizard-"+child.ID)
+	}
+
 	// --- 7. Bump parent reset-cycle so the next attempt/review batch lands
 	// in a new cycle group on the board.
 	bumpParentResetCycle(beadID)
@@ -1123,8 +1138,13 @@ func softResetV3(beadID, targetStep, wizardName string, forceAdvance bool, setAr
 	}
 
 	// --- 6. Workspace cleanup (step-scoped only) ---
-	cwd, _ := os.Getwd()
-	rc := &spgit.RepoContext{Dir: cwd}
+	// Run git against the bead's bound repo (persisted in graph state), not
+	// the process cwd — `spire reset --to` may be invoked from anywhere.
+	repoDir := gs.RepoPath
+	if repoDir == "" {
+		repoDir = repoDirForBead(beadID)
+	}
+	rc := &spgit.RepoContext{Dir: repoDir}
 	for stepName := range stepsToReset {
 		stepCfg, ok := graph.Steps[stepName]
 		if !ok || stepCfg.Workspace == "" {
@@ -1705,6 +1725,26 @@ func deleteBeadDescendants(parentID string) {
 	}
 }
 
+// repoDirForBead resolves the on-disk repo checkout bound to beadID via the
+// tower's prefix→instance registry. Worktree/branch cleanup MUST target the
+// bead's bound repo, not the process working directory: running
+// `spire reset --hard <bead>` (or `spire resolve`) from any directory other
+// than that repo's root previously made the git teardown silently operate on
+// the wrong tree, leaving stale worktrees + feat/<bead> branches behind that
+// then collided with `git branch -f` on the next summon. Falls back to the
+// process cwd only when the bead's prefix is not locally registered, which
+// preserves the legacy behavior for the in-repo invocation that happened to
+// work before.
+func repoDirForBead(beadID string) string {
+	if wizardResolveRepo != nil {
+		if repoPath, _, _, err := wizardResolveRepo(beadID); err == nil && repoPath != "" {
+			return repoPath
+		}
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
 // resetCleanWorktreesAndBranches removes worktrees and branches for a bead.
 // Shared between v2 hard-reset and v3 hard-reset paths.
 //
@@ -1719,6 +1759,11 @@ func deleteBeadDescendants(parentID string) {
 // future cleric-pod reintroduction breaks that invariant, this sweep must
 // be tightened to check ownership before removal.
 func resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName string) {
+	// Resolve the bead's bound repo. All in-repo worktree globs and branch
+	// deletions below run against this directory — never the process cwd.
+	repoDir := repoDirForBead(beadID)
+	fmt.Printf("  %sgit cleanup for %s in %s%s\n", dim, beadID, repoDir, reset)
+
 	// Remove worktree directory.
 	if worktreePath == "" {
 		worktreePath = filepath.Join(os.TempDir(), "spire-wizard", wizardName, beadID)
@@ -1730,14 +1775,13 @@ func resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName string) {
 	}
 
 	// Also remove .worktrees/<bead-id> if it exists (in-repo worktree).
-	cwd, _ := os.Getwd()
-	inRepoWt := filepath.Join(cwd, ".worktrees", beadID)
+	inRepoWt := filepath.Join(repoDir, ".worktrees", beadID)
 	if err := os.RemoveAll(inRepoWt); err == nil {
 		fmt.Printf("  %s✗ in-repo worktree removed: %s%s\n", dim, inRepoWt, reset)
 	}
 
 	// Also remove .worktrees/<bead-id>-* (feature worktrees for subtasks).
-	wtMatches, _ := filepath.Glob(filepath.Join(cwd, ".worktrees", beadID+"-*"))
+	wtMatches, _ := filepath.Glob(filepath.Join(repoDir, ".worktrees", beadID+"-*"))
 	for _, m := range wtMatches {
 		if err := os.RemoveAll(m); err == nil {
 			fmt.Printf("  %s✗ subtask worktree removed: %s%s\n", dim, filepath.Base(m), reset)
@@ -1774,7 +1818,7 @@ func resetCleanWorktreesAndBranches(beadID, worktreePath, wizardName string) {
 	}
 
 	// Delete matching branches: epic/<bead-id>, feat/<bead-id>, feat/<bead-id>.*, staging/<bead-id>
-	rc := &spgit.RepoContext{Dir: cwd}
+	rc := &spgit.RepoContext{Dir: repoDir}
 	// Prune stale worktree refs so branch deletion succeeds even if the
 	// worktree directory was already removed above.
 	rc.PruneWorktrees()
