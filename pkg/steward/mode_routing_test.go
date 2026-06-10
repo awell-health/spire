@@ -166,7 +166,7 @@ func modeRoutingSetup(t *testing.T, tc *config.TowerConfig, schedulable []store.
 	t.Helper()
 
 	origBeadsDir := BeadsDirForTowerFunc
-	origStoreOpen := StoreOpenAtFunc
+	origStoreOpen := UseTowerStoreFunc
 	origCommit := CommitPendingFunc
 	origSched := GetSchedulableWorkFunc
 	origDispatchable := DispatchableBeadsFunc
@@ -178,7 +178,7 @@ func modeRoutingSetup(t *testing.T, tc *config.TowerConfig, schedulable []store.
 	origChildren := GetChildrenFunc
 
 	BeadsDirForTowerFunc = func(_ string) string { return "/fake/.beads" }
-	StoreOpenAtFunc = func(_ string) (beads.Storage, error) { return nil, nil }
+	UseTowerStoreFunc = func(_ string) (beads.Storage, error) { return nil, nil }
 	CommitPendingFunc = func(_ string) error { return nil }
 	GetSchedulableWorkFunc = func(_ beads.WorkFilter) (*store.ScheduleResult, error) {
 		return &store.ScheduleResult{Schedulable: schedulable}, nil
@@ -205,7 +205,7 @@ func modeRoutingSetup(t *testing.T, tc *config.TowerConfig, schedulable []store.
 
 	t.Cleanup(func() {
 		BeadsDirForTowerFunc = origBeadsDir
-		StoreOpenAtFunc = origStoreOpen
+		UseTowerStoreFunc = origStoreOpen
 		CommitPendingFunc = origCommit
 		GetSchedulableWorkFunc = origSched
 		DispatchableBeadsFunc = origDispatchable
@@ -436,7 +436,7 @@ func TestTowerCycle_ClusterNative_NilClusterDispatchIsInert(t *testing.T) {
 // cycle (scoped to towerName) and dispatches through the returned
 // config. This is the shape cmd/spire uses in production — the factory
 // is the only place store.ActiveDB() is read, because the DB is only
-// valid inside TowerCycle's StoreOpenAtFunc-scoped block.
+// valid inside TowerCycle's UseTowerStoreFunc-scoped block.
 func TestTowerCycle_ClusterNative_InvokesBuildClusterDispatch(t *testing.T) {
 	t.Setenv("SPIRE_DOLT_DIR", t.TempDir())
 

@@ -12,6 +12,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // ErrNoTowerBound is returned by ResolveGraphStateStore when the caller
@@ -117,6 +118,7 @@ func NewDoltGraphStateStore(dsn string) (*DoltGraphStateStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open dolt connection: %w", err)
 	}
+	store.ConnOpen("executor.NewDoltGraphStateStore")
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping dolt: %w", err)

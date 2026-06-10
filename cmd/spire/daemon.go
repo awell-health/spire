@@ -17,6 +17,7 @@ import (
 	"github.com/awell-health/spire/pkg/gateway"
 	"github.com/awell-health/spire/pkg/process"
 	"github.com/awell-health/spire/pkg/steward"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -72,6 +73,10 @@ func runDaemon(interval, debounce time.Duration, once bool, database, remote, br
 	} else {
 		d = steward.NewLocalDaemon(interval, debounce, nil)
 	}
+
+	// Close the warm per-tower store pools opened by DaemonTowerCycle on exit
+	// (covers both the --once and the long-running Run paths).
+	defer store.CloseTowerStores()
 
 	// --once bypasses the Run loop: run a single sync synchronously, exit.
 	if once {

@@ -283,7 +283,7 @@ func cmdSteward(args []string) error {
 		CycleStats:         cycleStats,
 		// Lazy factory: cluster-native scheduler seams are built
 		// against the per-tower DB that becomes available inside
-		// TowerCycle (after StoreOpenAtFunc opens the tower's store).
+		// TowerCycle (after UseTowerStoreFunc opens the tower's store).
 		// Daemon startup does NOT populate ClusterDispatch itself —
 		// capturing a store.ActiveDB() here would yield nil or a
 		// stale connection across tower switches.
@@ -346,6 +346,8 @@ func cmdSteward(args []string) error {
 			if metricsServer != nil {
 				metricsServer.Stop(context.Background())
 			}
+			// Close the warm per-tower store pools opened by TowerCycle.
+			store.CloseTowerStores()
 			return nil
 		}
 	}
@@ -376,7 +378,7 @@ func intentTableOnceFor(towerName string) *sync.Once {
 // steward.StewardConfig.BuildClusterDispatch. It runs inside
 // TowerCycle's per-tower scope so store.ActiveDB() returns the
 // connection for the tower currently being cycled (the cmdSteward
-// caller does NOT own that connection — it's opened by StoreOpenAtFunc
+// caller does NOT own that connection — it's opened by UseTowerStoreFunc
 // a few lines above the factory invocation).
 //
 // When the active DB is not available (e.g. the backing store is a

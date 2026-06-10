@@ -276,7 +276,7 @@ type StewardConfig struct {
 	ClusterDispatch *ClusterDispatchConfig
 
 	// BuildClusterDispatch, when non-nil, is invoked inside TowerCycle
-	// on the cluster-native branch AFTER StoreOpenAtFunc has opened the
+	// on the cluster-native branch AFTER UseTowerStoreFunc has opened the
 	// tower's dolt store (so store.ActiveDB is valid) and BEFORE
 	// dispatchClusterNative runs. It returns the fully-populated
 	// *ClusterDispatchConfig for this cycle, or nil to fall back to the
@@ -360,11 +360,16 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 			log.Printf("[steward] %sno .beads/ directory found, skipping", prefix)
 			return
 		}
-		if _, err := StoreOpenAtFunc(beadsDir); err != nil {
+		// Warm per-tower store: reuse the cached connection pool across
+		// cycles instead of rebuilding it every cycle. The old
+		// OpenAt + defer Reset() pattern tore down and reopened the Dolt
+		// connection pool on every cycle, which churned connections and
+		// pinned the dolt server's CPU (releases/v0.52.0). Do NOT add a
+		// per-cycle store.Reset() back here.
+		if _, err := UseTowerStoreFunc(beadsDir); err != nil {
 			log.Printf("[steward] %sopen store: %s", prefix, err)
 			return
 		}
-		defer store.Reset()
 		log.Printf("[steward] %s───────────────────────────────", prefix)
 	}
 
@@ -512,7 +517,7 @@ func TowerCycle(cycleNum int, towerName string, cfg StewardConfig) {
 	// Resolve ClusterDispatch lazily for cluster-native mode: if the
 	// caller set it explicitly (test override) use that; otherwise invoke
 	// the factory, which builds the config against the per-tower DB that
-	// was opened above by StoreOpenAtFunc. The resolved value is shared
+	// was opened above by UseTowerStoreFunc. The resolved value is shared
 	// across the bead-level dispatch branch below and the phase-level
 	// dispatch seam used by the review/hooked-sweep paths at step 4b/4d
 	// — invoking the factory once per cycle, not once per call site.
@@ -2407,6 +2412,7 @@ func getDBForRouting(dbName string) *sql.DB {
 	if err != nil {
 		return nil
 	}
+	store.ConnOpen("steward.getDBForRouting")
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil
@@ -2440,5 +2446,8 @@ var ConfigLoadFunc = config.Load
 // BeadsDirForTowerFunc is a test-replaceable function for BeadsDirForTower.
 var BeadsDirForTowerFunc = BeadsDirForTower
 
-// StoreOpenAtFunc is a test-replaceable function for store.OpenAt.
-var StoreOpenAtFunc = store.OpenAt
+// UseTowerStoreFunc is a test-replaceable function for store.UseTowerStore.
+// TowerCycle uses the warm per-tower store cache (one pool reused across
+// cycles) rather than store.OpenAt (which rebuilt the pool every cycle and
+// caused a connection storm — see releases/v0.52.0).
+var UseTowerStoreFunc = store.UseTowerStore

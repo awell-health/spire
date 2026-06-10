@@ -222,6 +222,11 @@ var nonDispatchableAPIs = []string{
 	"OpenAt",
 	"Open",
 	"Reset",
+	// tower_cache.go — warm per-tower store cache + conn_debug.go logging.
+	// Connection/pool management and diagnostics, not per-bead data ops.
+	"UseTowerStore",
+	"CloseTowerStores",
+	"ConnOpen",
 	"Actor",
 	"PopulateDependencies",
 	"IssueToBead",
