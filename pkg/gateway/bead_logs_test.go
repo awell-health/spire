@@ -283,6 +283,62 @@ func TestListBeadLogs_ListsManifestRows(t *testing.T) {
 	}
 }
 
+// TestListBeadLogs_PreservesLatestAttemptFirstOrder proves the handler
+// surfaces artifacts in the order the reader returns them, which (per
+// ListLogArtifactsForBead) is most-recent-attempt-first. The Logs tab
+// defaults to artifacts[0], so the newest attempt's first transcript must
+// lead the list. The reader is fed in store order — the newer attempt's
+// rows ahead of the older attempt's — and the response must keep that
+// order so the desktop opens on the latest run, not an arbitrary old one.
+func TestListBeadLogs_PreservesLatestAttemptFirstOrder(t *testing.T) {
+	reader := &fakeLogReader{
+		manifests: []logartifact.Manifest{
+			// Newest attempt first (spi-att-zzz), then the older one
+			// (spi-att-aaa) — exactly what the store query yields.
+			makeManifest("log-z0", func(m *logartifact.Manifest) {
+				m.Identity.AttemptID = "spi-att-zzz"
+				m.CreatedAt = time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+			}),
+			makeManifest("log-z1", func(m *logartifact.Manifest) {
+				m.Identity.AttemptID = "spi-att-zzz"
+				m.Sequence = 1
+				m.CreatedAt = time.Date(2026, 6, 1, 9, 2, 0, 0, time.UTC)
+			}),
+			makeManifest("log-a0", func(m *logartifact.Manifest) {
+				m.Identity.AttemptID = "spi-att-aaa"
+				m.CreatedAt = time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+			}),
+		},
+	}
+	withLogStubs(t, reader, store.Bead{Status: "open"}, nil)
+	s := newLogTestServer("")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads/spi-test1/logs", nil)
+	rec := httptest.NewRecorder()
+	s.listBeadLogs(rec, req, "spi-test1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 body=%q", rec.Code, rec.Body.String())
+	}
+	var resp logsListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantIDs := []string{"log-z0", "log-z1", "log-a0"}
+	if len(resp.Artifacts) != len(wantIDs) {
+		t.Fatalf("artifacts = %d want %d", len(resp.Artifacts), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if resp.Artifacts[i].ID != want {
+			t.Errorf("artifact %d = %q want %q", i, resp.Artifacts[i].ID, want)
+		}
+	}
+	// The default-rendered first artifact must belong to the newest attempt.
+	if resp.Artifacts[0].AttemptID != "spi-att-zzz" {
+		t.Errorf("artifacts[0] attempt = %q want spi-att-zzz (newest)", resp.Artifacts[0].AttemptID)
+	}
+}
+
 func TestListBeadLogs_ManifestRowsWithoutBytes(t *testing.T) {
 	// Manifest row exists but the artifact has not been finalized —
 	// list must return the row with status=writing rather than error.

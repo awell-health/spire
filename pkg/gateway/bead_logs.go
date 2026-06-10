@@ -253,8 +253,11 @@ func (s *Server) listBeadLogs(w http.ResponseWriter, r *http.Request, id string)
 	}
 
 	// Cursor advance: skip rows whose ordinal position is below the
-	// recorded artifact_seq. The list is already deterministic by
-	// (attempt, run, sequence, created_at) — see ListLogArtifactsForBead.
+	// recorded artifact_seq. The list is already deterministic and stable:
+	// attempt groups ordered most-recent-first by their earliest artifact
+	// timestamp, rows within an attempt in ascending (run, sequence) order,
+	// and id ASC as the final tiebreak — see ListLogArtifactsForBead. As
+	// long as that order is stable, the offset stays valid across calls.
 	start := cursor.ArtifactSeq
 	if start < 0 {
 		start = 0
