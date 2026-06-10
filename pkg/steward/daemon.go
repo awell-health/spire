@@ -249,12 +249,16 @@ func DaemonTowerCycle(tower config.TowerConfig) {
 	// Sync derived configs from tower config (single source of truth).
 	SyncTowerDerivedConfigs(tower)
 
-	// Open store scoped to this tower
-	if _, err := store.OpenAt(beadsDir); err != nil {
+	// Open store scoped to this tower using the warm per-tower cache:
+	// reuse the cached connection pool across cycles instead of rebuilding
+	// it every cycle. The old OpenAt + defer Reset() pattern tore the Dolt
+	// connection pool down and reopened it each cycle, churning connections
+	// and pinning the dolt server's CPU (releases/v0.52.0). Do NOT add a
+	// per-cycle store.Reset() back here.
+	if _, err := store.UseTowerStore(beadsDir); err != nil {
 		log.Printf("[daemon] [%s] open store: %s", tower.Name, err)
 		return
 	}
-	defer store.Reset()
 
 	// Set DaemonDB for doltSQL() calls that still need it.
 	DaemonDB = tower.Database
@@ -868,6 +872,7 @@ func syncToOLAP(tower config.TowerConfig) error {
 	if err != nil {
 		return err
 	}
+	store.ConnOpen("daemon.syncToOLAP")
 	defer doltConn.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

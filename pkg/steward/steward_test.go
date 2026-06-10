@@ -3532,8 +3532,8 @@ func towerCycleTestSetup(t *testing.T) func() {
 	t.Helper()
 	origBeadsDir := BeadsDirForTowerFunc
 	BeadsDirForTowerFunc = func(name string) string { return "/fake/.beads" }
-	origStoreOpen := StoreOpenAtFunc
-	StoreOpenAtFunc = func(dir string) (beads.Storage, error) { return nil, nil }
+	origStoreOpen := UseTowerStoreFunc
+	UseTowerStoreFunc = func(dir string) (beads.Storage, error) { return nil, nil }
 	origCommit := CommitPendingFunc
 	CommitPendingFunc = func(msg string) error { return nil }
 	// Stub ListBeadsFunc for CheckBeadHealth (step 5 of TowerCycle).
@@ -3555,7 +3555,7 @@ func towerCycleTestSetup(t *testing.T) func() {
 	InstanceIDFunc = func() string { return "test-instance" }
 	return func() {
 		BeadsDirForTowerFunc = origBeadsDir
-		StoreOpenAtFunc = origStoreOpen
+		UseTowerStoreFunc = origStoreOpen
 		CommitPendingFunc = origCommit
 		ListBeadsFunc = origList
 		DispatchableBeadsFunc = origDispatchable
