@@ -19,6 +19,7 @@ import (
 	"github.com/awell-health/spire/pkg/recovery"
 	"github.com/awell-health/spire/pkg/steward/intent"
 	"github.com/awell-health/spire/pkg/store"
+	"github.com/awell-health/spire/pkg/trace"
 	"github.com/steveyegge/beads"
 )
 
@@ -1264,6 +1265,26 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 		return ActionResult{Outputs: map[string]string{"status": "discarded"}}
 
 	case "escalate":
+		// Stopgap (releases/v0.53.0): a terminal escalate step (e.g. epic
+		// implement-failed) routes here on a declared-but-bad upstream
+		// outcome rather than a hard error, so it has no handle on the
+		// failure detail. The actual reason — a build/test error from
+		// verify.run, for instance — lives only in this run's wizard log,
+		// which the archmage would otherwise have to dig out of
+		// ~/.local/share/spire/wizards/*.log by hand. Append the log tail to
+		// the bead so the escalation comment is actually diagnostic. The
+		// real fix is to propagate the upstream step's failure summary as a
+		// first-class output; this is the cheap interim measure.
+		if e.deps.AddComment != nil {
+			if tail := e.escalationLogTail(40); tail != "" {
+				if err := e.deps.AddComment(e.beadID, fmt.Sprintf(
+					"Escalation diagnostics — last lines of the %s run log:\n\n```\n%s\n```",
+					stepName, tail,
+				)); err != nil {
+					e.log("warning: append escalation diagnostics to %s: %s", e.beadID, err)
+				}
+			}
+		}
 		EscalateGraphStepFailure(e.beadID, e.agentName, "bead-finish-escalate",
 			"formula requested escalation", stepName, step.Action, step.Flow, step.Workspace, e.deps)
 		return ActionResult{Outputs: map[string]string{"status": "escalated"}}
@@ -1271,6 +1292,37 @@ func actionBeadFinish(e *Executor, stepName string, step StepConfig, state *Grap
 	default:
 		return ActionResult{Error: fmt.Errorf("unknown bead.finish status %q", status)}
 	}
+}
+
+// escalationLogTail returns the last n lines of this run's wizard log, or ""
+// if the log cannot be located or read. Best-effort and error-swallowing by
+// design: it only enriches the escalation comment with the upstream failure
+// detail (e.g. build/test output) that a terminal escalate step cannot see,
+// so it must never perturb the escalation path itself. Log lookup reuses the
+// agent backend's naming conventions (<name>.log, wizard-<name>.log), falling
+// back to the bead ID when the agent name is unset.
+func (e *Executor) escalationLogTail(n int) string {
+	name := e.agentName
+	if name == "" {
+		name = e.beadID
+	}
+	rc, err := agent.ResolveBackend("").Logs(name)
+	if err != nil {
+		return ""
+	}
+	path := ""
+	if f, ok := rc.(*os.File); ok {
+		path = f.Name()
+	}
+	_ = rc.Close()
+	if path == "" {
+		return ""
+	}
+	lines, err := trace.ReadLastLines(path, n)
+	if err != nil || len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
 
 // actionMergeToMain lands the staging branch onto the base branch.
