@@ -3,7 +3,9 @@ package wizard
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1126,6 +1128,82 @@ The merged code fails to build. Your ONLY job is to fix the build errors.
 `, wizardName, buildErr, buildCmdStr, beadID, contextBlock.String())
 }
 
+// sharedRepoCache memoizes repos-table rows per (database, prefix). A
+// prefix's repo_url/branch effectively never change mid-run, but ResolveRepo
+// is called for every ready bead on every steward cycle — uncached, each
+// call forked a fresh `dolt sql` CLI subprocess (plus its `dolt
+// send-metrics` child), churning ~17 new server connections per second and
+// measurably pinning the dolt server's CPU. The TTL keeps `spire repo set`
+// changes visible to long-running daemons without a restart.
+var (
+	sharedRepoCacheMu sync.Mutex
+	sharedRepoCache   = map[string]sharedRepoCacheEntry{}
+)
+
+type sharedRepoCacheEntry struct {
+	repoURL    string
+	baseBranch string
+	fetchedAt  time.Time
+}
+
+const sharedRepoCacheTTL = 5 * time.Minute
+
+// lookupSharedRepo returns (repo_url, branch) for a prefix from the tower's
+// shared repos table, preferring the warm in-process store pool over the
+// legacy `dolt sql` subprocess path, with a TTL cache in front of both.
+func lookupSharedRepo(deps *Deps, database, prefix string) (string, string) {
+	key := database + "/" + prefix
+	sharedRepoCacheMu.Lock()
+	entry, ok := sharedRepoCache[key]
+	sharedRepoCacheMu.Unlock()
+	if ok && time.Since(entry.fetchedAt) < sharedRepoCacheTTL {
+		return entry.repoURL, entry.baseBranch
+	}
+
+	repoURL, baseBranch, found := querySharedRepo(deps, database, prefix)
+	if found {
+		sharedRepoCacheMu.Lock()
+		sharedRepoCache[key] = sharedRepoCacheEntry{
+			repoURL:    repoURL,
+			baseBranch: baseBranch,
+			fetchedAt:  time.Now(),
+		}
+		sharedRepoCacheMu.Unlock()
+	}
+	return repoURL, baseBranch
+}
+
+func querySharedRepo(deps *Deps, database, prefix string) (repoURL, baseBranch string, found bool) {
+	// Warm path: parameterized query on the in-process store pool — no
+	// subprocess, no new server connection.
+	if db, ok := store.ActiveDB(); ok {
+		query := fmt.Sprintf("SELECT repo_url, branch FROM `%s`.repos WHERE prefix = ? LIMIT 1", database)
+		var url, branch sql.NullString
+		err := db.QueryRow(query, prefix).Scan(&url, &branch)
+		switch {
+		case err == nil:
+			return url.String, branch.String, true
+		case errors.Is(err, sql.ErrNoRows):
+			return "", "", false
+		}
+		// Other errors (e.g. the active store points at a different
+		// server than this tower's database): fall through to the
+		// subprocess path rather than failing the resolve.
+	}
+
+	q := fmt.Sprintf("SELECT repo_url, branch FROM `%s`.repos WHERE prefix = '%s'",
+		database, deps.SQLEscape(prefix))
+	out, err := deps.RawDoltQuery(q)
+	if err != nil {
+		return "", "", false
+	}
+	rows := deps.ParseDoltRows(out, []string{"repo_url", "branch"})
+	if len(rows) == 0 {
+		return "", "", false
+	}
+	return rows[0]["repo_url"], rows[0]["branch"], true
+}
+
 // ResolveRepo finds the local repo path, remote URL, and base branch
 // for a bead by matching its ID prefix against registered repos.
 func ResolveRepo(beadID string, deps *Deps) (repoPath, repoURL, baseBranch string, err error) {
@@ -1148,15 +1226,7 @@ func ResolveRepo(beadID string, deps *Deps) (repoPath, repoURL, baseBranch strin
 	// Query repos table for URL and branch
 	database, _ := deps.ResolveDatabase(cfg)
 	if database != "" && prefix != "" {
-		sql := fmt.Sprintf("SELECT repo_url, branch FROM `%s`.repos WHERE prefix = '%s'",
-			database, deps.SQLEscape(prefix))
-		if out, err := deps.RawDoltQuery(sql); err == nil {
-			rows := deps.ParseDoltRows(out, []string{"repo_url", "branch"})
-			if len(rows) > 0 {
-				repoURL = rows[0]["repo_url"]
-				baseBranch = rows[0]["branch"]
-			}
-		}
+		repoURL, baseBranch = lookupSharedRepo(deps, database, prefix)
 	}
 
 	if repoPath == "" {

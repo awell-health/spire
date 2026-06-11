@@ -79,3 +79,45 @@ func TestResolveRepo_BoundPrefixReturnsPath(t *testing.T) {
 		t.Errorf("branch = %q, want main", branch)
 	}
 }
+
+// TestResolveRepo_SharedRepoLookupIsCached verifies the repos-table lookup
+// is memoized: a second resolve for the same (database, prefix) within the
+// cache TTL must not re-query. Uncached, every steward cycle forked one
+// `dolt sql` subprocess per ready bead just to re-read a row that never
+// changes mid-run.
+func TestResolveRepo_SharedRepoLookupIsCached(t *testing.T) {
+	calls := 0
+	deps := &Deps{
+		LoadConfig: func() (*config.SpireConfig, error) {
+			return &config.SpireConfig{
+				Instances: map[string]*config.Instance{
+					"cch": {Prefix: "cch", Path: "/tmp/cached-repo"},
+				},
+			}, nil
+		},
+		ResolveDatabase: func(cfg *config.SpireConfig) (string, bool) {
+			return "cache_test_db", false
+		},
+		RawDoltQuery: func(sql string) (string, error) {
+			calls++
+			return "| repo_url | branch |", nil
+		},
+		ParseDoltRows: func(out string, cols []string) []map[string]string {
+			return []map[string]string{{"repo_url": "git@github.com:example/cached.git", "branch": "main"}}
+		},
+		SQLEscape: func(s string) string { return s },
+	}
+
+	for i := 0; i < 3; i++ {
+		_, url, branch, err := ResolveRepo("cch-abc", deps)
+		if err != nil {
+			t.Fatalf("resolve %d: %v", i, err)
+		}
+		if url != "git@github.com:example/cached.git" || branch != "main" {
+			t.Fatalf("resolve %d returned (%q, %q), want cached row", i, url, branch)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("RawDoltQuery called %d times, want 1 (cache should serve repeats)", calls)
+	}
+}
