@@ -333,14 +333,22 @@ func cmdSteward(args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// Pace cycles with a timer that is re-armed only after a cycle
+	// completes, guaranteeing `interval` of idle time between cycles. A
+	// ticker is wrong here: ticks keep one tick buffered while a cycle
+	// runs, so whenever a cycle takes longer than the interval the loop
+	// re-enters Cycle immediately — the steward then queries dolt
+	// back-to-back with zero idle time, indefinitely (observed pinning the
+	// dolt server with --interval 10s and ~26s cycles).
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			steward.Cycle(cycleNum, cfg)
 			cycleNum++
+			timer.Reset(interval)
 		case sig := <-sigCh:
 			log.Printf("[steward] received %s, shutting down after %d cycles", sig, cycleNum-1)
 			if metricsServer != nil {
