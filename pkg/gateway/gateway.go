@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,7 +80,27 @@ type Server struct {
 	graphStateStore executor.GraphStateStore
 
 	devModeLogOnce sync.Once
+
+	// beadsCache memoizes /api/v1/beads responses keyed by query string,
+	// invalidated by the Dolt database hash (see dbChangeToken). The
+	// desktop board polls this endpoint continuously; without change
+	// detection every poll re-lists and re-serializes the full board even
+	// when nothing changed.
+	beadsCacheMu sync.Mutex
+	beadsCache   map[string]beadsCacheEntry
 }
+
+// beadsCacheEntry is one memoized /api/v1/beads response.
+type beadsCacheEntry struct {
+	token string // dolt_hashof_db() value the body was computed at
+	etag  string
+	body  []byte
+}
+
+// beadsCacheMaxEntries bounds the response cache. Distinct query strings
+// from the desktop are few; the bound only guards against an adversarial
+// client manufacturing unique query strings.
+const beadsCacheMaxEntries = 32
 
 // NewServer wires a server listening on addr (e.g. ":3030") that forwards
 // POST /sync to target.Trigger. Pass a non-nil logger to capture request
@@ -306,38 +328,155 @@ func (s *Server) handleBeads(w http.ResponseWriter, r *http.Request) {
 
 // listBeads handles GET /api/v1/beads
 // Query params: status, label, prefix, type
+// defaultClosedWindowDays bounds the CLOSED column on the desktop board:
+// only beads closed within this many days are returned by default.
+// Override per request with ?closed_days=N (0 disables closed beads).
+const defaultClosedWindowDays = 14
+
+// dbChangeToken returns a token that changes whenever the active Dolt
+// database changes, via dolt_hashof_db() — a single cheap query that hashes
+// the working set. ok=false when no raw DB is available (e.g. mock stores
+// in tests) or the function is unsupported; callers skip caching then.
+func dbChangeToken() (string, bool) {
+	db, ok := store.ActiveDB()
+	if !ok {
+		return "", false
+	}
+	var hash string
+	if err := db.QueryRow("SELECT dolt_hashof_db()").Scan(&hash); err != nil {
+		return "", false
+	}
+	return hash, true
+}
+
+// beadsETag derives a deterministic ETag for a (db-state, query) pair.
+func beadsETag(token, cacheKey string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cacheKey))
+	return fmt.Sprintf("%q", token+"-"+strconv.FormatUint(h.Sum64(), 16))
+}
+
+// beadsCacheGet returns the cached response for cacheKey if it was computed
+// at the given token.
+func (s *Server) beadsCacheGet(cacheKey, token string) (beadsCacheEntry, bool) {
+	s.beadsCacheMu.Lock()
+	defer s.beadsCacheMu.Unlock()
+	entry, ok := s.beadsCache[cacheKey]
+	if !ok || entry.token != token {
+		return beadsCacheEntry{}, false
+	}
+	return entry, true
+}
+
+func (s *Server) beadsCacheSet(cacheKey string, entry beadsCacheEntry) {
+	s.beadsCacheMu.Lock()
+	defer s.beadsCacheMu.Unlock()
+	if s.beadsCache == nil || len(s.beadsCache) >= beadsCacheMaxEntries {
+		s.beadsCache = make(map[string]beadsCacheEntry)
+	}
+	s.beadsCache[cacheKey] = entry
+}
+
+// internalIssueTypes returns store.InternalTypes as a deterministic
+// beads.IssueType slice for SQL-level exclusion.
+func internalIssueTypes() []beads.IssueType {
+	types := make([]beads.IssueType, 0, len(store.InternalTypes))
+	for t := range store.InternalTypes {
+		types = append(types, beads.IssueType(t))
+	}
+	sort.Slice(types, func(i, j int) bool { return types[i] < types[j] })
+	return types
+}
+
 func (s *Server) listBeads(w http.ResponseWriter, r *http.Request) {
 	if _, err := store.Ensure(s.effectiveDataDir()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	// By default, include every status (including closed) so the desktop
-	// board can show a CLOSED column. store.ListBeads applies
-	// ExcludeStatus=[closed] when the filter is empty; bypass that default
-	// with a sentinel that matches no real status.
-	filter := beads.IssueFilter{
-		ExcludeStatus: []beads.Status{"__none__"},
-	}
-	if v := r.URL.Query().Get("status"); v != "" {
-		bs := beads.Status(v)
-		filter.Status = &bs
-		filter.ExcludeStatus = nil
-	}
-	if v := r.URL.Query().Get("label"); v != "" {
-		filter.Labels = strings.Split(v, ",")
-	}
-	if v := r.URL.Query().Get("prefix"); v != "" {
-		filter.IDPrefix = v + "-"
+	// Change detection: when the database hash is unchanged since the last
+	// time this exact query was served, answer from cache (or 304 when the
+	// client already holds the body) without touching the issues table.
+	cacheKey := r.URL.RawQuery
+	token, tokenOK := dbChangeToken()
+	if tokenOK {
+		etag := beadsETag(token, cacheKey)
+		if r.Header.Get("If-None-Match") == etag {
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		if entry, hit := s.beadsCacheGet(cacheKey, token); hit {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", entry.etag)
+			_, _ = w.Write(entry.body)
+			return
+		}
 	}
 
-	// Use ListBoardBeads so Dependencies are populated — otherwise
-	// FindParentID can't resolve and the Parent field is always empty,
-	// which breaks client-side grouping on the board.
-	boardBeads, err := store.ListBoardBeads(filter)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	// Internal bead types (message, step, attempt, review) are engine
+	// bookkeeping, not board cards. They dominate the issues table (more
+	// than half of all rows on a mature tower), so excluding them at the
+	// SQL level keeps the board listing from scanning and serializing
+	// thousands of rows the desktop never renders.
+	baseFilter := beads.IssueFilter{
+		ExcludeTypes: internalIssueTypes(),
+	}
+	if v := r.URL.Query().Get("label"); v != "" {
+		baseFilter.Labels = strings.Split(v, ",")
+	}
+	if v := r.URL.Query().Get("prefix"); v != "" {
+		baseFilter.IDPrefix = v + "-"
+	}
+
+	// The desktop board shows a CLOSED column, but ~98% of a mature tower's
+	// beads are closed and the column can only usefully render recent ones.
+	// Instead of listing every status (the old `__none__` sentinel bypass),
+	// fetch non-closed beads plus beads closed within the last
+	// `closed_days` days (default 14, 0 disables the CLOSED column).
+	// An explicit ?status= filter keeps full-history semantics.
+	closedDays := defaultClosedWindowDays
+	if v := r.URL.Query().Get("closed_days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			closedDays = n
+		}
+	}
+
+	var boardBeads []store.BoardBead
+	if v := r.URL.Query().Get("status"); v != "" {
+		bs := beads.Status(v)
+		baseFilter.Status = &bs
+		var err error
+		boardBeads, err = store.ListBoardBeads(baseFilter)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	} else {
+		// Use ListBoardBeads so Dependencies are populated — otherwise
+		// FindParentID can't resolve and the Parent field is always empty,
+		// which breaks client-side grouping on the board.
+		openFilter := baseFilter
+		openFilter.ExcludeStatus = []beads.Status{beads.StatusClosed}
+		var err error
+		boardBeads, err = store.ListBoardBeads(openFilter)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if closedDays > 0 {
+			closedFilter := baseFilter
+			closedStatus := beads.StatusClosed
+			closedFilter.Status = &closedStatus
+			closedAfter := time.Now().AddDate(0, 0, -closedDays)
+			closedFilter.ClosedAfter = &closedAfter
+			closedBeads, err := store.ListBoardBeads(closedFilter)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			boardBeads = append(boardBeads, closedBeads...)
+		}
 	}
 	// Project back down to the lightweight Bead shape so the response
 	// stays small; parent survives because BoardBead.Parent is also
@@ -357,7 +496,20 @@ func (s *Server) listBeads(w http.ResponseWriter, r *http.Request) {
 			Metadata:    bb.Metadata,
 		}
 	}
-	writeJSON(w, http.StatusOK, wrapBeads(beadList))
+
+	body, err := json.Marshal(wrapBeads(beadList))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	body = append(body, '\n') // parity with writeJSON's Encoder output
+	w.Header().Set("Content-Type", "application/json")
+	if tokenOK {
+		etag := beadsETag(token, cacheKey)
+		s.beadsCacheSet(cacheKey, beadsCacheEntry{token: token, etag: etag, body: body})
+		w.Header().Set("ETag", etag)
+	}
+	_, _ = w.Write(body)
 }
 
 // createBead handles POST /api/v1/beads

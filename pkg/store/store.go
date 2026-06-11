@@ -18,6 +18,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -102,21 +103,52 @@ type depBatchFetcher interface {
 	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*beads.Dependency, error)
 }
 
+// rawDBAccessor is satisfied by dolt stores that expose their underlying
+// *sql.DB (type-asserted from beads.Storage).
+type rawDBAccessor interface {
+	DB() *sql.DB
+}
+
+// depFetchBatchSize bounds the IN-clause size of the batched dependency
+// queries, matching the beads library's queryBatchSize.
+const depFetchBatchSize = 200
+
 // PopulateDependencies batch-fetches dependency records and sets
 // issue.Dependencies on each issue. This ensures FindParentID can derive the
 // Parent field correctly. No-op when the store doesn't support bulk dependency
 // queries or when issues is empty.
+//
+// When the store exposes its raw *sql.DB, the fetch runs as batched IN
+// queries against both dependencies tables directly. The beads-library path
+// (GetDependencyRecordsForIssues) partitions IDs into wisp/permanent tables
+// with one `SELECT 1 FROM wisps WHERE id = ?` per issue ID — an N+1 that
+// dominated the dolt server's CPU on board listings (15k+ point queries per
+// poll). Querying both tables with the same batched ID sets returns the
+// identical union: an ID's dependency rows live in exactly one of the two
+// tables, so routing is unnecessary for a bulk read.
 func PopulateDependencies(ctx context.Context, s beads.Storage, issues []*beads.Issue) {
 	if len(issues) == 0 {
-		return
-	}
-	dqs, ok := s.(depBatchFetcher)
-	if !ok {
 		return
 	}
 	ids := make([]string, len(issues))
 	for i, issue := range issues {
 		ids[i] = issue.ID
+	}
+
+	if accessor, ok := s.(rawDBAccessor); ok && accessor.DB() != nil {
+		allDeps, err := fetchDependencyRecordsBatched(ctx, accessor.DB(), ids)
+		if err == nil {
+			for _, issue := range issues {
+				issue.Dependencies = allDeps[issue.ID]
+			}
+			return
+		}
+		log.Printf("[store] PopulateDependencies: batched fetch failed, falling back to beads path: %v", err)
+	}
+
+	dqs, ok := s.(depBatchFetcher)
+	if !ok {
+		return
 	}
 	allDeps, err := dqs.GetDependencyRecordsForIssues(ctx, ids)
 	if err != nil {
@@ -126,6 +158,60 @@ func PopulateDependencies(ctx context.Context, s beads.Storage, issues []*beads.
 	for _, issue := range issues {
 		issue.Dependencies = allDeps[issue.ID]
 	}
+}
+
+// fetchDependencyRecordsBatched returns dependency records for the given
+// issue IDs keyed by issue ID, querying dependencies and wisp_dependencies
+// with batched IN clauses.
+func fetchDependencyRecordsBatched(ctx context.Context, db *sql.DB, issueIDs []string) (map[string][]*beads.Dependency, error) {
+	result := make(map[string][]*beads.Dependency)
+	for _, table := range []string{"dependencies", "wisp_dependencies"} {
+		for start := 0; start < len(issueIDs); start += depFetchBatchSize {
+			end := start + depFetchBatchSize
+			if end > len(issueIDs) {
+				end = len(issueIDs)
+			}
+			batch := issueIDs[start:end]
+			placeholders := make([]string, len(batch))
+			args := make([]any, len(batch))
+			for i, id := range batch {
+				placeholders[i] = "?"
+				args[i] = id
+			}
+			query := fmt.Sprintf(
+				`SELECT issue_id, depends_on_id, type, created_at, created_by, metadata, thread_id
+				 FROM %s WHERE issue_id IN (%s) ORDER BY issue_id`,
+				table, strings.Join(placeholders, ","))
+			rows, err := db.QueryContext(ctx, query, args...)
+			if err != nil {
+				return nil, fmt.Errorf("get dependency records from %s: %w", table, err)
+			}
+			for rows.Next() {
+				var dep beads.Dependency
+				var createdAt sql.NullTime
+				var metadata, threadID sql.NullString
+				if err := rows.Scan(&dep.IssueID, &dep.DependsOnID, &dep.Type, &createdAt, &dep.CreatedBy, &metadata, &threadID); err != nil {
+					_ = rows.Close()
+					return nil, fmt.Errorf("get dependency records: scan: %w", err)
+				}
+				if createdAt.Valid {
+					dep.CreatedAt = createdAt.Time
+				}
+				if metadata.Valid {
+					dep.Metadata = metadata.String
+				}
+				if threadID.Valid {
+					dep.ThreadID = threadID.String
+				}
+				result[dep.IssueID] = append(result[dep.IssueID], &dep)
+			}
+			_ = rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, fmt.Errorf("get dependency records: rows: %w", err)
+			}
+		}
+	}
+	return result, nil
 }
 
 // --- Conversion helpers ---
