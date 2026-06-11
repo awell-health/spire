@@ -214,7 +214,8 @@ Formulas determine the phase pipeline a wizard follows. The mapping is automatic
 
 | Bead type | Formula | Phases |
 |-----------|---------|--------|
-| `task`, `feature`, `chore` | `task-default` | plan → implement → review → merge |
+| `task`, `feature` | `task-default` | plan → implement → review → merge |
+| `chore` | `chore-default` | research → implement → review → document → merge |
 | `bug` | `bug-default` | plan → implement → review → merge |
 | `epic` | `epic-default` | design → plan → implement → review → merge |
 
