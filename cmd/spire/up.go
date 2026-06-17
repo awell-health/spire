@@ -465,6 +465,20 @@ func migrateSpireTables(database string) error {
 	if err := towerpkg.ApplySpireExtensions(rawDoltQuery, database); err != nil {
 		return err
 	}
+	// One-time, explicit opt-in: convert the already-tracked local-only tables
+	// (agent_runs, bead_lifecycle) to dolt_ignore'd/untracked so they stop
+	// churning the Dolt working set and the daemon's remote sync. This commits
+	// a table drop that propagates to the shared DoltHub remote (every tower
+	// converges on next pull), so it is gated behind SPIRE_UNTRACK_LOCAL_TABLES=1
+	// rather than running on every `spire up`. Recreated tables are empty; the
+	// ensureColumn pass below re-adds migration columns and backfillBeadLifecycle
+	// refills bead_lifecycle. See pkg/tower/dolt_ignore.go.
+	if os.Getenv("SPIRE_UNTRACK_LOCAL_TABLES") == "1" {
+		if err := towerpkg.UntrackLocalOnlyTables(rawDoltQuery, database); err != nil {
+			return fmt.Errorf("untrack local-only tables: %w", err)
+		}
+		log.Printf("[migrate] untracked local-only tables (agent_runs, bead_lifecycle) for %s", database)
+	}
 	if _, err := rawDoltQuery(fmt.Sprintf("USE `%s`; %s", database, goldenPromptsTableSQL)); err != nil {
 		return fmt.Errorf("create golden_prompts: %w", err)
 	}

@@ -62,6 +62,8 @@ func TestApplySpireExtensions_CreatesAllExtensionTables(t *testing.T) {
 	var calls []string
 	exec := func(q string) (string, error) {
 		calls = append(calls, q)
+		// SHOW TABLES returns empty → fresh tower (local-only tables absent),
+		// exercising the dolt_ignore-before-create path.
 		return "", nil
 	}
 	if err := ApplySpireExtensions(exec, "smoke"); err != nil {
@@ -76,15 +78,44 @@ func TestApplySpireExtensions_CreatesAllExtensionTables(t *testing.T) {
 		{"bead_lifecycle", store.BeadLifecycleTableSQL},
 		{"agent_log_artifacts", store.AgentLogArtifactsTableSQL},
 	}
-	if len(calls) != len(wantOrdered) {
-		t.Fatalf("want %d CREATE statements, got %d", len(wantOrdered), len(calls))
-	}
-	for i, want := range wantOrdered {
-		if !strings.Contains(calls[i], "USE `smoke`") {
-			t.Errorf("call[%d] missing USE clause; got %q", i, calls[i])
+	// Each extension table is created exactly once, scoped via USE, in order.
+	createIdx := make(map[string]int, len(wantOrdered))
+	var prev = -1
+	for _, want := range wantOrdered {
+		found := -1
+		for j, c := range calls {
+			if strings.Contains(c, want.ddl) {
+				if !strings.Contains(c, "USE `smoke`") {
+					t.Errorf("%s CREATE missing USE clause; got %q", want.name, c)
+				}
+				found = j
+				break
+			}
 		}
-		if !strings.Contains(calls[i], want.ddl) {
-			t.Errorf("call[%d] does not contain expected %s DDL", i, want.name)
+		if found < 0 {
+			t.Fatalf("no CREATE call for %s", want.name)
+		}
+		if found <= prev {
+			t.Errorf("%s CREATE (call %d) is not after the previous table's CREATE (call %d)", want.name, found, prev)
+		}
+		prev = found
+		createIdx[want.name] = found
+	}
+	// Fresh-tower contract: local-only tables are registered in dolt_ignore
+	// BEFORE they are created (dolt_ignore has no effect post-commit).
+	ignoreIdx := -1
+	for j, c := range calls {
+		if strings.Contains(c, "dolt_ignore") && strings.Contains(c, "DOLT_ADD") {
+			ignoreIdx = j
+			break
+		}
+	}
+	if ignoreIdx < 0 {
+		t.Fatal("expected a dolt_ignore registration call before the local-only CREATEs")
+	}
+	for _, lt := range LocalOnlyTables {
+		if ci, ok := createIdx[lt]; ok && ignoreIdx >= ci {
+			t.Errorf("dolt_ignore registered at call %d, not before %s CREATE at call %d", ignoreIdx, lt, ci)
 		}
 	}
 }
@@ -95,22 +126,22 @@ func TestApplySpireExtensions_CreatesAllExtensionTables(t *testing.T) {
 // messages — keeping attribution prevents a regression in that signal.
 func TestApplySpireExtensions_ErrorAttribution(t *testing.T) {
 	tests := []struct {
-		name       string
-		failOnNth  int
-		wantTable  string
+		name      string
+		ddl       string
+		wantTable string
 	}{
-		{"fail on repos", 1, "repos"},
-		{"fail on agent_runs", 2, "agent_runs"},
-		{"fail on bead_lifecycle", 3, "bead_lifecycle"},
-		{"fail on agent_log_artifacts", 4, "agent_log_artifacts"},
+		{"fail on repos", ReposTableSQL, "repos"},
+		{"fail on agent_runs", AgentRunsTableSQL, "agent_runs"},
+		{"fail on bead_lifecycle", store.BeadLifecycleTableSQL, "bead_lifecycle"},
+		{"fail on agent_log_artifacts", store.AgentLogArtifactsTableSQL, "agent_log_artifacts"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			sentinel := fmt.Errorf("sentinel-%s", tc.wantTable)
-			var n int
+			// Fail on the specific table's CREATE (matched by content, robust to
+			// the dolt_ignore pre-registration calls that now precede the loop).
 			exec := func(q string) (string, error) {
-				n++
-				if n == tc.failOnNth {
+				if strings.Contains(q, tc.ddl) {
 					return "", sentinel
 				}
 				return "", nil
@@ -131,7 +162,7 @@ func TestApplySpireExtensions_ErrorAttribution(t *testing.T) {
 
 // TestApplySpireExtensions_Validation ensures the helper rejects inputs
 // that would produce corrupt DDL (empty database name would emit
-// `USE \`\`` which dolt rejects, but catching it up-front gives a
+// `USE \`\“ which dolt rejects, but catching it up-front gives a
 // clearer error than dolt's parser).
 func TestApplySpireExtensions_Validation(t *testing.T) {
 	exec := func(q string) (string, error) { return "", nil }
