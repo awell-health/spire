@@ -95,6 +95,14 @@ func TestUntrackLocalOnlyTables_DropBeforeIgnore(t *testing.T) {
 	if err := UntrackLocalOnlyTables(exec, "smoke"); err != nil {
 		t.Fatalf("UntrackLocalOnlyTables: %v", err)
 	}
+	// Blast-radius guard: the migration must never `DOLT_ADD('-A')`, which would
+	// stage/commit/push uncommitted changes in unrelated tables. All staging is
+	// scoped to the dropped table or dolt_ignore.
+	for _, c := range calls {
+		if strings.Contains(c, "DOLT_ADD('-A')") || strings.Contains(c, `DOLT_ADD("-A")`) {
+			t.Errorf("untrack must not use DOLT_ADD('-A') (sweeps other tables); got %q", c)
+		}
+	}
 	for _, lt := range LocalOnlyTables {
 		dropIdx := firstIndexContaining(calls, "DROP TABLE `"+lt+"`")
 		ignoreIdx := firstIndexContaining(calls, "REPLACE INTO dolt_ignore VALUES ('"+lt+"'")
