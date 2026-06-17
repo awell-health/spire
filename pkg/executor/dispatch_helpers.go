@@ -1,15 +1,68 @@
 package executor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 
+	"github.com/awell-health/spire/pkg/agent"
 	spgit "github.com/awell-health/spire/pkg/git"
 	"github.com/awell-health/spire/pkg/repoconfig"
 	"github.com/steveyegge/beads"
 )
+
+// ErrDuplicateApprentice signals that a live apprentice already owns a child
+// bead, so the dispatch seam refused to spawn a second one. The wave/sequential/
+// direct dispatch paths surface this as an ActionResult.Error so the formula
+// step parks (hooked) instead of silently advancing the epic over an in-flight
+// child — see spi sleep-duplicate-dispatch fix.
+//
+// Background: when a laptop sleeps mid-epic, agent processes die, the daemon
+// orphan-sweep reopens the epic, and a fresh wizard re-dispatches. ComputeWaves
+// re-includes still-in_progress children, and the dispatch path had no
+// idempotency guard, so a second apprentice was spawned alongside any survivor.
+// This sentinel + liveChildSet close that gap as defense-in-depth.
+var ErrDuplicateApprentice = errors.New("dispatch: live apprentice already exists for child")
+
+// liveChildSet snapshots the backend's live agents keyed by bead ID. One List()
+// call per wave; consulted per child before Spawn.
+//
+// Keys strictly on Alive==true: a dead/orphaned registry entry (the common
+// post-sleep state, before OrphanSweep cleans it) must NOT suppress a needed
+// re-spawn, or the child would strand. Liveness is the backend's PID-based,
+// zombie-safe probe (pkg/process.ProcessAlive via ProcessBackend.List).
+//
+// excludeName is the dispatching wizard's own agent name, which is dropped from
+// the set. This matters for the direct-dispatch path, where the apprentice is
+// spawned under the wizard's OWN bead ID — without the exclusion the wizard's
+// own live registry entry would match and the guard would refuse every direct
+// dispatch. Wave/sequential children carry distinct bead IDs, so the exclusion
+// is a harmless no-op there.
+//
+// Fails OPEN: a nil spawner or a List() error returns an empty set so a
+// transient registry-read blip never blocks legitimate dispatch (mirrors
+// OrphanSweep's "transient IsAlive errors fail open" stance).
+func liveChildSet(sp agent.Backend, excludeName string) map[string]bool {
+	live := map[string]bool{}
+	if sp == nil {
+		return live
+	}
+	infos, err := sp.List()
+	if err != nil {
+		return live
+	}
+	for _, in := range infos {
+		if in.Name == excludeName {
+			continue
+		}
+		if in.Alive && in.BeadID != "" {
+			live[in.BeadID] = true
+		}
+	}
+	return live
+}
 
 // conflictResolver returns a closure that resolves merge conflicts using a
 // given turn budget. When maxTurns is 0, the --max-turns flag is omitted.

@@ -165,6 +165,15 @@ func (e *Executor) wizardPlanEpic(bead Bead, model string, maxTurns int) error {
 	}
 	if len(children) > 0 {
 		e.log("epic already has %d children — enriching with change specs", len(children))
+		// Backfill base-branch labels for override epics. A child created by a
+		// prior (partial) plan run that failed before labeling — or filed
+		// manually — would otherwise reach the resume/enrich path unlabeled and
+		// fall back to committing against main (apprentice/submit.go). Idempotent:
+		// children that already carry the label are skipped; no-op for
+		// default-branch epics. Fails loud (one retry) to match the create path.
+		if err := e.backfillChildBaseBranch(bead, children); err != nil {
+			return err
+		}
 		return e.enrichSubtasksWithChangeSpecs(children, epicContext, designContext, model, maxTurns)
 	}
 
@@ -284,9 +293,18 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 
 		// Propagate base-branch label from parent epic so child tasks
 		// target the same integration branch without manual labeling.
+		//
+		// Fail loud (not warn) on failure: a child of an override epic that
+		// silently misses this label can later fall back to committing against
+		// "main" (apprentice/submit.go resolves base-branch from the child's
+		// own label, then defaults to main). Surfacing it here parks the plan
+		// step for recovery instead of producing a child that targets the wrong
+		// branch. Only override epics (parentBB != "") enter this block, so
+		// default-branch epics are entirely unaffected. One retry absorbs a
+		// transient store blip before failing.
 		if parentBB := store.HasLabel(bead, "base-branch:"); parentBB != "" {
-			if labelErr := e.deps.AddLabel(id, "base-branch:"+parentBB); labelErr != nil {
-				e.log("warning: propagate base-branch to %s: %s", id, labelErr)
+			if err := e.addBaseBranchLabel(id, parentBB); err != nil {
+				return err
 			}
 		}
 	}
@@ -330,6 +348,43 @@ Output ONLY JSON objects, one per line, no other text. Each line:
 	}
 	e.deps.AddComment(e.beadID, planSummary.String())
 
+	return nil
+}
+
+// addBaseBranchLabel writes the base-branch label to a child task, retrying
+// once before failing loud. Shared by the plan create-loop and the
+// resume/backfill path so both fail the same way: a child of an override epic
+// that cannot be labeled must surface as a plan error rather than silently
+// targeting main (apprentice/submit.go).
+func (e *Executor) addBaseBranchLabel(childID, parentBB string) error {
+	label := "base-branch:" + parentBB
+	err := e.deps.AddLabel(childID, label)
+	if err != nil {
+		err = e.deps.AddLabel(childID, label) // retry once
+	}
+	if err != nil {
+		return fmt.Errorf("propagate base-branch %q to subtask %s: %w", parentBB, childID, err)
+	}
+	return nil
+}
+
+// backfillChildBaseBranch ensures every real child of an override epic carries
+// the epic's base-branch label. No-op for default-branch epics (no override
+// label) and for children that already have the label, so it is safe to call on
+// every resume. See wizardPlanEpic's resume/enrich branch.
+func (e *Executor) backfillChildBaseBranch(epic Bead, children []Bead) error {
+	parentBB := store.HasLabel(epic, "base-branch:")
+	if parentBB == "" {
+		return nil
+	}
+	for _, child := range children {
+		if store.HasLabel(child, "base-branch:") != "" {
+			continue
+		}
+		if err := e.addBaseBranchLabel(child.ID, parentBB); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -438,4 +493,3 @@ Be precise and concrete. The apprentice implementing this task will only see thi
 	e.deps.AddComment(e.beadID, fmt.Sprintf("Wizard: enriched %d/%d subtasks with change specs.", enriched, len(children)))
 	return nil
 }
-

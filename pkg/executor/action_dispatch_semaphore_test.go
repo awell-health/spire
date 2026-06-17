@@ -41,6 +41,14 @@ type concurrentBackend struct {
 	peak        int32
 	spawnCount  int32
 	sleepPerJob time.Duration
+
+	// listInfos / listErr configure the List() response used by the dispatch
+	// idempotency guard. Zero value (nil, nil) → empty live set, so existing
+	// tests that leave these unset see the guard as a no-op. listCount counts
+	// List() calls so tests can assert the once-per-wave snapshot.
+	listInfos []agent.Info
+	listErr   error
+	listCount int32
 }
 
 func (b *concurrentBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
@@ -63,7 +71,10 @@ func (b *concurrentBackend) Spawn(cfg agent.SpawnConfig) (agent.Handle, error) {
 	return h, nil
 }
 
-func (b *concurrentBackend) List() ([]agent.Info, error)        { return nil, nil }
+func (b *concurrentBackend) List() ([]agent.Info, error) {
+	atomic.AddInt32(&b.listCount, 1)
+	return b.listInfos, b.listErr
+}
 func (b *concurrentBackend) Logs(string) (io.ReadCloser, error) { return nil, os.ErrNotExist }
 func (b *concurrentBackend) Kill(string) error                  { return nil }
 func (b *concurrentBackend) TerminateBead(_ context.Context, _ string) error {
