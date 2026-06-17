@@ -21,10 +21,18 @@ type fakeDispatchableEnv struct {
 	listErr    error
 	listFilter beads.IssueFilter
 	listCalls  int
+
+	// wireBatch makes deps() expose GetStepBeadsBatch (the A2 path). When
+	// false, only the per-bead GetStepBeads is wired so the fallback path is
+	// exercised.
+	wireBatch  bool
+	stepCalls  int // per-bead GetStepBeads invocations
+	batchCalls int // GetStepBeadsBatch invocations
+	batchIDs   []string
 }
 
 func (e *fakeDispatchableEnv) deps() dispatchableDeps {
-	return dispatchableDeps{
+	d := dispatchableDeps{
 		ListBeads: func(filter beads.IssueFilter) ([]store.Bead, error) {
 			e.listCalls++
 			e.listFilter = filter
@@ -36,11 +44,15 @@ func (e *fakeDispatchableEnv) deps() dispatchableDeps {
 				if statusExcluded(b.Status, filter.ExcludeStatus) {
 					continue
 				}
+				if typeExcluded(b.Type, filter.ExcludeTypes) {
+					continue
+				}
 				out = append(out, b)
 			}
 			return out, nil
 		},
 		GetStepBeads: func(parentID string) ([]store.Bead, error) {
+			e.stepCalls++
 			return e.stepsByID[parentID], nil
 		},
 		ResolveFormula: func(b *store.Bead) (*formula.FormulaStepGraph, error) {
@@ -53,6 +65,29 @@ func (e *fakeDispatchableEnv) deps() dispatchableDeps {
 			return e.formulaFor[b.ID], nil
 		},
 	}
+	if e.wireBatch {
+		d.GetStepBeadsBatch = func(parentIDs []string) (map[string][]store.Bead, error) {
+			e.batchCalls++
+			e.batchIDs = parentIDs
+			out := make(map[string][]store.Bead, len(parentIDs))
+			for _, pid := range parentIDs {
+				if steps, ok := e.stepsByID[pid]; ok {
+					out[pid] = steps
+				}
+			}
+			return out, nil
+		}
+	}
+	return d
+}
+
+func typeExcluded(t string, excluded []beads.IssueType) bool {
+	for _, e := range excluded {
+		if string(e) == t {
+			return true
+		}
+	}
+	return false
 }
 
 func statusExcluded(status string, excluded []beads.Status) bool {
@@ -307,8 +342,8 @@ func TestDispatchableBeads_StepReopenedAfterReset(t *testing.T) {
 func TestDispatchableBeads_MultipleStepsOneMatchingUnrun(t *testing.T) {
 	f := &formula.FormulaStepGraph{
 		Steps: map[string]formula.StepConfig{
-			"plan":      {Lifecycle: &formula.LifecycleConfig{OnStart: "ready"}},  // already run
-			"implement": {Lifecycle: &formula.LifecycleConfig{OnStart: "ready"}},  // not run
+			"plan":      {Lifecycle: &formula.LifecycleConfig{OnStart: "ready"}},         // already run
+			"implement": {Lifecycle: &formula.LifecycleConfig{OnStart: "ready"}},         // not run
 			"review":    {Lifecycle: &formula.LifecycleConfig{OnStart: "merge_pending"}}, // mismatched status
 		},
 	}
@@ -411,4 +446,120 @@ func beadIDs(beads []*store.Bead) []string {
 		out[i] = b.ID
 	}
 	return out
+}
+
+// TestDispatchableBeads_PreFilterExcludesInternalTypes pins the A1
+// optimization: the candidate query excludes internal bead types
+// (message/step/attempt/review) at the SQL level. These are never
+// independently dispatchable (the steward drops them afterward via
+// store.IsWorkBead), so excluding them up front changes no downstream
+// result — it just keeps the per-cycle scan from walking hundreds of
+// resident step beads. Mirrors the existing ExcludeStatus contract.
+func TestDispatchableBeads_PreFilterExcludesInternalTypes(t *testing.T) {
+	env := &fakeDispatchableEnv{}
+	restore := withDispatchableDeps(env.deps())
+	defer restore()
+
+	if _, err := DispatchableBeads(context.Background()); err != nil {
+		t.Fatalf("DispatchableBeads err = %v", err)
+	}
+	got := map[string]bool{}
+	for _, ty := range env.listFilter.ExcludeTypes {
+		got[string(ty)] = true
+	}
+	for ty := range store.InternalTypes {
+		if !got[ty] {
+			t.Errorf("ExcludeTypes missing internal type %q (got %v)", ty, got)
+		}
+	}
+}
+
+// TestDispatchableBeads_BatchPrefetchUsedNotPerBead pins the A2
+// optimization: when a batched step-bead fetch is wired, the
+// per-candidate GetStepBeads (each an N+1 GetChildren) is not called —
+// step children are read once via the batch — and the dispatch decision
+// is identical to the per-bead path. spi-parent's only step (implement)
+// is still open, so it remains dispatchable.
+func TestDispatchableBeads_BatchPrefetchUsedNotPerBead(t *testing.T) {
+	f := &formula.FormulaStepGraph{
+		Steps: map[string]formula.StepConfig{
+			"implement": {Lifecycle: &formula.LifecycleConfig{OnStart: "ready"}},
+		},
+	}
+	parent := store.Bead{ID: "spi-parent", Status: "ready", Type: "task"}
+	openStep := store.Bead{
+		ID:     "spi-step",
+		Status: "open",
+		Type:   "step",
+		Parent: "spi-parent",
+		Labels: []string{"workflow-step", "step:implement"},
+	}
+	env := &fakeDispatchableEnv{
+		wireBatch: true,
+		beads:     []store.Bead{parent},
+		stepsByID: map[string][]store.Bead{"spi-parent": {openStep}},
+		formulaFor: map[string]*formula.FormulaStepGraph{
+			"spi-parent": f,
+		},
+	}
+	restore := withDispatchableDeps(env.deps())
+	defer restore()
+
+	got, err := DispatchableBeads(context.Background())
+	if err != nil {
+		t.Fatalf("DispatchableBeads err = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "spi-parent" {
+		t.Errorf("got = %v, want [spi-parent]", beadIDs(got))
+	}
+	if env.batchCalls != 1 {
+		t.Errorf("batchCalls = %d, want 1 (single batched fetch)", env.batchCalls)
+	}
+	if env.batchIDs == nil || len(env.batchIDs) != 1 || env.batchIDs[0] != "spi-parent" {
+		t.Errorf("batchIDs = %v, want [spi-parent]", env.batchIDs)
+	}
+	if env.stepCalls != 0 {
+		t.Errorf("stepCalls = %d, want 0 (per-bead GetStepBeads must not run when batch is wired)", env.stepCalls)
+	}
+}
+
+// TestDispatchableBeads_BatchAlreadyRunStillExcluded confirms the A2
+// batched path preserves the "step already run" semantics: a closed
+// step:<name> child read via the batch marks the step run, so the parent
+// is not dispatchable — identical to the per-bead TestDispatchableBeads_StepAlreadyRun.
+func TestDispatchableBeads_BatchAlreadyRunStillExcluded(t *testing.T) {
+	f := &formula.FormulaStepGraph{
+		Steps: map[string]formula.StepConfig{
+			"implement": {Lifecycle: &formula.LifecycleConfig{OnStart: "ready"}},
+		},
+	}
+	parent := store.Bead{ID: "spi-parent", Status: "ready", Type: "task"}
+	closedStep := store.Bead{
+		ID:     "spi-step",
+		Status: "closed",
+		Type:   "step",
+		Parent: "spi-parent",
+		Labels: []string{"workflow-step", "step:implement"},
+	}
+	env := &fakeDispatchableEnv{
+		wireBatch: true,
+		beads:     []store.Bead{parent},
+		stepsByID: map[string][]store.Bead{"spi-parent": {closedStep}},
+		formulaFor: map[string]*formula.FormulaStepGraph{
+			"spi-parent": f,
+		},
+	}
+	restore := withDispatchableDeps(env.deps())
+	defer restore()
+
+	got, err := DispatchableBeads(context.Background())
+	if err != nil {
+		t.Fatalf("DispatchableBeads err = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got = %v, want empty (step already run, via batch)", beadIDs(got))
+	}
+	if env.stepCalls != 0 {
+		t.Errorf("stepCalls = %d, want 0 (batch wired)", env.stepCalls)
+	}
 }

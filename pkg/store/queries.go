@@ -1,9 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads"
@@ -367,6 +369,106 @@ func GetChildren(parentID string) ([]Bead, error) {
 		return nil, fmt.Errorf("get children of %s: %w", parentID, err)
 	}
 	return IssuesToBeads(issues), nil
+}
+
+// GetStepBeadsBatch fetches workflow-step children for many parents in a single
+// SQL query, grouped by parent ID. It replaces N separate GetStepBeads calls
+// (each an N+1 GetChildren → SearchIssues that fans out into issues+wisps
+// queries with correlated dependency subqueries) with one batched join over
+// dependencies + issues + labels — the dominant per-cycle cost in the steward's
+// DispatchableBeads scan.
+//
+// Only parent-child dependency edges are followed: workflow-step beads are
+// always linked to their parent by a parent-child dep (CreateStepBead), so the
+// hierarchical-ID children path that GetChildren also covers is unnecessary
+// here. Falls back to per-parent GetStepBeads when the store does not expose a
+// raw *sql.DB (e.g. gateway mode), preserving behavior for callers without
+// direct SQL access. Returned Beads carry the fields step-readiness checks need
+// (ID, Status, Type, Labels, Parent); they are not full IssueToBead projections.
+//
+// Gateway mode: getDB() fails closed, so this falls through to GetStepBeads,
+// which itself fails closed — matching the existing per-bead contract.
+func GetStepBeadsBatch(parentIDs []string) (map[string][]Bead, error) {
+	result := make(map[string][]Bead, len(parentIDs))
+	if len(parentIDs) == 0 {
+		return result, nil
+	}
+
+	db, err := getDB()
+	if err != nil {
+		// No raw SQL access (e.g. gateway mode) — preserve behavior by
+		// falling back to the per-parent path.
+		for _, pid := range parentIDs {
+			steps, sErr := GetStepBeads(pid)
+			if sErr != nil {
+				return nil, sErr
+			}
+			result[pid] = steps
+		}
+		return result, nil
+	}
+
+	const chunk = 200
+	for start := 0; start < len(parentIDs); start += chunk {
+		end := start + chunk
+		if end > len(parentIDs) {
+			end = len(parentIDs)
+		}
+		batch := parentIDs[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, len(batch))
+		for i, pid := range batch {
+			placeholders[i] = "?"
+			args[i] = pid
+		}
+		query := fmt.Sprintf(`
+			SELECT d.depends_on_id, i.id, i.status, i.issue_type, l.label
+			FROM dependencies d
+			JOIN issues i ON i.id = d.issue_id
+			LEFT JOIN labels l ON l.issue_id = i.id
+			WHERE d.type = 'parent-child' AND d.depends_on_id IN (%s)`,
+			strings.Join(placeholders, ","))
+
+		rows, qErr := db.Query(query, args...)
+		if qErr != nil {
+			return nil, fmt.Errorf("get step beads batch: %w", qErr)
+		}
+
+		// Accumulate one Bead per (parent, child), appending labels across rows.
+		type childKey struct{ parent, id string }
+		acc := map[childKey]*Bead{}
+		var order []childKey
+		for rows.Next() {
+			var parent, id, status, itype string
+			var label sql.NullString
+			if scanErr := rows.Scan(&parent, &id, &status, &itype, &label); scanErr != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan step beads batch: %w", scanErr)
+			}
+			k := childKey{parent: parent, id: id}
+			b, ok := acc[k]
+			if !ok {
+				b = &Bead{ID: id, Status: status, Type: itype, Parent: parent}
+				acc[k] = b
+				order = append(order, k)
+			}
+			if label.Valid && label.String != "" {
+				b.Labels = append(b.Labels, label.String)
+			}
+		}
+		if rErr := rows.Err(); rErr != nil {
+			rows.Close()
+			return nil, rErr
+		}
+		rows.Close()
+
+		for _, k := range order {
+			if b := acc[k]; IsStepBead(*b) {
+				result[k.parent] = append(result[k.parent], *b)
+			}
+		}
+	}
+	return result, nil
 }
 
 // GetChildrenBatch fetches children for multiple parent IDs and returns them
