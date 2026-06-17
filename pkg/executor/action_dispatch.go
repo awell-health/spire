@@ -5,6 +5,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -441,6 +442,16 @@ func (e *Executor) runDispatchWave(
 
 	useCluster := e.useClusterChildDispatch()
 
+	// Idempotency guard: snapshot live apprentices once per wave. A child that
+	// already has a live apprentice (e.g. an orphan that outlived a wizard
+	// killed by laptop sleep, or a second wizard racing this one) must not get
+	// a duplicate spawn. Local-spawn path only — cluster dispatch has no local
+	// process to collide with. See ErrDuplicateApprentice.
+	var live map[string]bool
+	if !useCluster {
+		live = liveChildSet(e.deps.Spawner, e.agentName)
+	}
+
 	for i, subtaskID := range wave {
 		wg.Add(1)
 		go func(idx int, beadID string) {
@@ -477,6 +488,12 @@ func (e *Executor) runDispatchWave(
 				e.recordAgentRun(name, beadID, e.beadID, model, "apprentice", "implement", started, nil,
 					withParentRun(e.currentRunID))
 				resultCh <- waveResult{BeadID: beadID, Agent: name}
+				return
+			}
+
+			if live[beadID] {
+				e.log("  skip %s for %s: live apprentice already exists", name, beadID)
+				resultCh <- waveResult{BeadID: beadID, Agent: name, Err: ErrDuplicateApprentice}
 				return
 			}
 
@@ -546,6 +563,18 @@ func (e *Executor) runDispatchWave(
 
 	if len(errs) > 0 {
 		e.log("wave %d: %d error(s): %s", waveIdx, len(errs), strings.Join(errs, "; "))
+	}
+
+	// Fail loud if any child was skipped because a live apprentice already
+	// owned it. Returning an error here (rather than letting the wave report a
+	// soft "fail" status) propagates as ActionResult.Error so the formula step
+	// parks/escalates instead of advancing the epic to review/merge over an
+	// in-flight child. The surviving apprentice keeps running; its work is
+	// picked up when the bead is re-driven (eager-close is idempotent).
+	for _, cr := range waveResults {
+		if errors.Is(cr.Err, ErrDuplicateApprentice) {
+			return startRef, fmt.Errorf("wave %d: %w", waveIdx, ErrDuplicateApprentice)
+		}
 	}
 
 	// Apply each successful apprentice's bundle into staging, then merge.
@@ -621,6 +650,13 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 
 	useCluster := e.useClusterChildDispatch()
 
+	// Idempotency guard snapshot (local-spawn path only). See runDispatchWave
+	// and ErrDuplicateApprentice.
+	var live map[string]bool
+	if !useCluster {
+		live = liveChildSet(e.deps.Spawner, e.agentName)
+	}
+
 	var allResults []childResult
 	var startRef string
 
@@ -657,6 +693,11 @@ func (e *Executor) dispatchSequentialCore(subtasks []string, stagingWt *spgit.St
 			}
 			allResults = append(allResults, cr)
 			continue
+		}
+
+		if live[subtaskID] {
+			e.log("skip %s for %s: live apprentice already exists", name, subtaskID)
+			return allResults, fmt.Errorf("sequential dispatch %s: %w", subtaskID, ErrDuplicateApprentice)
 		}
 
 		cfg := agent.SpawnConfig{
@@ -792,6 +833,14 @@ func (e *Executor) dispatchDirectCore(stagingWt *spgit.StagingWorktree, model st
 			withParentRun(e.currentRunID))
 		e.log("apprentice dispatched (cluster-native)")
 		return nil
+	}
+
+	// Idempotency guard (local-spawn path only): refuse to spawn a second
+	// apprentice when one is already live for this bead. See
+	// ErrDuplicateApprentice.
+	if liveChildSet(e.deps.Spawner, e.agentName)[e.beadID] {
+		e.log("skip %s for %s: live apprentice already exists", apprenticeName, e.beadID)
+		return fmt.Errorf("direct dispatch %s: %w", e.beadID, ErrDuplicateApprentice)
 	}
 
 	cfg := agent.SpawnConfig{
