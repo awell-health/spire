@@ -386,12 +386,16 @@ func GetChildren(parentID string) ([]Bead, error) {
 // direct SQL access. Returned Beads carry the fields step-readiness checks need
 // (ID, Status, Type, Labels, Parent); they are not full IssueToBead projections.
 //
-// Gateway mode: getDB() fails closed, so this falls through to GetStepBeads,
-// which itself fails closed — matching the existing per-bead contract.
+// Gateway mode: fails closed with ErrGatewayUnsupported up front, mirroring
+// GetChildren/GetChildrenBatch. The steward (its only caller) does not run a
+// local dispatchable scan on a gateway tower.
 func GetStepBeadsBatch(parentIDs []string) (map[string][]Bead, error) {
 	result := make(map[string][]Bead, len(parentIDs))
 	if len(parentIDs) == 0 {
 		return result, nil
+	}
+	if _, ok := isGatewayMode(); ok {
+		return nil, gatewayUnsupportedErr("GetStepBeadsBatch")
 	}
 
 	db, err := getDB()

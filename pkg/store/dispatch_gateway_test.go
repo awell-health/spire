@@ -86,6 +86,7 @@ func TestDispatch_PanicStoreBackstop(t *testing.T) {
 		{"GetChildren", func() error { _, err := GetChildren("spi-x"); return err }},
 		{"GetChildrenBatch", func() error { _, err := GetChildrenBatch([]string{"spi-x"}); return err }},
 		{"GetChildrenBoardBatch", func() error { _, err := GetChildrenBoardBatch([]string{"spi-x"}); return err }},
+		{"GetStepBeadsBatch", func() error { _, err := GetStepBeadsBatch([]string{"spi-x"}); return err }},
 
 		// mutations.go
 		{"CreateBead", func() error { _, err := CreateBead(CreateOpts{Title: "x"}); return err }},
