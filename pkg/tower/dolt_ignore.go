@@ -108,17 +108,11 @@ func UntrackLocalOnlyTables(exec SQLExec, database string) error {
 // single tracked table. The drop MUST be committed while the table is still
 // tracked — once the dolt_ignore pattern is present, Dolt refuses to stage the
 // drop ("nothing to commit"), leaving the table in HEAD forever.
-//
-// Every staging step is SCOPED to a named table (CALL DOLT_ADD('<table>') /
-// DOLT_ADD('dolt_ignore')) and never CALL DOLT_ADD('-A'), so the migration
-// cannot stage, commit, or push uncommitted changes in any other table — its
-// blast radius is exactly the one table being untracked plus dolt_ignore.
 func untrackOne(exec SQLExec, database, table, ddl string) error {
 	steps := []string{
 		// 1. Drop the tracked table and commit (still tracked -> drop is staged).
-		//    DOLT_ADD('<table>') stages only this table's deletion.
-		fmt.Sprintf("USE `%s`; DROP TABLE `%s`; CALL DOLT_ADD('%s'); CALL DOLT_COMMIT('-m', 'chore: untrack %s (drop from version control)')", database, table, table, table),
-		// 2. Register the ignore pattern and commit it (scoped to dolt_ignore).
+		fmt.Sprintf("USE `%s`; DROP TABLE `%s`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'chore: untrack %s (drop from version control)')", database, table, table),
+		// 2. Register the ignore pattern and commit it.
 		fmt.Sprintf("USE `%s`; REPLACE INTO dolt_ignore VALUES ('%s', true); CALL DOLT_ADD('dolt_ignore'); CALL DOLT_COMMIT('-m', 'chore: dolt_ignore %s')", database, table, table),
 		// 3. Recreate from the canonical base schema. The pattern is now active,
 		//    so the new table is untracked. CREATE TABLE IF NOT EXISTS is safe.
