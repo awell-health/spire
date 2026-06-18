@@ -9,6 +9,7 @@ import (
 
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
+	"github.com/awell-health/spire/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -100,6 +101,11 @@ func runPush(remoteURL string) error {
 	}
 
 	// ── Remote setup ──────────────────────────────────────────────────────────
+	// Manage the CLI remote via the dolt binary (the remote CLIPush actually
+	// reads). We no longer touch the SQL-side remote via `bd dolt remote …`:
+	// every bd invocation re-imports the full issues.jsonl (a ~36k-row no-op
+	// upsert storm), and the SQL remote is unused by the CLI push.
+	existingURL := dolt.GetCLIRemote(dataDir)
 	if remoteURL != "" {
 		// Classify the passed URL. If it disagrees with the stored tower kind
 		// we trust the URL — user is likely re-pointing the remote.
@@ -116,44 +122,22 @@ func runPush(remoteURL string) error {
 			}
 		}
 
-		// Set remote in both SQL (for bd) and CLI (for direct push).
-		out, _ := bd("dolt", "remote", "list")
-		existingURL := parseOriginURL(out)
 		if existingURL == "" {
 			fmt.Printf("  Adding remote origin → %s\n", remoteURL)
-			bd("dolt", "remote", "add", "origin", remoteURL) //nolint — SQL remote
 		} else if existingURL != remoteURL {
 			fmt.Printf("  Updating remote origin: %s → %s\n", existingURL, remoteURL)
-			bd("dolt", "remote", "add", "origin-new", remoteURL) //nolint
-			bd("dolt", "remote", "remove", "origin")             //nolint
-			bd("dolt", "remote", "add", "origin", remoteURL)     //nolint
-			bd("dolt", "remote", "remove", "origin-new")         //nolint
 		} else {
 			fmt.Printf("  Remote origin: %s\n", remoteURL)
 		}
-
-		// Also write the CLI remote directly into the data dir.
-		// bd dolt remote add writes to SQL tables; dolt push (CLI) reads
-		// from .dolt/config.json in the data directory — they're separate.
 		dolt.SetCLIRemote(dataDir, "origin", remoteURL)
-	} else {
-		out, _ := bd("dolt", "remote", "list")
-		if !strings.Contains(out, "origin") {
-			return fmt.Errorf("no remote configured\n  pass a DoltHub URL or run: bd dolt remote add origin <url>")
-		}
-		// Sync SQL remote to CLI config in case it was set via bd but not CLI.
-		if url := parseOriginURL(out); url != "" {
-			dolt.SetCLIRemote(dataDir, "origin", url)
-		}
+	} else if existingURL == "" {
+		return fmt.Errorf("no remote configured\n  pass a DoltHub URL or run: spire push <url>")
 	}
 
 	// ── Commit any uncommitted working-set changes ────────────────────────────
-	vcStatus, _ := bd("vc", "status")
-	if strings.Contains(vcStatus, "uncommitted") {
-		fmt.Println("  Committing working-set changes before push...")
-		if _, err := bd("vc", "commit", "-m", "pre-push: commit working set (spire push)"); err != nil {
-			return fmt.Errorf("commit working set: %w", err)
-		}
+	// In-process commit (no-op when clean) rather than `bd vc commit`.
+	if err := store.CommitPending("pre-push: commit working set (spire push)"); err != nil {
+		return fmt.Errorf("commit working set: %w", err)
 	}
 
 	// ── Push via dolt CLI (not bd) ────────────────────────────────────────────
@@ -174,7 +158,5 @@ func runPush(remoteURL string) error {
 	}
 
 	fmt.Println("  Push complete.")
-	fmt.Println()
-	bd("status") //nolint
 	return nil
 }

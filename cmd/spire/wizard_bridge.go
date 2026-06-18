@@ -6,6 +6,8 @@
 package main
 
 import (
+	"encoding/json"
+
 	"github.com/awell-health/spire/pkg/agent"
 	"github.com/awell-health/spire/pkg/bundlestore"
 	"github.com/awell-health/spire/pkg/config"
@@ -18,6 +20,7 @@ import (
 
 type Review = wizard.Review
 type ReviewIssue = wizard.ReviewIssue
+
 // --- Function aliases for backward compatibility ---
 // Other cmd/spire files (executor_bridge.go, formula_bridge.go) call these.
 
@@ -46,7 +49,6 @@ func resolveBranchForBead(beadID, repoPath string) string {
 func wizardCaptureFocus(beadID string) (string, error) {
 	return wizard.CaptureWizardFocus(beadID)
 }
-
 
 func wizardCleanup(worktreeDir, repoPath string) {
 	wizard.WizardCleanup(worktreeDir, repoPath)
@@ -153,9 +155,9 @@ func buildWizardDeps() *wizard.Deps {
 		},
 
 		// Dolt queries (for ResolveRepo)
-		RawDoltQuery:    rawDoltQuery,
-		ParseDoltRows:   parseDoltRows,
-		SQLEscape:       sqlEscape,
+		RawDoltQuery:  rawDoltQuery,
+		ParseDoltRows: parseDoltRows,
+		SQLEscape:     sqlEscape,
 		ResolveDatabase: func(cfg *config.SpireConfig) (string, bool) {
 			return resolveDatabase(cfg)
 		},
@@ -177,7 +179,20 @@ func buildWizardDeps() *wizard.Deps {
 		// Focus / bead JSON
 		CaptureFocus: wizard.CaptureWizardFocus,
 		GetBeadJSON: func(beadID string) (string, error) {
-			return bd("show", beadID, "--json")
+			// In-process store rather than `bd show --json`: a bd subprocess
+			// re-imports the full issues.jsonl on startup (a ~36k-row no-op
+			// upsert storm per call). The consumer (WizardExtractTitle) parses
+			// a JSON array, so marshal a single-element slice to match the
+			// `bd show --json` shape.
+			b, err := storeGetBead(beadID)
+			if err != nil {
+				return "", err
+			}
+			out, err := json.Marshal([]Bead{b})
+			if err != nil {
+				return "", err
+			}
+			return string(out), nil
 		},
 
 		// Inbox
@@ -195,4 +210,3 @@ func buildWizardDeps() *wizard.Deps {
 		},
 	}
 }
-

@@ -3,6 +3,7 @@ package observability
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -446,9 +447,37 @@ func MetricsModel(jsonOut bool) error {
 	return nil
 }
 
-// QueryJSON runs a SQL query via bd sql --json and returns parsed rows.
+// QueryJSON runs a read-only SQL query and returns parsed rows.
+//
+// It reads in-process via store.QueryRows (the live Dolt connection pool).
+// Only when no in-process store is available (gateway-mode tower or an
+// uninitialized store) does it fall back to the `bd sql --json` subprocess —
+// which is avoided on the common path because every `bd` invocation re-imports
+// the full issues.jsonl on startup (a ~36k-row no-op upsert storm).
+//
 // Returns nil (not an error) when the agent_runs table doesn't exist yet.
 func QueryJSON(query string) ([]MetricsRow, error) {
+	rows, err := store.QueryRows(query)
+	if err == nil {
+		return rows, nil
+	}
+	if isMissingTableErr(err.Error()) {
+		return nil, nil
+	}
+	if errors.Is(err, store.ErrGatewayUnsupported) || strings.Contains(err.Error(), "store not initialized") {
+		return queryJSONViaBd(query)
+	}
+	return nil, fmt.Errorf("query metrics: %w", err)
+}
+
+func isMissingTableErr(s string) bool {
+	return strings.Contains(s, "table not found") || strings.Contains(s, "doesn't exist")
+}
+
+// queryJSONViaBd is the legacy `bd sql --json` path, retained only as a
+// fallback for contexts without an in-process store. NOTE: each bd invocation
+// re-imports the full issues.jsonl — never use on a hot path.
+func queryJSONViaBd(query string) ([]MetricsRow, error) {
 	cmd := exec.Command("bd", "sql", "--json", query)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -497,7 +526,7 @@ func QueryJSON(query string) ([]MetricsRow, error) {
 //   - Sonnet: $3/M input, $15/M output
 //   - Opus:   $15/M input, $75/M output
 func EstimateCost(tokensIn, tokensOut int, model string) float64 {
-	inRate := 3.0  // $/M tokens — Sonnet default
+	inRate := 3.0   // $/M tokens — Sonnet default
 	outRate := 15.0 // $/M tokens
 	if strings.Contains(strings.ToLower(model), "opus") {
 		inRate = 15.0
@@ -595,15 +624,15 @@ func RunsForBead(beadID string) ([]MetricsRow, error) {
 
 // StepRunRow holds a single agent_runs row for per-step metrics aggregation.
 type StepRunRow struct {
-	Phase        string  `json:"phase"`
-	PhaseBucket  string  `json:"phase_bucket"`
-	Duration     int     `json:"duration_seconds"`
-	CostUSD      float64 `json:"cost_usd"`
-	TokensIn     int     `json:"tokens_in"`
-	TokensOut    int     `json:"tokens_out"`
-	ToolCallsJSON string `json:"tool_calls_json"`
-	StartedAt    string  `json:"started_at"`
-	CompletedAt  string  `json:"completed_at"`
+	Phase         string  `json:"phase"`
+	PhaseBucket   string  `json:"phase_bucket"`
+	Duration      int     `json:"duration_seconds"`
+	CostUSD       float64 `json:"cost_usd"`
+	TokensIn      int     `json:"tokens_in"`
+	TokensOut     int     `json:"tokens_out"`
+	ToolCallsJSON string  `json:"tool_calls_json"`
+	StartedAt     string  `json:"started_at"`
+	CompletedAt   string  `json:"completed_at"`
 }
 
 // StepMetricsForBead returns individual agent_runs rows for a bead, ordered by
@@ -624,15 +653,15 @@ func StepMetricsForBead(beadID string) ([]StepRunRow, error) {
 	var result []StepRunRow
 	for _, row := range rows {
 		result = append(result, StepRunRow{
-			Phase:        ToString(row["phase"]),
-			PhaseBucket:  ToString(row["phase_bucket"]),
-			Duration:     ToInt(row["duration_seconds"]),
-			CostUSD:      ToFloat(row["cost_usd"]),
-			TokensIn:     ToInt(row["context_tokens_in"]),
-			TokensOut:    ToInt(row["context_tokens_out"]),
+			Phase:         ToString(row["phase"]),
+			PhaseBucket:   ToString(row["phase_bucket"]),
+			Duration:      ToInt(row["duration_seconds"]),
+			CostUSD:       ToFloat(row["cost_usd"]),
+			TokensIn:      ToInt(row["context_tokens_in"]),
+			TokensOut:     ToInt(row["context_tokens_out"]),
 			ToolCallsJSON: ToString(row["tool_calls_json"]),
-			StartedAt:    ToString(row["started_at"]),
-			CompletedAt:  ToString(row["completed_at"]),
+			StartedAt:     ToString(row["started_at"]),
+			CompletedAt:   ToString(row["completed_at"]),
 		})
 	}
 	return result, nil
@@ -646,16 +675,16 @@ func SqlEsc(s string) string {
 // DORAResult holds DORA metrics and additional DAG-derived metrics.
 type DORAResult struct {
 	// Classic DORA four
-	DeploymentFrequency []DORAWeekCount  `json:"deployment_frequency"`
-	LeadTime            *DORAStats       `json:"lead_time"`
-	ChangeFailureRate   *DORAFailRate    `json:"change_failure_rate"`
-	MTTR                *DORAStats       `json:"mttr"`
+	DeploymentFrequency []DORAWeekCount `json:"deployment_frequency"`
+	LeadTime            *DORAStats      `json:"lead_time"`
+	ChangeFailureRate   *DORAFailRate   `json:"change_failure_rate"`
+	MTTR                *DORAStats      `json:"mttr"`
 	// DAG metrics
-	RetryRate      *RetryStats      `json:"retry_rate,omitempty"`
-	ReviewFriction *ReviewStats     `json:"review_friction,omitempty"`
-	EscalationRate *EscalationStats `json:"escalation_rate,omitempty"`
-	ModelEfficiency []ModelStats    `json:"model_efficiency,omitempty"`
-	PhaseDuration  []PhaseStats     `json:"phase_duration,omitempty"`
+	RetryRate       *RetryStats      `json:"retry_rate,omitempty"`
+	ReviewFriction  *ReviewStats     `json:"review_friction,omitempty"`
+	EscalationRate  *EscalationStats `json:"escalation_rate,omitempty"`
+	ModelEfficiency []ModelStats     `json:"model_efficiency,omitempty"`
+	PhaseDuration   []PhaseStats     `json:"phase_duration,omitempty"`
 }
 
 // DORAWeekCount is a single week's merge count.
@@ -705,27 +734,27 @@ type EscalationStats struct {
 
 // ModelStats holds per-model success rate.
 type ModelStats struct {
-	Model      string  `json:"model"`
-	Total      int     `json:"total"`
-	Succeeded  int     `json:"succeeded"`
+	Model       string  `json:"model"`
+	Total       int     `json:"total"`
+	Succeeded   int     `json:"succeeded"`
 	SuccessRate float64 `json:"success_rate"`
 }
 
 // PhaseStats holds per-phase duration metrics.
 type PhaseStats struct {
-	Phase      string  `json:"phase"`
-	Count      int     `json:"count"`
-	AvgHours   float64 `json:"avg_hours"`
-	P50Hours   float64 `json:"p50_hours"`
-	P90Hours   float64 `json:"p90_hours"`
+	Phase    string  `json:"phase"`
+	Count    int     `json:"count"`
+	AvgHours float64 `json:"avg_hours"`
+	P50Hours float64 `json:"p50_hours"`
+	P90Hours float64 `json:"p90_hours"`
 }
 
 // DORAOpts controls what MetricsDORA computes and renders.
 type DORAOpts struct {
-	JSONOut    bool
-	BeadID     string // scope to a single parent bead
-	ShowModel  bool   // include model efficiency breakdown
-	ShowPhase  bool   // include phase duration breakdown
+	JSONOut   bool
+	BeadID    string // scope to a single parent bead
+	ShowModel bool   // include model efficiency breakdown
+	ShowPhase bool   // include phase duration breakdown
 }
 
 // failureResults are attempt results counted as failures for DORA metrics.
@@ -1290,10 +1319,10 @@ func avg(vals []float64) float64 {
 
 // RetryRow holds per-phase retry counts.
 type RetryRow struct {
-	Phase        string `json:"phase"`
-	TotalRuns    int    `json:"total_runs"`
-	Retries      int    `json:"retries"`       // runs with attempt_number > 1
-	MaxAttempts  int    `json:"max_attempts"`
+	Phase       string `json:"phase"`
+	TotalRuns   int    `json:"total_runs"`
+	Retries     int    `json:"retries"` // runs with attempt_number > 1
+	MaxAttempts int    `json:"max_attempts"`
 }
 
 // MetricsRetry returns steps with retries (attempt_number > 1), grouped by phase.
@@ -1364,10 +1393,10 @@ func MetricsFailureBreakdown() ([]FailureBreakdownRow, error) {
 
 // StepDurationRow holds per-step timing for a bead's graph execution.
 type StepDurationRow struct {
-	Step       string  `json:"step"`
-	Status     string  `json:"status"`
-	DurationS  float64 `json:"duration_seconds"`
-	Attempts   int     `json:"attempts"`
+	Step      string  `json:"step"`
+	Status    string  `json:"status"`
+	DurationS float64 `json:"duration_seconds"`
+	Attempts  int     `json:"attempts"`
 }
 
 // MetricsStepDurations reads graph state JSON for a bead and extracts per-step
@@ -1406,11 +1435,11 @@ func MetricsStepDurations(beadID string) ([]StepDurationRow, error) {
 
 // ToolUsageRow holds average tool calls per phase.
 type ToolUsageRow struct {
-	Phase       string  `json:"phase"`
-	AvgReads    float64 `json:"avg_reads"`
-	AvgEdits    float64 `json:"avg_edits"`
-	TotalRuns   int     `json:"total_runs"`
-	MaxReads    int     `json:"max_reads"`
+	Phase     string  `json:"phase"`
+	AvgReads  float64 `json:"avg_reads"`
+	AvgEdits  float64 `json:"avg_edits"`
+	TotalRuns int     `json:"total_runs"`
+	MaxReads  int     `json:"max_reads"`
 }
 
 // MetricsToolUsage returns average read/edit tool calls per phase for the last 30 days.

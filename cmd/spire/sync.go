@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/awell-health/spire/pkg/config"
 	"github.com/awell-health/spire/pkg/dolt"
@@ -95,13 +94,11 @@ func runSync() error {
 	}
 
 	// ── Remote setup ──────────────────────────────────────────────────────────
-	out, _ := bd("dolt", "remote", "list")
-	if !strings.Contains(out, "origin") {
-		return fmt.Errorf("no remote configured\n  set one with 'spire pull <url>' first, or run: bd dolt remote add origin <url>")
-	}
-	// Sync SQL remote to CLI config in case it was set via bd but not CLI.
-	if url := parseOriginURL(out); url != "" {
-		dolt.SetCLIRemote(dataDir, "origin", url)
+	// Read the CLI remote via the dolt binary, not `bd dolt remote list`
+	// (every bd invocation re-imports the full issues.jsonl — a no-op upsert
+	// storm). The CLI remote is the one CLIFetchMerge actually uses.
+	if dolt.GetCLIRemote(dataDir) == "" {
+		return fmt.Errorf("no remote configured\n  set one with 'spire pull <url>' first")
 	}
 
 	// ── Inject remote credentials (DoltHub or cluster remotesapi) ────────────
@@ -168,7 +165,5 @@ func runSync() error {
 	}
 
 	fmt.Println("  Merge complete.")
-	fmt.Println()
-	bd("status") //nolint
 	return nil
 }

@@ -73,3 +73,23 @@ func SetCLIRemote(dataDir, name, url string) {
 	addCmd.Env = os.Environ()
 	addCmd.Run() //nolint
 }
+
+// GetCLIRemote returns the URL of the "origin" CLI remote in dataDir, or "" if
+// none is set. It reads via the dolt binary's `remote -v` — the same CLI remote
+// SetCLIRemote writes and that CLIPull/CLIPush use, distinct from the SQL-side
+// remote the bd CLI manages. Using the dolt binary (not bd) avoids the bd
+// startup JSONL re-import storm.
+func GetCLIRemote(dataDir string) string {
+	bin := Bin()
+	if bin == "" {
+		return ""
+	}
+	cmd := exec.Command(bin, "remote", "-v")
+	cmd.Dir = dataDir
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return ParseOriginURL(string(out))
+}

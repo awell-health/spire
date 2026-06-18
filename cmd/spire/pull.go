@@ -126,36 +126,23 @@ func runPull(remoteURL string, force bool) error {
 	}
 
 	// ── Remote setup ──────────────────────────────────────────────────────────
+	// Manage the CLI remote via the dolt binary (the remote CLIPull actually
+	// reads). We no longer touch the SQL-side remote via `bd dolt remote …`:
+	// every bd invocation re-imports the full issues.jsonl (a ~36k-row no-op
+	// upsert storm), and the SQL remote is unused by the CLI pull.
+	existingURL := dolt.GetCLIRemote(dataDir)
 	if remoteURL != "" {
 		remoteURL = normalizeDolthubURL(remoteURL)
-
-		// Set remote in both SQL (for bd) and CLI (for direct pull).
-		out, _ := bd("dolt", "remote", "list")
-		existingURL := parseOriginURL(out)
 		if existingURL == "" {
 			fmt.Printf("  Adding remote origin → %s\n", remoteURL)
-			bd("dolt", "remote", "add", "origin", remoteURL) //nolint — SQL remote
 		} else if existingURL != remoteURL {
 			fmt.Printf("  Updating remote origin: %s → %s\n", existingURL, remoteURL)
-			bd("dolt", "remote", "add", "origin-new", remoteURL) //nolint
-			bd("dolt", "remote", "remove", "origin")             //nolint
-			bd("dolt", "remote", "add", "origin", remoteURL)     //nolint
-			bd("dolt", "remote", "remove", "origin-new")         //nolint
 		} else {
 			fmt.Printf("  Remote origin: %s\n", remoteURL)
 		}
-
-		// Also write the CLI remote directly into the data dir.
 		dolt.SetCLIRemote(dataDir, "origin", remoteURL)
-	} else {
-		out, _ := bd("dolt", "remote", "list")
-		if !strings.Contains(out, "origin") {
-			return fmt.Errorf("no remote configured\n  pass a DoltHub URL or run: bd dolt remote add origin <url>")
-		}
-		// Sync SQL remote to CLI config in case it was set via bd but not CLI.
-		if url := parseOriginURL(out); url != "" {
-			dolt.SetCLIRemote(dataDir, "origin", url)
-		}
+	} else if existingURL == "" {
+		return fmt.Errorf("no remote configured\n  pass a DoltHub URL or run: spire pull <url>")
 	}
 
 	// ── Inject remote credentials (DoltHub or cluster remotesapi) ────────────
@@ -176,8 +163,6 @@ func runPull(remoteURL string, force bool) error {
 	}
 
 	fmt.Println("  Pull complete.")
-	fmt.Println()
-	bd("status") //nolint
 	return nil
 }
 

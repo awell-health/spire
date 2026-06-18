@@ -157,6 +157,7 @@ var dispatchedAPIs = []string{
 	"GetChildrenBatch",
 	"GetChildrenBoardBatch",
 	"GetStepBeadsBatch",
+	"QueryRows",
 
 	// mutations.go
 	"CreateBead",
