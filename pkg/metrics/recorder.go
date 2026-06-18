@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/awell-health/spire/pkg/store"
 )
 
 // Formula source constants identify where a formula was loaded from.
@@ -21,26 +23,26 @@ const (
 
 // AgentRun represents a single agent execution record stored in the agent_runs table.
 type AgentRun struct {
-	ID                 string `json:"id"`
-	BeadID             string `json:"bead_id"`
-	EpicID             string `json:"epic_id,omitempty"`
-	AgentName          string `json:"agent_name,omitempty"`
-	Model              string `json:"model"`
-	Role               string `json:"role"`  // "wizard" or "worker"
-	Phase              string `json:"phase,omitempty"`        // "implement", "review", "build-fix", "review-fix"
-	PhaseBucket        string `json:"phase_bucket,omitempty"` // "design", "implement", "review"
-	FormulaName        string `json:"formula_name,omitempty"`
-	FormulaVersion     int    `json:"formula_version,omitempty"`
-	FormulaSource      string `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
-	Branch             string `json:"branch,omitempty"`
-	CommitSHA          string `json:"commit_sha,omitempty"`
-	BeadType           string `json:"bead_type,omitempty"`
-	Tower              string `json:"tower,omitempty"`
-	ParentRunID        string `json:"parent_run_id,omitempty"`
-	WaveIndex          int    `json:"wave_index,omitempty"`
-	ContextTokensIn    int    `json:"context_tokens_in,omitempty"`
-	ContextTokensOut   int    `json:"context_tokens_out,omitempty"`
-	TotalTokens        int    `json:"total_tokens,omitempty"`
+	ID                 string  `json:"id"`
+	BeadID             string  `json:"bead_id"`
+	EpicID             string  `json:"epic_id,omitempty"`
+	AgentName          string  `json:"agent_name,omitempty"`
+	Model              string  `json:"model"`
+	Role               string  `json:"role"`                   // "wizard" or "worker"
+	Phase              string  `json:"phase,omitempty"`        // "implement", "review", "build-fix", "review-fix"
+	PhaseBucket        string  `json:"phase_bucket,omitempty"` // "design", "implement", "review"
+	FormulaName        string  `json:"formula_name,omitempty"`
+	FormulaVersion     int     `json:"formula_version,omitempty"`
+	FormulaSource      string  `json:"formula_source,omitempty"` // "embedded", "repo", or "tower"
+	Branch             string  `json:"branch,omitempty"`
+	CommitSHA          string  `json:"commit_sha,omitempty"`
+	BeadType           string  `json:"bead_type,omitempty"`
+	Tower              string  `json:"tower,omitempty"`
+	ParentRunID        string  `json:"parent_run_id,omitempty"`
+	WaveIndex          int     `json:"wave_index,omitempty"`
+	ContextTokensIn    int     `json:"context_tokens_in,omitempty"`
+	ContextTokensOut   int     `json:"context_tokens_out,omitempty"`
+	TotalTokens        int     `json:"total_tokens,omitempty"`
 	Turns              int     `json:"turns,omitempty"`
 	MaxTurns           int     `json:"max_turns,omitempty"`
 	StopReason         string  `json:"stop_reason,omitempty"`
@@ -48,42 +50,42 @@ type AgentRun struct {
 	CacheWriteTokens   int64   `json:"cache_write_tokens,omitempty"`
 	CostUSD            float64 `json:"cost_usd,omitempty"`
 	DurationSeconds    int     `json:"duration_seconds,omitempty"`
-	StartupSeconds     int    `json:"startup_seconds,omitempty"`
-	WorkingSeconds     int    `json:"working_seconds,omitempty"`
-	QueueSeconds       int    `json:"queue_seconds,omitempty"`    // bead filed → wizard assigned
-	ReviewSeconds      int    `json:"review_seconds,omitempty"`   // branch pushed → review verdict
-	Result             string `json:"result"`
-	ReviewRounds       int    `json:"review_rounds,omitempty"`
-	ReviewVerdict       string `json:"artificer_verdict,omitempty" db:"artificer_verdict"` // legacy column name
-	ReviewStep         string `json:"review_step,omitempty"`                               // "sage-review", "fix", "arbiter"
-	ReviewRound        int    `json:"review_round,omitempty"`                              // 1-indexed round within the review cycle
-	SpecFile           string `json:"spec_file,omitempty"`
-	SpecSizeTokens     int    `json:"spec_size_tokens,omitempty"`
-	FocusContextTokens int    `json:"focus_context_tokens,omitempty"`
-	FilesChanged       int    `json:"files_changed,omitempty"`
-	LinesAdded         int    `json:"lines_added,omitempty"`
-	LinesRemoved       int    `json:"lines_removed,omitempty"`
-	TestsAdded         int    `json:"tests_added,omitempty"`
-	TestsPassed        bool   `json:"tests_passed,omitempty"`
-	SystemPromptHash   string `json:"system_prompt_hash,omitempty"`
-	GoldenRun          bool   `json:"golden_run,omitempty"`
-	TimingBucket       string `json:"timing_bucket,omitempty"`
-	SkipReason         string `json:"skip_reason,omitempty"`
-	FailureClass       string `json:"failure_class,omitempty"`      // timeout, build_fail, test_fail, review_reject, merge_conflict, escalation, unknown
-	AttemptNumber      int    `json:"attempt_number,omitempty"`     // which attempt (from StepState.CompletedCount)
-	RecoveryBeadID     string `json:"recovery_bead_id,omitempty"`   // link to recovery bead if this run is a recovery
-	ReadCalls          int    `json:"read_calls,omitempty"`         // count of Read tool invocations
-	EditCalls          int    `json:"edit_calls,omitempty"`         // count of Edit + Write tool invocations
-	ToolCallsJSON      string `json:"tool_calls_json,omitempty"`    // full {"Read": 12, "Edit": 3, ...} blob
+	StartupSeconds     int     `json:"startup_seconds,omitempty"`
+	WorkingSeconds     int     `json:"working_seconds,omitempty"`
+	QueueSeconds       int     `json:"queue_seconds,omitempty"`  // bead filed → wizard assigned
+	ReviewSeconds      int     `json:"review_seconds,omitempty"` // branch pushed → review verdict
+	Result             string  `json:"result"`
+	ReviewRounds       int     `json:"review_rounds,omitempty"`
+	ReviewVerdict      string  `json:"artificer_verdict,omitempty" db:"artificer_verdict"` // legacy column name
+	ReviewStep         string  `json:"review_step,omitempty"`                              // "sage-review", "fix", "arbiter"
+	ReviewRound        int     `json:"review_round,omitempty"`                             // 1-indexed round within the review cycle
+	SpecFile           string  `json:"spec_file,omitempty"`
+	SpecSizeTokens     int     `json:"spec_size_tokens,omitempty"`
+	FocusContextTokens int     `json:"focus_context_tokens,omitempty"`
+	FilesChanged       int     `json:"files_changed,omitempty"`
+	LinesAdded         int     `json:"lines_added,omitempty"`
+	LinesRemoved       int     `json:"lines_removed,omitempty"`
+	TestsAdded         int     `json:"tests_added,omitempty"`
+	TestsPassed        bool    `json:"tests_passed,omitempty"`
+	SystemPromptHash   string  `json:"system_prompt_hash,omitempty"`
+	GoldenRun          bool    `json:"golden_run,omitempty"`
+	TimingBucket       string  `json:"timing_bucket,omitempty"`
+	SkipReason         string  `json:"skip_reason,omitempty"`
+	FailureClass       string  `json:"failure_class,omitempty"`    // timeout, build_fail, test_fail, review_reject, merge_conflict, escalation, unknown
+	AttemptNumber      int     `json:"attempt_number,omitempty"`   // which attempt (from StepState.CompletedCount)
+	RecoveryBeadID     string  `json:"recovery_bead_id,omitempty"` // link to recovery bead if this run is a recovery
+	ReadCalls          int     `json:"read_calls,omitempty"`       // count of Read tool invocations
+	EditCalls          int     `json:"edit_calls,omitempty"`       // count of Edit + Write tool invocations
+	ToolCallsJSON      string  `json:"tool_calls_json,omitempty"`  // full {"Read": 12, "Edit": 3, ...} blob
 	// AuthProfile is the credential slot active at run-start ("subscription" or
 	// "api-key"). Nil for historical rows and for runs that predate the auth
 	// observability wiring.
-	AuthProfile        *string `json:"auth_profile,omitempty"`
+	AuthProfile *string `json:"auth_profile,omitempty"`
 	// AuthProfileFinal is set only when a mid-run 429 promoted the run from
 	// subscription to api-key. Nil (or equal to AuthProfile) means no swap.
-	AuthProfileFinal   *string `json:"auth_profile_final,omitempty"`
-	StartedAt          string `json:"started_at"`
-	CompletedAt        string `json:"completed_at,omitempty"`
+	AuthProfileFinal *string `json:"auth_profile_final,omitempty"`
+	StartedAt        string  `json:"started_at"`
+	CompletedAt      string  `json:"completed_at,omitempty"`
 }
 
 // GenerateID returns a random run ID in the form "run-" + 8 hex chars.
@@ -340,25 +342,25 @@ func MarkGolden(runID string) error {
 
 // ReviewRoundMetrics holds per-round durations and verdict info.
 type ReviewRoundMetrics struct {
-	Round         int           `json:"round"`
-	SageDuration  time.Duration `json:"sage_duration"`
-	FixDuration   time.Duration `json:"fix_duration"`
-	SageVerdict   string        `json:"sage_verdict,omitempty"`   // verdict after sage review this round
+	Round        int           `json:"round"`
+	SageDuration time.Duration `json:"sage_duration"`
+	FixDuration  time.Duration `json:"fix_duration"`
+	SageVerdict  string        `json:"sage_verdict,omitempty"` // verdict after sage review this round
 }
 
 // ReviewCycleMetrics aggregates review efficiency data for a bead.
 type ReviewCycleMetrics struct {
-	BeadID       string               `json:"bead_id"`
-	TotalRounds  int                  `json:"total_rounds"`
+	BeadID      string `json:"bead_id"`
+	TotalRounds int    `json:"total_rounds"`
 	// TotalDuration spans from the first sage-review start to the last review step
 	// (sage-review, fix, or arbiter) end. This intentionally covers only the review
 	// cycle itself — the terminal merge/discard step is not a review step and is
 	// excluded. Use the bead's overall timestamps for end-to-end duration.
-	TotalDuration time.Duration       `json:"total_duration"`
-	Rounds       []ReviewRoundMetrics `json:"rounds"`
-	HadArbiter   bool                 `json:"had_arbiter"`
-	ArbiterDuration time.Duration     `json:"arbiter_duration,omitempty"`
-	ParseErrors  int                  `json:"parse_errors,omitempty"` // count of rows with malformed round/timestamp data
+	TotalDuration   time.Duration        `json:"total_duration"`
+	Rounds          []ReviewRoundMetrics `json:"rounds"`
+	HadArbiter      bool                 `json:"had_arbiter"`
+	ArbiterDuration time.Duration        `json:"arbiter_duration,omitempty"`
+	ParseErrors     int                  `json:"parse_errors,omitempty"` // count of rows with malformed round/timestamp data
 }
 
 // GetReviewCycleMetrics queries agent_runs for per-step review data and returns
@@ -487,8 +489,22 @@ func sql2csv(query string) []string {
 	return []string{"-r", "csv", query}
 }
 
-// bdSQL executes a SQL statement via bd sql.
+// bdSQL executes a write statement against the tower's Dolt database.
+//
+// It prefers the in-process store connection (store.ActiveDB) when one is open
+// — which it always is in the executor, the hot caller that records an
+// agent_runs row on every agent run. Shelling out to the `bd` CLI re-runs
+// beads' startup auto-import of the full 24MB issues.jsonl into an "empty
+// database" on every invocation (a ~36k-row no-op upsert storm + JSONL
+// rewrite), which is a dominant source of the Dolt write/sync CPU spikes.
+//
+// The `bd sql` subprocess remains the fallback for callers with no in-process
+// store open (standalone CLI contexts).
 func bdSQL(query string) error {
+	if db, ok := store.ActiveDB(); ok {
+		_, err := db.Exec(query)
+		return err
+	}
 	cmd := exec.Command("bd", "sql", query)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
