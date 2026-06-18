@@ -128,12 +128,6 @@ func ApplySpireExtensions(exec SQLExec, database string) error {
 	if database == "" {
 		return errors.New("ApplySpireExtensions: database is required")
 	}
-	// Register dolt_ignore for local-only tables that do not yet exist BEFORE
-	// they are created, so a fresh tower creates them untracked. No-op for an
-	// already-created (existing) tower — UntrackLocalOnlyTables handles that.
-	if err := preRegisterLocalOnlyIgnore(exec, database); err != nil {
-		return err
-	}
 	for _, t := range spireExtensionTables {
 		if _, err := exec(fmt.Sprintf("USE `%s`; %s", database, t.sql)); err != nil {
 			return fmt.Errorf("create %s table: %w", t.name, err)
