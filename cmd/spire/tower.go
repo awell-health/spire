@@ -381,17 +381,25 @@ func bootstrapRepoBeadsDir(beadsDir string, tower *TowerConfig, prefix string) e
 // ensureCustomBeadTypes registers Spire's required custom bead types in the
 // given .beads directory. Idempotent — merges with any existing custom types.
 //
-// Writes both the config string (types.custom) AND the normalized custom_types
-// table. The embedded dolt SetConfig does not sync the table (only
-// DoltStore.SetConfig does), so we must populate it explicitly to avoid
-// validation failures when CreateIssue reads custom_types first.
+// Writes the config string (types.custom) via the in-process DoltStore, whose
+// SetConfig hook also syncs the normalized custom_types table — so CreateIssue
+// won't reject custom types by reading an empty table.
 func ensureCustomBeadTypes(beadsDir string) error {
-	client := bdpkg.NewClient()
-	client.BeadsDir = beadsDir
-	client.Sandbox = true // remote may not be configured yet — don't let auto-push hang
+	// Use the in-process store (shared dolt server) rather than the bd CLI.
+	// A `bd --sandbox` subprocess re-runs beads' startup auto-import of the
+	// 24MB issues.jsonl into an empty sandbox DB on every invocation — a
+	// ~36k-row no-op upsert storm (that then fails validation on Spire's
+	// custom "ready" status) plus a full JSONL rewrite. The in-process store
+	// reads/writes the live, non-empty server directly. store.SetConfig routes
+	// to the DoltStore whose hook also syncs the custom_types table, so no
+	// separate INSERT is needed.
+	if _, err := store.OpenAt(beadsDir); err != nil {
+		return err
+	}
+	defer store.Reset()
 
 	// Read current custom types to avoid clobbering user additions.
-	current, err := client.ConfigGet("types.custom")
+	current, err := store.GetConfig("types.custom")
 	if err != nil {
 		// Key may not exist yet — treat as empty.
 		current = ""
@@ -425,23 +433,7 @@ func ensureCustomBeadTypes(beadsDir string) error {
 	}
 	sort.Strings(types)
 
-	if err := client.ConfigSet("types.custom", strings.Join(types, ",")); err != nil {
-		return err
-	}
-
-	// Sync the normalized custom_types table. The embedded dolt store's
-	// SetConfig only writes the config row — it does not sync the table
-	// (unlike DoltStore.SetConfig which has a sync hook). Without this,
-	// CreateIssue reads an empty custom_types table and rejects custom types.
-	for _, t := range types {
-		// INSERT IGNORE: idempotent — skips if row already exists.
-		if _, err := client.DoltSQL(fmt.Sprintf(
-			"INSERT IGNORE INTO custom_types (name) VALUES ('%s')", t)); err != nil {
-			return fmt.Errorf("sync custom_types table: %w", err)
-		}
-	}
-
-	return nil
+	return store.SetConfig("types.custom", strings.Join(types, ","))
 }
 
 // requiredCustomStatuses are the custom bead statuses that Spire registers on
@@ -454,12 +446,16 @@ var requiredCustomStatuses = []string{"ready:active"}
 // the given .beads directory. Idempotent — merges with any existing custom
 // statuses without clobbering user additions.
 func ensureCustomBeadStatuses(beadsDir string) error {
-	client := bdpkg.NewClient()
-	client.BeadsDir = beadsDir
-	client.Sandbox = true // remote may not be configured yet
+	// In-process store, not a `bd --sandbox` subprocess — see ensureCustomBeadTypes
+	// for why (the bd CLI re-imports the full issues.jsonl on every call).
+	// store.SetConfig's DoltStore hook syncs the custom_statuses table.
+	if _, err := store.OpenAt(beadsDir); err != nil {
+		return err
+	}
+	defer store.Reset()
 
 	// Read current custom statuses to avoid clobbering user additions.
-	current, err := client.ConfigGet("status.custom")
+	current, err := store.GetConfig("status.custom")
 	if err != nil {
 		// Key may not exist yet — treat as empty.
 		current = ""
@@ -470,7 +466,7 @@ func ensureCustomBeadStatuses(beadsDir string) error {
 		return nil
 	}
 
-	return client.ConfigSet("status.custom", merged)
+	return store.SetConfig("status.custom", merged)
 }
 
 // mergeCustomStatuses merges required statuses into the current comma-separated
